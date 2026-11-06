@@ -18,7 +18,8 @@
  *   sets, where a remove cancels exactly the adds that are causal ancestors of
  *   it (earlier line in the same commit, or an ancestor commit); comments append;
  *   an edit-comment applies only if its target exists earlier in the order and has
- *   the same author.
+ *   the same author. Dependencies, assignments and calendar exceptions are OR-maps:
+ *   the key's surviving adds decide presence, the latest surviving add the value.
  */
 #ifndef TIX_MODEL_REPLAY_H
 #define TIX_MODEL_REPLAY_H
@@ -42,6 +43,48 @@ typedef struct tix_comment {
 	bool edited;
 } tix_comment;
 
+/* An op's position in the total order (lamport, commit oid, line). */
+typedef struct tix_order {
+	uint64_t lamport;
+	tix_opid id;
+} tix_order;
+
+int tix_order_cmp(const tix_order *a, const tix_order *b);
+
+typedef struct tix_dep {
+	tix_oid pred;
+	tix_dep_kind kind;
+	int32_t lag;     /* working days */
+	tix_order order; /* of the add that set this value (cycle breaking) */
+} tix_dep;
+
+typedef struct tix_assignment {
+	tix_oid resource;
+	int32_t units;  /* percent of the resource's capacity */
+	int64_t effort; /* hours, -1 = unset */
+} tix_assignment;
+
+/* WBS / scheduling / assignment state (architecture §4.2). Unset dates are
+ * TIX_DATE_NONE, unset numbers -1, unset ids null. */
+typedef struct tix_ticket_plan {
+	tix_oid parent;
+	tix_order parent_order; /* of the winning set-parent (cycle breaking) */
+	char *rank;             /* NULL = unranked */
+	tix_ticket_kind kind;
+	tix_oid calendar;
+	tix_sched_mode mode;
+	tix_date start, finish, deadline, actual_start, actual_finish;
+	int64_t duration; /* working days */
+	int64_t effort;   /* hours */
+	int progress;     /* 0..100 */
+	tix_dep *deps;    /* sorted by pred */
+	size_t ndeps;
+	tix_assignment *assignments; /* sorted by resource */
+	size_t nassignments;
+	int64_t started_at; /* time of the first set-status in-progress, or -1 */
+	int64_t done_at;    /* time of the set-status that made it done, -1 unless done */
+} tix_ticket_plan;
+
 typedef struct tix_ticket {
 	tix_oid author; /* creator */
 	char *title;
@@ -50,6 +93,7 @@ typedef struct tix_ticket {
 	tix_strs labels;
 	tix_comment *comments;
 	size_t ncomments;
+	tix_ticket_plan plan;
 } tix_ticket;
 
 typedef struct tix_key {
@@ -63,6 +107,32 @@ typedef struct tix_identity {
 	size_t nkeys;
 } tix_identity;
 
+typedef struct tix_resource {
+	char *name;
+	tix_resource_kind kind;
+	int32_t capacity; /* percent: 100 = one full-time unit */
+	tix_oid calendar; /* null = the task's calendar */
+	tix_oid identity; /* null = not linked to a user */
+	int64_t rate;     /* minor currency units per hour, -1 = unset */
+	char *currency;   /* NULL = unset */
+	bool active;
+} tix_resource;
+
+typedef struct tix_cal_exception {
+	tix_date from, to; /* inclusive */
+	bool working;
+	char *note;
+	tix_order order; /* later exceptions win where ranges overlap */
+} tix_cal_exception;
+
+typedef struct tix_calendar {
+	char *name;
+	unsigned weekdays; /* bit 0 = Monday */
+	int hours;         /* working hours per day */
+	tix_cal_exception *exceptions; /* sorted by (from, to) */
+	size_t nexceptions;
+} tix_calendar;
+
 typedef struct tix_entity {
 	tix_entity_type type;
 	tix_oid id;           /* root commit */
@@ -75,6 +145,8 @@ typedef struct tix_entity {
 	union {
 		tix_ticket ticket;
 		tix_identity identity;
+		tix_resource resource;
+		tix_calendar calendar;
 	} u;
 } tix_entity;
 

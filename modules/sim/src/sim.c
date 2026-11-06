@@ -132,7 +132,7 @@ tix_status tix_sim_create(tix_sim_clone *c, tix_entity_type t, const tix_op *ops
 {
 	char ref[128];
 	const tix_oid *author = NULL;
-	if (t == TIX_ENTITY_TICKET) {
+	if (t != TIX_ENTITY_IDENTITY) {
 		TIX_REQUIRE(!tix_oid_is_null(&c->me));
 		author = &c->me;
 	}
@@ -190,7 +190,7 @@ static tix_status sync_one(tix_sim_clone *dst, const char *local, tix_entity_typ
 	tix_entity_free(le);
 	tix_oid parents[2] = {head, *remote};
 	const tix_oid *author = tix_oid_is_null(&dst->me) ? NULL : &dst->me;
-	if (t == TIX_ENTITY_TICKET)
+	if (t != TIX_ENTITY_IDENTITY)
 		TIX_REQUIRE(author);
 	if ((st = write_pack(dst, t, author, parents, 2, NULL, 0, &merge, err)))
 		return st;
@@ -210,12 +210,13 @@ tix_status tix_sim_sync(tix_sim_clone *dst, tix_sim_clone *src, tix_error *err)
 	size_t plen = strlen(prefix);
 	for (size_t i = 0; i < refs.n && !st; i++) {
 		const char *rest = refs.v[i].name + plen; /* "tickets/<id>" */
-		tix_entity_type t;
-		if (!strncmp(rest, "tickets/", 8))
-			t = TIX_ENTITY_TICKET;
-		else if (!strncmp(rest, "identities/", 11))
-			t = TIX_ENTITY_IDENTITY;
-		else
+		tix_entity_type t = 0;
+		for (size_t k = 0; k < TIX_ENTITY_NTYPES; k++) {
+			const char *dir = tix_entity_ref_prefix(tix_entity_types[k]) + strlen("refs/tix/");
+			if (!strncmp(rest, dir, strlen(dir)))
+				t = tix_entity_types[k];
+		}
+		if (!t)
 			continue;
 		char local[160];
 		snprintf(local, sizeof(local), "refs/tix/%s", rest);

@@ -2,6 +2,7 @@
 #include "tix/base_buf.h"
 #include "tix/base_json.h"
 #include "tix/base_oid.h"
+#include "tix/base_date.h"
 #include "tix/testkit.h"
 
 #include <stdlib.h>
@@ -109,6 +110,35 @@ static void test_strs(void)
 	tix_strs_free(&c);
 }
 
+static void test_date(void)
+{
+	tix_date d;
+	char s[TIX_DATE_STR];
+	TK_CHECK(tix_date_parse("1970-01-01", &d) && d == 0);
+	TK_CHECK(tix_date_weekday(0) == 3); /* Thursday */
+	TK_CHECK(tix_date_parse("2026-11-06", &d) && tix_date_weekday(d) == 4); /* Friday */
+	TK_STR_EQ(tix_date_str(d, s), "2026-11-06");
+	TK_CHECK(tix_date_parse("2024-02-29", &d));
+	TK_STR_EQ(tix_date_str(d + 1, s), "2024-03-01");
+	TK_CHECK(tix_date_parse("9999-12-31", &d) && d == TIX_DATE_MAX);
+	TK_CHECK(tix_date_parse("2000-02-29", &d)); /* 400-year leap */
+	const char *bad[] = {"2023-02-29", "1900-02-29", "1969-12-31", "2026-13-01", "2026-00-10", "2026-04-31",
+			     "2026-1-01", "2026-01-1", "20260101", "2026-01-01x", " 2026-01-01", "+026-01-01",
+			     "", "2026/01/01", "2026-01-00"};
+	for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++)
+		TK_CHECK(!tix_date_parse(bad[i], &d));
+	/* round trip over every day of a few centuries */
+	bool ok = true;
+	for (tix_date x = 0; x <= TIX_DATE_MAX && ok; x += 13) {
+		tix_date y;
+		ok = tix_date_parse(tix_date_str(x, s), &y) && y == x;
+	}
+	TK_CHECK(ok);
+	TK_CHECK(tix_date_from_unix(86399) == 0 && tix_date_from_unix(86400) == 1);
+	TK_CHECK(tix_date_from_unix(-5) == 0 && tix_date_from_unix(INT64_MAX) == TIX_DATE_MAX);
+	TK_CHECK(!tix_date_valid(TIX_DATE_NONE));
+}
+
 int main(void)
 {
 	test_buf();
@@ -117,5 +147,6 @@ int main(void)
 	test_json();
 	test_utf8();
 	test_strs();
+	test_date();
 	return tk_finish();
 }

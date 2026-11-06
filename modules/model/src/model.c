@@ -5,11 +5,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+const tix_entity_type tix_entity_types[4] = {TIX_ENTITY_IDENTITY, TIX_ENTITY_TICKET, TIX_ENTITY_RESOURCE,
+					      TIX_ENTITY_CALENDAR};
+
 const char *tix_entity_type_name(tix_entity_type t)
 {
 	switch (t) {
 	case TIX_ENTITY_IDENTITY: return "identity";
 	case TIX_ENTITY_TICKET: return "ticket";
+	case TIX_ENTITY_RESOURCE: return "resource";
+	case TIX_ENTITY_CALENDAR: return "calendar";
 	}
 	TIX_REQUIRE(!"unknown entity type");
 	return NULL;
@@ -20,6 +25,8 @@ const char *tix_entity_ref_prefix(tix_entity_type t)
 	switch (t) {
 	case TIX_ENTITY_IDENTITY: return "refs/tix/identities/";
 	case TIX_ENTITY_TICKET: return "refs/tix/tickets/";
+	case TIX_ENTITY_RESOURCE: return "refs/tix/resources/";
+	case TIX_ENTITY_CALENDAR: return "refs/tix/calendars/";
 	}
 	TIX_REQUIRE(!"unknown entity type");
 	return NULL;
@@ -83,6 +90,51 @@ bool tix_ticket_status_parse(const char *s, tix_ticket_status *out)
 	return false;
 }
 
+static const char *const dep_names[] = {"FS", "SS", "FF", "SF"};
+
+const char *tix_dep_kind_name(tix_dep_kind k)
+{
+	TIX_REQUIRE((unsigned)k < 4);
+	return dep_names[k];
+}
+
+bool tix_dep_kind_parse(const char *s, tix_dep_kind *out)
+{
+	for (unsigned i = 0; i < 4; i++)
+		if (!strcmp(s, dep_names[i])) {
+			*out = (tix_dep_kind)i;
+			return true;
+		}
+	return false;
+}
+
+bool tix_op_is_create(tix_op_kind k)
+{
+	return k == TIX_OP_TICKET_CREATE || k == TIX_OP_IDENTITY_CREATE || k == TIX_OP_RESOURCE_CREATE ||
+	       k == TIX_OP_CALENDAR_CREATE;
+}
+
+tix_op_kind tix_create_kind(tix_entity_type t)
+{
+	switch (t) {
+	case TIX_ENTITY_IDENTITY: return TIX_OP_IDENTITY_CREATE;
+	case TIX_ENTITY_TICKET: return TIX_OP_TICKET_CREATE;
+	case TIX_ENTITY_RESOURCE: return TIX_OP_RESOURCE_CREATE;
+	case TIX_ENTITY_CALENDAR: return TIX_OP_CALENDAR_CREATE;
+	}
+	TIX_REQUIRE(!"unknown entity type");
+	return TIX_OP_UNKNOWN;
+}
+
+const char *tix_op_wire_name(const tix_op *op)
+{
+	if (op->kind == TIX_OP_SET_FIELD)
+		return tix_field_get(op->u.set.field)->op;
+	if (op->kind == TIX_OP_UNKNOWN && op->u.unknown.name)
+		return op->u.unknown.name;
+	return tix_op_name(op->kind);
+}
+
 void tix_op_free(tix_op *op)
 {
 	switch (op->kind) {
@@ -123,7 +175,26 @@ void tix_op_free(tix_op *op)
 		free(op->u.unknown.name);
 		free(op->u.unknown.raw);
 		break;
+	case TIX_OP_SET_FIELD:
+		tix_value_free(&op->u.set.v);
+		break;
+	case TIX_OP_RESOURCE_CREATE:
+		free(op->u.resource_create.nonce);
+		free(op->u.resource_create.name);
+		break;
+	case TIX_OP_CALENDAR_CREATE:
+		free(op->u.calendar_create.nonce);
+		free(op->u.calendar_create.name);
+		break;
+	case TIX_OP_EXCEPTION_ADD:
+		free(op->u.exception_add.note);
+		break;
 	case TIX_OP_SET_STATUS:
+	case TIX_OP_DEP_ADD:
+	case TIX_OP_DEP_REMOVE:
+	case TIX_OP_ASSIGN:
+	case TIX_OP_UNASSIGN:
+	case TIX_OP_EXCEPTION_REMOVE:
 		break;
 	}
 	memset(op, 0, sizeof(*op));
@@ -204,5 +275,81 @@ tix_op tix_op_key_remove(const char *fingerprint)
 {
 	tix_op op = op_of(TIX_OP_KEY_REMOVE);
 	op.u.key_remove.fingerprint = tix_xstrdup(fingerprint);
+	return op;
+}
+
+tix_op tix_op_set(tix_field f, tix_value v)
+{
+	TIX_REQUIRE((unsigned)f < TIX_F_COUNT);
+	tix_op op = op_of(TIX_OP_SET_FIELD);
+	op.u.set.field = f;
+	op.u.set.v = v;
+	return op;
+}
+
+tix_op tix_op_dep_add(const tix_oid *pred, tix_dep_kind kind, int32_t lag)
+{
+	tix_op op = op_of(TIX_OP_DEP_ADD);
+	op.u.dep_add.pred = *pred;
+	op.u.dep_add.kind = kind;
+	op.u.dep_add.lag = lag;
+	return op;
+}
+
+tix_op tix_op_dep_remove(const tix_oid *pred)
+{
+	tix_op op = op_of(TIX_OP_DEP_REMOVE);
+	op.u.unref.target = *pred;
+	return op;
+}
+
+tix_op tix_op_assign(const tix_oid *resource, int32_t units, int64_t effort)
+{
+	tix_op op = op_of(TIX_OP_ASSIGN);
+	op.u.assign.resource = *resource;
+	op.u.assign.units = units;
+	op.u.assign.effort = effort;
+	return op;
+}
+
+tix_op tix_op_unassign(const tix_oid *resource)
+{
+	tix_op op = op_of(TIX_OP_UNASSIGN);
+	op.u.unref.target = *resource;
+	return op;
+}
+
+tix_op tix_op_resource_create(const char *nonce, const char *name, tix_resource_kind kind)
+{
+	tix_op op = op_of(TIX_OP_RESOURCE_CREATE);
+	op.u.resource_create.nonce = nonce ? tix_xstrdup(nonce) : NULL;
+	op.u.resource_create.name = tix_xstrdup(name);
+	op.u.resource_create.kind = kind;
+	return op;
+}
+
+tix_op tix_op_calendar_create(const char *nonce, const char *name)
+{
+	tix_op op = op_of(TIX_OP_CALENDAR_CREATE);
+	op.u.calendar_create.nonce = nonce ? tix_xstrdup(nonce) : NULL;
+	op.u.calendar_create.name = tix_xstrdup(name);
+	return op;
+}
+
+tix_op tix_op_exception_add(tix_date from, tix_date to, bool working, const char *note)
+{
+	tix_op op = op_of(TIX_OP_EXCEPTION_ADD);
+	op.u.exception_add.from = from;
+	op.u.exception_add.to = to;
+	op.u.exception_add.working = working;
+	op.u.exception_add.note = tix_xstrdup(note ? note : "");
+	return op;
+}
+
+tix_op tix_op_exception_remove(tix_date from, tix_date to)
+{
+	tix_op op = op_of(TIX_OP_EXCEPTION_REMOVE);
+	op.u.exception_remove.from = from;
+	op.u.exception_remove.to = to;
 	return op;
 }

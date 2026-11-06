@@ -345,6 +345,191 @@ static void test_dag_validation(void)
 	(void)unknown;
 }
 
+static tix_entity *loadt(tix_sim_clone *c, const tix_oid *t)
+{
+	return load(c, TIX_ENTITY_TICKET, t);
+}
+
+static void test_planning_fields(void)
+{
+	tix_sim_clone a, b;
+	new_clone(&a, "a", "Ada");
+	new_clone(&b, "b", "Bob");
+	tix_oid t = new_ticket(&a, "T", NULL), p1 = new_ticket(&a, "P1", NULL), p2 = new_ticket(&a, "P2", NULL);
+	tix_oid res = new_ticket(&a, "not really a resource", NULL);
+	tix_date d;
+	TIX_REQUIRE(tix_date_parse("2026-11-09", &d));
+
+	/* defaults */
+	tix_entity *x = loadt(&a, &t);
+	TK_CHECK(x && tix_oid_is_null(&x->u.ticket.plan.parent) && x->u.ticket.plan.kind == TIX_KIND_TASK &&
+		 x->u.ticket.plan.start == TIX_DATE_NONE && x->u.ticket.plan.duration == -1 &&
+		 x->u.ticket.plan.progress == 0 && x->u.ticket.plan.started_at == -1 && !x->u.ticket.plan.ndeps);
+	tix_entity_free(x);
+
+	apply1(&a, &t, tix_op_set(TIX_F_PARENT, tix_value_id(&p1)));
+	apply1(&a, &t, tix_op_set(TIX_F_START, tix_value_int(TIX_V_DATE, d)));
+	apply1(&a, &t, tix_op_set(TIX_F_DURATION, tix_value_int(TIX_V_INT, 5)));
+	apply1(&a, &t, tix_op_dep_add(&p1, TIX_DEP_FS, 0));
+	apply1(&a, &t, tix_op_assign(&res, 50, -1));
+	apply1(&a, &t, tix_op_set_status(TIX_TICKET_IN_PROGRESS));
+	sync_both(&a, &b);
+
+	/* concurrent: a re-parents to p2 and changes the dep's lag; b removes the dep
+	 * (it saw only the first add) and nulls the duration */
+	apply1(&a, &t, tix_op_set(TIX_F_PARENT, tix_value_id(&p2)));
+	apply1(&a, &t, tix_op_dep_add(&p1, TIX_DEP_SS, 2));
+	apply1(&b, &t, tix_op_dep_remove(&p1));
+	apply1(&b, &t, tix_op_set(TIX_F_DURATION, tix_value_null()));
+	apply1(&b, &t, tix_op_unassign(&res));
+	apply1(&b, &t, tix_op_dep_add(&p2, TIX_DEP_FF, -1));
+	apply1(&b, &t, tix_op_set_status(TIX_TICKET_DONE));
+	sync_both(&a, &b);
+
+	tix_entity *ea = loadt(&a, &t), *eb = loadt(&b, &t);
+	tix_buf sa = TIX_BUF_INIT, sb = TIX_BUF_INIT;
+	if (ea && eb) {
+		tix_entity_snapshot(ea, &sa);
+		tix_entity_snapshot(eb, &sb);
+		TK_STR_EQ(tix_buf_cstr(&sa), tix_buf_cstr(&sb));
+		const tix_ticket_plan *pl = &ea->u.ticket.plan;
+		/* a's set-parent and b's set-duration are concurrent: both apply (different fields) */
+		TK_CHECK(tix_oid_eq(&pl->parent, &p2) && pl->duration == -1 && pl->start == d);
+		/* the dep on p1: a's re-add was unseen by b's remove, so it survives with a's value */
+		TK_CHECK(pl->ndeps == 2);
+		for (size_t i = 0; i < pl->ndeps; i++) {
+			if (tix_oid_eq(&pl->deps[i].pred, &p1))
+				TK_CHECK(pl->deps[i].kind == TIX_DEP_SS && pl->deps[i].lag == 2);
+			else
+				TK_CHECK(tix_oid_eq(&pl->deps[i].pred, &p2) && pl->deps[i].kind == TIX_DEP_FF &&
+					 pl->deps[i].lag == -1);
+		}
+		TK_CHECK(pl->nassignments == 0); /* b saw the only assign */
+		TK_CHECK(pl->started_at > 0 && pl->done_at >= pl->started_at);
+		TK_CHECK(tix_order_cmp(&pl->parent_order, &pl->deps[0].order) != 0);
+	}
+	tix_entity_free(ea);
+	tix_entity_free(eb);
+	tix_buf_free(&sa);
+	tix_buf_free(&sb);
+
+	/* reopening clears done_at, started_at stays the first start */
+	apply1(&a, &t, tix_op_set_status(TIX_TICKET_OPEN));
+	x = loadt(&a, &t);
+	TK_CHECK(x && x->u.ticket.plan.done_at == -1 && x->u.ticket.plan.started_at > 0);
+	tix_entity_free(x);
+	tix_sim_clone_free(&a);
+	tix_sim_clone_free(&b);
+}
+
+static void test_resource_and_calendar(void)
+{
+	tix_sim_clone a, b;
+	char nonce[TIX_NONCE_HEX + 1];
+	tix_oid r, c;
+	tix_date d;
+	TIX_REQUIRE(tix_date_parse("2026-12-24", &d));
+	new_clone(&a, "a", "Ada");
+	new_clone(&b, "b", "Bob");
+	tix_op op = tix_op_resource_create(tix_sim_nonce(&a, nonce), "Ada", TIX_RES_PERSON);
+	TK_OK(tix_sim_create(&a, TIX_ENTITY_RESOURCE, &op, 1, &r, &e), &e);
+	tix_op_free(&op);
+	op = tix_op_calendar_create(tix_sim_nonce(&a, nonce), "Office");
+	TK_OK(tix_sim_create(&a, TIX_ENTITY_CALENDAR, &op, 1, &c, &e), &e);
+	tix_op_free(&op);
+
+	tix_entity *x = load(&a, TIX_ENTITY_RESOURCE, &r);
+	TK_CHECK(x && !strcmp(x->u.resource.name, "Ada") && x->u.resource.capacity == 100 && x->u.resource.active &&
+		 x->u.resource.rate == -1 && !x->u.resource.currency);
+	tix_entity_free(x);
+	x = load(&a, TIX_ENTITY_CALENDAR, &c);
+	TK_CHECK(x && x->u.calendar.weekdays == TIX_WEEKDAYS_MON_FRI && x->u.calendar.hours == 8 &&
+		 !x->u.calendar.nexceptions);
+	tix_entity_free(x);
+
+	tix_op rops[] = {tix_op_set(TIX_F_CAPACITY, tix_value_int(TIX_V_INT, 50)),
+			 tix_op_set(TIX_F_RES_CALENDAR, tix_value_id(&c)),
+			 tix_op_set(TIX_F_RES_NAME, tix_value_str("Ada L."))};
+	TK_OK(tix_sim_apply(&a, TIX_ENTITY_RESOURCE, &r, rops, 3, &e), &e);
+	for (int i = 0; i < 3; i++)
+		tix_op_free(&rops[i]);
+	op = tix_op_exception_add(d, d + 2, false, "Holidays");
+	TK_OK(tix_sim_apply(&a, TIX_ENTITY_CALENDAR, &c, &op, 1, &e), &e);
+	tix_op_free(&op);
+	sync_both(&a, &b);
+	/* concurrent: a removes the holiday, b re-adds it as working days */
+	op = tix_op_exception_remove(d, d + 2);
+	TK_OK(tix_sim_apply(&a, TIX_ENTITY_CALENDAR, &c, &op, 1, &e), &e);
+	tix_op_free(&op);
+	op = tix_op_exception_add(d, d + 2, true, "On call");
+	TK_OK(tix_sim_apply(&b, TIX_ENTITY_CALENDAR, &c, &op, 1, &e), &e);
+	tix_op_free(&op);
+	op = tix_op_exception_add(d + 7, d + 7, false, "");
+	TK_OK(tix_sim_apply(&b, TIX_ENTITY_CALENDAR, &c, &op, 1, &e), &e);
+	tix_op_free(&op);
+	sync_both(&a, &b);
+
+	x = load(&a, TIX_ENTITY_RESOURCE, &r);
+	TK_CHECK(x && !strcmp(x->u.resource.name, "Ada L.") && x->u.resource.capacity == 50 &&
+		 tix_oid_eq(&x->u.resource.calendar, &c));
+	tix_entity_free(x);
+	x = load(&b, TIX_ENTITY_CALENDAR, &c);
+	TK_CHECK(x && x->u.calendar.nexceptions == 2);
+	if (x && x->u.calendar.nexceptions == 2) {
+		TK_CHECK(x->u.calendar.exceptions[0].from == d && x->u.calendar.exceptions[0].working &&
+			 !strcmp(x->u.calendar.exceptions[0].note, "On call"));
+		TK_CHECK(x->u.calendar.exceptions[1].from == d + 7 && !x->u.calendar.exceptions[1].working);
+	}
+	tix_entity_free(x);
+
+	/* resource packs need an author, like tickets */
+	tix_sim_clone_free(&a);
+	tix_sim_clone_free(&b);
+}
+
+static void test_rank(void)
+{
+	tix_buf b = TIX_BUF_INIT;
+	TK_OK(tix_rank_between(NULL, NULL, &b, &e), &e);
+	TK_STR_EQ(tix_buf_cstr(&b), "i");
+	/* repeated insertion at the front, back and middle stays ordered and valid */
+	char lo[TIX_RANK_MAX + 1] = "i", hi[TIX_RANK_MAX + 1] = "i";
+	for (int i = 0; i < 40; i++) {
+		tix_buf_reset(&b);
+		TK_OK(tix_rank_between(NULL, lo, &b, &e), &e);
+		TK_CHECK(strcmp(b.data, lo) < 0 && tix_rank_valid(b.data));
+		snprintf(lo, sizeof(lo), "%s", b.data);
+		tix_buf_reset(&b);
+		TK_OK(tix_rank_between(hi, NULL, &b, &e), &e);
+		TK_CHECK(strcmp(b.data, hi) > 0 && tix_rank_valid(b.data));
+		snprintf(hi, sizeof(hi), "%s", b.data);
+	}
+	char a[TIX_RANK_MAX + 1] = "a", z[TIX_RANK_MAX + 1] = "b";
+	tix_status st = TIX_OK;
+	int steps = 0;
+	while (!st && steps < 1000) { /* halve the gap until the length limit says stop */
+		tix_buf_reset(&b);
+		st = tix_rank_between(a, z, &b, &e);
+		if (!st) {
+			TK_CHECK(strcmp(a, b.data) < 0 && strcmp(b.data, z) < 0 && tix_rank_valid(b.data));
+			snprintf(steps % 2 ? a : z, TIX_RANK_MAX + 1, "%s", b.data);
+		}
+		steps++;
+	}
+	TK_CHECK(st == TIX_ERR_CONFLICT && steps > 60);
+	const char *pairs[][2] = {{"a", "a1"}, {"0i", "1"}, {"az", "b"}, {"y", "z"}, {"zz", NULL}, {NULL, "01"}};
+	for (size_t i = 0; i < sizeof(pairs) / sizeof(*pairs); i++) {
+		tix_buf_reset(&b);
+		TK_OK(tix_rank_between(pairs[i][0], pairs[i][1], &b, &e), &e);
+		TK_CHECK((!pairs[i][0] || strcmp(pairs[i][0], b.data) < 0) &&
+			 (!pairs[i][1] || strcmp(b.data, pairs[i][1]) < 0));
+	}
+	TK_STATUS(tix_rank_between("b", "a", &b, &e), TIX_ERR_INVALID, &e);
+	TK_STATUS(tix_rank_between("b", "b", &b, &e), TIX_ERR_INVALID, &e);
+	TK_STATUS(tix_rank_between("a0", NULL, &b, &e), TIX_ERR_INVALID, &e);
+	tix_buf_free(&b);
+}
+
 int main(void)
 {
 	test_lifecycle();
@@ -353,5 +538,8 @@ int main(void)
 	test_edit_needs_same_author();
 	test_identity_rules();
 	test_dag_validation();
+	test_planning_fields();
+	test_resource_and_calendar();
+	test_rank();
 	return tk_finish();
 }

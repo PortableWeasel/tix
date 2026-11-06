@@ -23,6 +23,27 @@ static const char *pick(uint64_t *rng, const char *const *pool, size_t n)
 	return pool[tk_rand_below(rng, n)];
 }
 
+static tix_oid g_tickets[2]; /* this seed's tickets, for references between them */
+
+/* Planning ops (M4): LWW fields, dependency and assignment OR-maps. */
+static tix_op random_plan_op(uint64_t *rng)
+{
+	const tix_oid *other = &g_tickets[tk_rand_below(rng, 2)];
+	switch (tk_rand_below(rng, 8)) {
+	case 0:
+		return tix_op_set(TIX_F_PARENT, tk_rand_below(rng, 2) ? tix_value_id(other) : tix_value_null());
+	case 1: return tix_op_set(TIX_F_START, tix_value_int(TIX_V_DATE, 20400 + (int64_t)tk_rand_below(rng, 5)));
+	case 2:
+		return tix_op_set(TIX_F_DURATION,
+				  tk_rand_below(rng, 3) ? tix_value_int(TIX_V_INT, (int64_t)tk_rand_below(rng, 4)) : tix_value_null());
+	case 3: return tix_op_dep_add(other, (tix_dep_kind)tk_rand_below(rng, 4), (int32_t)tk_rand_below(rng, 5) - 2);
+	case 4: return tix_op_dep_remove(other);
+	case 5: return tix_op_assign(other, 25 * (int32_t)(1 + tk_rand_below(rng, 4)), (int64_t)tk_rand_below(rng, 3) - 1);
+	case 6: return tix_op_unassign(other);
+	default: return tix_op_set(TIX_F_RANK, tix_value_str(tk_rand_below(rng, 2) ? "i" : "r"));
+	}
+}
+
 static tix_op random_ticket_op(uint64_t *rng, tix_sim_clone *c, const tix_oid *t, bool *ok)
 {
 	static const char *const titles[] = {"alpha", "beta", "gamma"};
@@ -30,6 +51,8 @@ static tix_op random_ticket_op(uint64_t *rng, tix_sim_clone *c, const tix_oid *t
 	tix_strs s = {0};
 	tix_op op;
 	*ok = true;
+	if (tk_rand_below(rng, 2))
+		return random_plan_op(rng);
 	switch (tk_rand_below(rng, 7)) {
 	case 0: return tix_op_text(TIX_OP_SET_TITLE, pick(rng, titles, 3));
 	case 1: return tix_op_text(TIX_OP_SET_BODY, pick(rng, titles, 3));
@@ -71,6 +94,24 @@ static tix_op random_identity_op(uint64_t *rng)
 	case 0: return tix_op_text(TIX_OP_SET_NAME, pick(rng, names, 3));
 	case 1: return tix_op_key_add("ssh", pick(rng, fprs, 2), pick(rng, names, 3));
 	default: return tix_op_key_remove(pick(rng, fprs, 2));
+	}
+}
+
+/* Ops on the shared resource / calendar (any author may edit them). */
+static tix_op random_shared_op(uint64_t *rng, tix_entity_type t)
+{
+	if (t == TIX_ENTITY_RESOURCE) {
+		switch (tk_rand_below(rng, 3)) {
+		case 0: return tix_op_set(TIX_F_CAPACITY, tix_value_int(TIX_V_INT, 50 * (int64_t)(1 + tk_rand_below(rng, 3))));
+		case 1: return tix_op_set(TIX_F_RES_NAME, tix_value_str(tk_rand_below(rng, 2) ? "dev" : "devs"));
+		default: return tix_op_set(TIX_F_ACTIVE, tix_value_int(TIX_V_BOOL, (int64_t)tk_rand_below(rng, 2)));
+		}
+	}
+	tix_date d = 20400 + (tix_date)tk_rand_below(rng, 3);
+	switch (tk_rand_below(rng, 3)) {
+	case 0: return tix_op_exception_add(d, d + 1, tk_rand_below(rng, 2), tk_rand_below(rng, 2) ? "x" : "y");
+	case 1: return tix_op_exception_remove(d, d + 1);
+	default: return tix_op_set(TIX_F_HOURS, tix_value_int(TIX_V_INT, 6 + (int64_t)tk_rand_below(rng, 3)));
 	}
 }
 
@@ -131,6 +172,18 @@ static void run_seed(uint64_t seed, tix_hash_algo algo)
 		tix_op_free(&op);
 	}
 	tix_strs_free(&a);
+	g_tickets[0] = tickets[0];
+	g_tickets[1] = tickets[1];
+	tix_oid shared[2];
+	{
+		char nonce[TIX_NONCE_HEX + 1];
+		tix_op op = tix_op_resource_create(tix_sim_nonce(&c[0], nonce), "dev", TIX_RES_ROLE);
+		TK_OK(tix_sim_create(&c[0], TIX_ENTITY_RESOURCE, &op, 1, &shared[0], &e), &e);
+		tix_op_free(&op);
+		op = tix_op_calendar_create(tix_sim_nonce(&c[0], nonce), "cal");
+		TK_OK(tix_sim_create(&c[0], TIX_ENTITY_CALENDAR, &op, 1, &shared[1], &e), &e);
+		tix_op_free(&op);
+	}
 	for (int i = 1; i < NCLONES; i++)
 		TK_OK(tix_sim_sync(&c[i], &c[0], &e), &e);
 
@@ -156,6 +209,13 @@ static void run_seed(uint64_t seed, tix_hash_algo algo)
 			total_ops += n;
 			for (size_t k = 0; k < n; k++)
 				tix_op_free(&ops[k]);
+		} else if (tk_rand_below(&rng, 2)) {
+			int k = (int)tk_rand_below(&rng, 2);
+			tix_entity_type st = k ? TIX_ENTITY_CALENDAR : TIX_ENTITY_RESOURCE;
+			tix_op op = random_shared_op(&rng, st);
+			TK_OK(tix_sim_apply(me, st, &shared[k], &op, 1, &e), &e);
+			tix_op_free(&op);
+			total_ops++;
 		} else {
 			tix_op op = random_identity_op(&rng);
 			TK_OK(tix_sim_apply(me, TIX_ENTITY_IDENTITY, &me->me, &op, 1, &e), &e);
@@ -172,11 +232,15 @@ static void run_seed(uint64_t seed, tix_hash_algo algo)
 
 	tix_refs refs;
 	TK_OK(tix_store_ref_list(c[0].store, "refs/tix/", &refs, &e), &e);
-	TK_CHECK(refs.n == NCLONES + NTICKETS);
+	TK_CHECK(refs.n == NCLONES + NTICKETS + 2);
 	tix_buf want = TIX_BUF_INIT, got = TIX_BUF_INIT;
 	for (size_t r = 0; r < refs.n; r++) {
-		tix_entity_type t = strncmp(refs.v[r].name, "refs/tix/tickets/", 17) ? TIX_ENTITY_IDENTITY
-										     : TIX_ENTITY_TICKET;
+		tix_entity_type t = TIX_ENTITY_IDENTITY;
+		for (size_t k = 0; k < TIX_ENTITY_NTYPES; k++) {
+			const char *pre = tix_entity_ref_prefix(tix_entity_types[k]);
+			if (!strncmp(refs.v[r].name, pre, strlen(pre)))
+				t = tix_entity_types[k];
+		}
 		snapshot_at(&c[0], refs.v[r].name, t, &want);
 		for (int i = 1; i < NCLONES; i++) {
 			snapshot_at(&c[i], refs.v[r].name, t, &got);

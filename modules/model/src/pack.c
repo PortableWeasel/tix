@@ -28,7 +28,28 @@ static const op_name op_names[] = {
 	{TIX_ENTITY_IDENTITY, TIX_OP_SET_EMAIL, "set-email"},
 	{TIX_ENTITY_IDENTITY, TIX_OP_KEY_ADD, "key-add"},
 	{TIX_ENTITY_IDENTITY, TIX_OP_KEY_REMOVE, "key-remove"},
+	{TIX_ENTITY_TICKET, TIX_OP_DEP_ADD, "dep-add"},
+	{TIX_ENTITY_TICKET, TIX_OP_DEP_REMOVE, "dep-remove"},
+	{TIX_ENTITY_TICKET, TIX_OP_ASSIGN, "assign"},
+	{TIX_ENTITY_TICKET, TIX_OP_UNASSIGN, "unassign"},
+	{TIX_ENTITY_RESOURCE, TIX_OP_RESOURCE_CREATE, "create"},
+	{TIX_ENTITY_CALENDAR, TIX_OP_CALENDAR_CREATE, "create"},
+	{TIX_ENTITY_CALENDAR, TIX_OP_EXCEPTION_ADD, "exception-add"},
+	{TIX_ENTITY_CALENDAR, TIX_OP_EXCEPTION_REMOVE, "exception-remove"},
 };
+
+/* Set-field ops, by (type, name). */
+static bool field_of_name(tix_entity_type t, const char *name, tix_field *out)
+{
+	for (unsigned i = 0; i < TIX_F_COUNT; i++) {
+		const tix_field_info *fi = tix_field_get((tix_field)i);
+		if (fi->type == t && !strcmp(fi->op, name)) {
+			*out = (tix_field)i;
+			return true;
+		}
+	}
+	return false;
+}
 
 static const op_name *name_of_kind(tix_op_kind k)
 {
@@ -122,8 +143,68 @@ static tix_status check_nonce(const char *s, tix_error *err)
 	return TIX_OK;
 }
 
+static bool is_upper3(const char *s)
+{
+	for (int i = 0; i < 3; i++)
+		if (s[i] < 'A' || s[i] > 'Z')
+			return false;
+	return s[3] == '\0';
+}
+
+static tix_status check_value(tix_field f, const tix_value *v, tix_error *err)
+{
+	const tix_field_info *fi = tix_field_get(f);
+	if (v->kind == TIX_V_NULL)
+		return fi->nullable ? TIX_OK : tix_error_set(err, TIX_ERR_INVALID, "%s cannot be null", fi->key);
+	if (v->kind != fi->kind)
+		return tix_error_set(err, TIX_ERR_INVALID, "%s has the wrong type", fi->key);
+	tix_status st;
+	switch (v->kind) {
+	case TIX_V_INT:
+		if (v->i < fi->min || v->i > fi->max)
+			return tix_error_set(err, TIX_ERR_INVALID, "%s %lld outside %lld..%lld", fi->key, (long long)v->i,
+					     (long long)fi->min, (long long)fi->max);
+		return TIX_OK;
+	case TIX_V_BOOL:
+		return v->i == 0 || v->i == 1 ? TIX_OK : tix_error_set(err, TIX_ERR_INVALID, "%s not a bool", fi->key);
+	case TIX_V_DATE:
+		return tix_date_valid((tix_date)v->i) && v->i == (tix_date)v->i
+			       ? TIX_OK
+			       : tix_error_set(err, TIX_ERR_INVALID, "%s is not a date in range", fi->key);
+	case TIX_V_ENUM: {
+		int64_t n = 0;
+		while (fi->enums[n])
+			n++;
+		return v->i >= 0 && v->i < n ? TIX_OK : tix_error_set(err, TIX_ERR_INVALID, "bad %s", fi->key);
+	}
+	case TIX_V_STR:
+		if ((st = check_str(fi->key, v->s, (size_t)fi->min, (size_t)fi->max, false, err)))
+			return st;
+		if (f == TIX_F_RANK && !tix_rank_valid(v->s))
+			return tix_error_set(err, TIX_ERR_INVALID, "rank must be [0-9a-z], not ending in 0");
+		if (f == TIX_F_CURRENCY && !is_upper3(v->s))
+			return tix_error_set(err, TIX_ERR_INVALID, "currency must be 3 letters A-Z");
+		return TIX_OK;
+	case TIX_V_ID:
+		return tix_oid_is_null(&v->id) ? tix_error_set(err, TIX_ERR_INVALID, "%s: null id", fi->key) : TIX_OK;
+	case TIX_V_NULL:
+		break;
+	}
+	return tix_error_set(err, TIX_ERR_INVALID, "bad value");
+}
+
+static tix_status check_id(const char *what, const tix_oid *id, tix_error *err)
+{
+	return tix_oid_is_null(id) ? tix_error_set(err, TIX_ERR_INVALID, "%s: null id", what) : TIX_OK;
+}
+
 static tix_status check_op(tix_entity_type type, const tix_op *op, tix_error *err)
 {
+	if (op->kind == TIX_OP_SET_FIELD) {
+		if ((unsigned)op->u.set.field >= TIX_F_COUNT || tix_field_get(op->u.set.field)->type != type)
+			return tix_error_set(err, TIX_ERR_INVALID, "field not valid for %s", tix_entity_type_name(type));
+		return check_value(op->u.set.field, &op->u.set.v, err);
+	}
 	const op_name *n = name_of_kind(op->kind);
 	if (op->kind == TIX_OP_UNKNOWN || !n)
 		return tix_error_set(err, TIX_ERR_INVALID, "cannot encode unknown op");
@@ -187,6 +268,45 @@ static tix_status check_op(tix_entity_type type, const tix_op *op, tix_error *er
 		if (!printable_ascii(op->u.key_remove.fingerprint))
 			return tix_error_set(err, TIX_ERR_INVALID, "fingerprint must be printable ASCII");
 		return TIX_OK;
+	case TIX_OP_DEP_ADD:
+		if ((unsigned)op->u.dep_add.kind > TIX_DEP_SF)
+			return tix_error_set(err, TIX_ERR_INVALID, "bad dependency kind");
+		if (op->u.dep_add.lag < -TIX_LAG_MAX || op->u.dep_add.lag > TIX_LAG_MAX)
+			return tix_error_set(err, TIX_ERR_INVALID, "lag outside +-%d days", TIX_LAG_MAX);
+		return check_id("pred", &op->u.dep_add.pred, err);
+	case TIX_OP_DEP_REMOVE:
+		return check_id("pred", &op->u.unref.target, err);
+	case TIX_OP_UNASSIGN:
+		return check_id("resource", &op->u.unref.target, err);
+	case TIX_OP_ASSIGN:
+		if (op->u.assign.units < 1 || op->u.assign.units > TIX_UNITS_MAX)
+			return tix_error_set(err, TIX_ERR_INVALID, "units outside 1..%d", TIX_UNITS_MAX);
+		if (op->u.assign.effort < -1 || op->u.assign.effort > TIX_EFFORT_MAX)
+			return tix_error_set(err, TIX_ERR_INVALID, "bad assignment effort");
+		return check_id("resource", &op->u.assign.resource, err);
+	case TIX_OP_RESOURCE_CREATE:
+		if ((st = check_nonce(op->u.resource_create.nonce, err)) ||
+		    (st = check_str("name", op->u.resource_create.name, 1, TIX_NAME_MAX, false, err)))
+			return st;
+		return (unsigned)op->u.resource_create.kind <= TIX_RES_EQUIPMENT
+			       ? TIX_OK
+			       : tix_error_set(err, TIX_ERR_INVALID, "bad resource kind");
+	case TIX_OP_CALENDAR_CREATE:
+		if ((st = check_nonce(op->u.calendar_create.nonce, err)))
+			return st;
+		return check_str("name", op->u.calendar_create.name, 1, TIX_NAME_MAX, false, err);
+	case TIX_OP_EXCEPTION_ADD:
+	case TIX_OP_EXCEPTION_REMOVE: {
+		tix_date from = op->kind == TIX_OP_EXCEPTION_ADD ? op->u.exception_add.from : op->u.exception_remove.from;
+		tix_date to = op->kind == TIX_OP_EXCEPTION_ADD ? op->u.exception_add.to : op->u.exception_remove.to;
+		if (!tix_date_valid(from) || !tix_date_valid(to) || from > to || to - from >= TIX_EXCEPTION_MAX_DAYS)
+			return tix_error_set(err, TIX_ERR_INVALID, "exception range must be 1..%d days, from <= to",
+					     TIX_EXCEPTION_MAX_DAYS);
+		if (op->kind == TIX_OP_EXCEPTION_ADD)
+			return check_str("note", op->u.exception_add.note, 0, TIX_TITLE_MAX, false, err);
+		return TIX_OK;
+	}
+	case TIX_OP_SET_FIELD:
 	case TIX_OP_UNKNOWN:
 		break;
 	}
@@ -195,7 +315,7 @@ static tix_status check_op(tix_entity_type type, const tix_op *op, tix_error *er
 
 static tix_status check_header(const tix_pack *p, tix_error *err)
 {
-	if (p->type != TIX_ENTITY_TICKET && p->type != TIX_ENTITY_IDENTITY)
+	if (p->type < TIX_ENTITY_IDENTITY || p->type > TIX_ENTITY_CALENDAR)
 		return tix_error_set(err, TIX_ERR_INVALID, "bad entity type");
 	if (p->lamport < 1 || p->lamport > TIX_LAMPORT_MAX)
 		return tix_error_set(err, TIX_ERR_INVALID, "lamport out of range");
@@ -245,6 +365,32 @@ static void encode_header(const tix_pack *p, tix_buf *out)
 	tix_jw_obj_end(&w);
 }
 
+static void put_id(tix_jw *w, const char *k, const tix_oid *id)
+{
+	char hex[TIX_OID_MAX_HEX + 1];
+	put_kv(w, k, tix_oid_hex(id, hex));
+}
+
+static void put_date(tix_jw *w, const char *k, tix_date d)
+{
+	char s[TIX_DATE_STR];
+	put_kv(w, k, tix_date_str(d, s));
+}
+
+static void put_value(tix_jw *w, tix_field f, const tix_value *v)
+{
+	const tix_field_info *fi = tix_field_get(f);
+	switch (v->kind) {
+	case TIX_V_NULL: tix_jw_key(w, fi->key); tix_jw_null(w); break;
+	case TIX_V_INT: tix_jw_key(w, fi->key); tix_jw_int(w, v->i); break;
+	case TIX_V_BOOL: tix_jw_key(w, fi->key); tix_jw_bool(w, v->i != 0); break;
+	case TIX_V_DATE: put_date(w, fi->key, (tix_date)v->i); break;
+	case TIX_V_ENUM: put_kv(w, fi->key, fi->enums[v->i]); break;
+	case TIX_V_STR: put_kv(w, fi->key, v->s); break;
+	case TIX_V_ID: put_id(w, fi->key, &v->id); break;
+	}
+}
+
 /* REQUIRES: check_op passed. */
 static void encode_op(const tix_op *op, tix_buf *out)
 {
@@ -252,7 +398,7 @@ static void encode_op(const tix_op *op, tix_buf *out)
 	tix_jw w;
 	tix_jw_init(&w, out);
 	tix_jw_obj_begin(&w);
-	put_kv(&w, "op", name_of_kind(op->kind)->name);
+	put_kv(&w, "op", tix_op_wire_name(op));
 	switch (op->kind) {
 	case TIX_OP_TICKET_CREATE:
 		put_kv(&w, "nonce", op->u.ticket_create.nonce);
@@ -288,9 +434,66 @@ static void encode_op(const tix_op *op, tix_buf *out)
 		put_kv(&w, "pubkey", op->u.key_add.pubkey);
 		break;
 	case TIX_OP_KEY_REMOVE: put_kv(&w, "fingerprint", op->u.key_remove.fingerprint); break;
+	case TIX_OP_SET_FIELD: put_value(&w, op->u.set.field, &op->u.set.v); break;
+	case TIX_OP_DEP_ADD:
+		put_id(&w, "pred", &op->u.dep_add.pred);
+		put_kv(&w, "kind", tix_dep_kind_name(op->u.dep_add.kind));
+		tix_jw_key(&w, "lag");
+		tix_jw_int(&w, op->u.dep_add.lag);
+		break;
+	case TIX_OP_DEP_REMOVE: put_id(&w, "pred", &op->u.unref.target); break;
+	case TIX_OP_ASSIGN:
+		put_id(&w, "resource", &op->u.assign.resource);
+		tix_jw_key(&w, "units");
+		tix_jw_int(&w, op->u.assign.units);
+		tix_jw_key(&w, "effort");
+		if (op->u.assign.effort < 0)
+			tix_jw_null(&w);
+		else
+			tix_jw_int(&w, op->u.assign.effort);
+		break;
+	case TIX_OP_UNASSIGN: put_id(&w, "resource", &op->u.unref.target); break;
+	case TIX_OP_RESOURCE_CREATE:
+		put_kv(&w, "nonce", op->u.resource_create.nonce);
+		put_kv(&w, "name", op->u.resource_create.name);
+		put_kv(&w, "kind", tix_field_get(TIX_F_RES_KIND)->enums[op->u.resource_create.kind]);
+		break;
+	case TIX_OP_CALENDAR_CREATE:
+		put_kv(&w, "nonce", op->u.calendar_create.nonce);
+		put_kv(&w, "name", op->u.calendar_create.name);
+		break;
+	case TIX_OP_EXCEPTION_ADD:
+		put_date(&w, "from", op->u.exception_add.from);
+		put_date(&w, "to", op->u.exception_add.to);
+		tix_jw_key(&w, "working");
+		tix_jw_bool(&w, op->u.exception_add.working);
+		put_kv(&w, "note", op->u.exception_add.note);
+		break;
+	case TIX_OP_EXCEPTION_REMOVE:
+		put_date(&w, "from", op->u.exception_remove.from);
+		put_date(&w, "to", op->u.exception_remove.to);
+		break;
 	case TIX_OP_UNKNOWN: TIX_REQUIRE(!"unknown op"); break;
 	}
 	tix_jw_obj_end(&w);
+}
+
+/* The entity ids an op embeds (at most one). */
+static size_t op_ids(const tix_op *op, const tix_oid *ids[1])
+{
+	switch (op->kind) {
+	case TIX_OP_EDIT_COMMENT: ids[0] = &op->u.edit_comment.target.commit; return 1;
+	case TIX_OP_DEP_ADD: ids[0] = &op->u.dep_add.pred; return 1;
+	case TIX_OP_DEP_REMOVE:
+	case TIX_OP_UNASSIGN: ids[0] = &op->u.unref.target; return 1;
+	case TIX_OP_ASSIGN: ids[0] = &op->u.assign.resource; return 1;
+	case TIX_OP_SET_FIELD:
+		if (op->u.set.v.kind != TIX_V_ID)
+			return 0;
+		ids[0] = &op->u.set.v.id;
+		return 1;
+	default: return 0;
+	}
 }
 
 tix_status tix_pack_encode(const tix_pack *p, tix_buf *out, tix_error *err)
@@ -299,9 +502,11 @@ tix_status tix_pack_encode(const tix_pack *p, tix_buf *out, tix_error *err)
 	if (st)
 		return st;
 	for (size_t i = 0; i < p->nops; i++) {
-		if (!tix_oid_is_null(&p->author) && p->ops[i].kind == TIX_OP_EDIT_COMMENT &&
-		    p->ops[i].u.edit_comment.target.commit.algo != p->author.algo)
-			return tix_error_set(err, TIX_ERR_INVALID, "op %zu: target hash algorithm mismatch", i);
+		const tix_oid *ids[1];
+		size_t nids = op_ids(&p->ops[i], ids);
+		for (size_t k = 0; k < nids && !tix_oid_is_null(&p->author); k++)
+			if (!tix_oid_is_null(ids[k]) && ids[k]->algo != p->author.algo)
+				return tix_error_set(err, TIX_ERR_INVALID, "op %zu: id hash algorithm mismatch", i);
 		if ((st = check_op(p->type, &p->ops[i], err))) {
 			tix_error_prefix(err, "op %zu", i);
 			return st;
@@ -385,6 +590,65 @@ static bool get_strs(const cJSON *o, const char *key, tix_strs *out)
 	return true;
 }
 
+static bool get_id(const cJSON *o, const char *key, tix_hash_algo algo, tix_oid *out)
+{
+	const char *s = get_str(o, key);
+	return s && tix_oid_from_hex(out, s, strlen(s)) && out->algo == algo;
+}
+
+static bool get_date(const cJSON *o, const char *key, tix_date *out)
+{
+	const char *s = get_str(o, key);
+	return s && tix_date_parse(s, out);
+}
+
+/* Reads field f's value; the canonical check afterwards rejects any other form. */
+static tix_status get_value(const cJSON *o, tix_field f, tix_hash_algo algo, tix_value *v, tix_error *err)
+{
+	const tix_field_info *fi = tix_field_get(f);
+	const cJSON *it = cJSON_GetObjectItemCaseSensitive(o, fi->key);
+	*v = tix_value_null();
+	if (!it || cJSON_IsNull(it))
+		return it ? TIX_OK : tix_error_set(err, TIX_ERR_INVALID, "%s missing", fi->key);
+	v->kind = fi->kind;
+	switch (fi->kind) {
+	case TIX_V_INT:
+		if (!get_int(o, fi->key, INT64_MIN / 2, INT64_MAX / 2, &v->i))
+			return tix_error_set(err, TIX_ERR_INVALID, "%s must be an integer", fi->key);
+		return TIX_OK;
+	case TIX_V_BOOL:
+		if (!cJSON_IsBool(it))
+			return tix_error_set(err, TIX_ERR_INVALID, "%s must be a bool", fi->key);
+		v->i = cJSON_IsTrue(it);
+		return TIX_OK;
+	case TIX_V_DATE: {
+		tix_date d;
+		if (!get_date(o, fi->key, &d))
+			return tix_error_set(err, TIX_ERR_INVALID, "%s must be a YYYY-MM-DD date", fi->key);
+		v->i = d;
+		return TIX_OK;
+	}
+	case TIX_V_ENUM: {
+		const char *s = get_str(o, fi->key);
+		int k = s ? tix_field_enum(f, s) : -1;
+		if (k < 0)
+			return tix_error_set(err, TIX_ERR_INVALID, "bad %s", fi->key);
+		v->i = k;
+		return TIX_OK;
+	}
+	case TIX_V_STR:
+		v->s = dup_str(o, fi->key);
+		return v->s ? TIX_OK : tix_error_set(err, TIX_ERR_INVALID, "%s must be a string", fi->key);
+	case TIX_V_ID:
+		if (!get_id(o, fi->key, algo, &v->id))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad %s id", fi->key);
+		return TIX_OK;
+	case TIX_V_NULL:
+		break;
+	}
+	return tix_error_set(err, TIX_ERR_INVALID, "bad field");
+}
+
 static tix_status canonical_check(const tix_buf *enc, const char *line, size_t len, tix_error *err)
 {
 	if (enc->len != len || memcmp(enc->data, line, len))
@@ -411,11 +675,14 @@ static tix_status decode_header(const char *line, size_t len, tix_hash_algo algo
 		st = tix_error_set(err, TIX_ERR_UNSUPPORTED, "format version %lld", (long long)ver);
 		goto out;
 	}
-	if (!type || (strcmp(type, "ticket") && strcmp(type, "identity"))) {
+	p->type = 0;
+	for (size_t i = 0; type && i < TIX_ENTITY_NTYPES; i++)
+		if (!strcmp(type, tix_entity_type_name(tix_entity_types[i])))
+			p->type = tix_entity_types[i];
+	if (!p->type) {
 		tix_error_set(err, TIX_ERR_INVALID, "bad entity type");
 		goto out;
 	}
-	p->type = !strcmp(type, "ticket") ? TIX_ENTITY_TICKET : TIX_ENTITY_IDENTITY;
 	memset(&p->author, 0, sizeof(p->author));
 	if (cJSON_IsString(author)) {
 		if (!tix_oid_from_hex(&p->author, author->valuestring, strlen(author->valuestring)) ||
@@ -489,6 +756,63 @@ static tix_status fill_op(const cJSON *j, tix_op *op, tix_hash_algo algo, tix_er
 		op->u.key_add.pubkey = dup_str(j, "pubkey");
 		return TIX_OK;
 	case TIX_OP_KEY_REMOVE: op->u.key_remove.fingerprint = dup_str(j, "fingerprint"); return TIX_OK;
+	case TIX_OP_SET_FIELD: return get_value(j, op->u.set.field, algo, &op->u.set.v, err);
+	case TIX_OP_DEP_ADD: {
+		int64_t lag;
+		s = get_str(j, "kind");
+		if (!get_id(j, "pred", algo, &op->u.dep_add.pred) || !s || !tix_dep_kind_parse(s, &op->u.dep_add.kind) ||
+		    !get_int(j, "lag", -TIX_LAG_MAX, TIX_LAG_MAX, &lag))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad dep-add");
+		op->u.dep_add.lag = (int32_t)lag;
+		return TIX_OK;
+	}
+	case TIX_OP_DEP_REMOVE:
+		return get_id(j, "pred", algo, &op->u.unref.target) ? TIX_OK
+								     : tix_error_set(err, TIX_ERR_INVALID, "bad pred");
+	case TIX_OP_UNASSIGN:
+		return get_id(j, "resource", algo, &op->u.unref.target)
+			       ? TIX_OK
+			       : tix_error_set(err, TIX_ERR_INVALID, "bad resource");
+	case TIX_OP_ASSIGN: {
+		int64_t units;
+		const cJSON *ef = cJSON_GetObjectItemCaseSensitive(j, "effort");
+		if (!get_id(j, "resource", algo, &op->u.assign.resource) ||
+		    !get_int(j, "units", 1, TIX_UNITS_MAX, &units))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad assign");
+		op->u.assign.units = (int32_t)units;
+		if (cJSON_IsNull(ef))
+			op->u.assign.effort = -1;
+		else if (!get_int(j, "effort", 0, TIX_EFFORT_MAX, &op->u.assign.effort))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad assignment effort");
+		return TIX_OK;
+	}
+	case TIX_OP_RESOURCE_CREATE: {
+		int k;
+		op->u.resource_create.nonce = dup_str(j, "nonce");
+		op->u.resource_create.name = dup_str(j, "name");
+		s = get_str(j, "kind");
+		if (!s || (k = tix_field_enum(TIX_F_RES_KIND, s)) < 0)
+			return tix_error_set(err, TIX_ERR_INVALID, "bad resource kind");
+		op->u.resource_create.kind = (tix_resource_kind)k;
+		return TIX_OK;
+	}
+	case TIX_OP_CALENDAR_CREATE:
+		op->u.calendar_create.nonce = dup_str(j, "nonce");
+		op->u.calendar_create.name = dup_str(j, "name");
+		return TIX_OK;
+	case TIX_OP_EXCEPTION_ADD: {
+		const cJSON *wk = cJSON_GetObjectItemCaseSensitive(j, "working");
+		if (!get_date(j, "from", &op->u.exception_add.from) || !get_date(j, "to", &op->u.exception_add.to) ||
+		    !cJSON_IsBool(wk))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad exception");
+		op->u.exception_add.working = cJSON_IsTrue(wk);
+		op->u.exception_add.note = dup_str(j, "note");
+		return TIX_OK;
+	}
+	case TIX_OP_EXCEPTION_REMOVE:
+		if (!get_date(j, "from", &op->u.exception_remove.from) || !get_date(j, "to", &op->u.exception_remove.to))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad exception");
+		return TIX_OK;
 	case TIX_OP_UNKNOWN: break;
 	}
 	return tix_error_set(err, TIX_ERR_INVALID, "unhandled op");
@@ -508,14 +832,19 @@ static tix_status decode_op(const char *line, size_t len, tix_entity_type type, 
 		goto out;
 	}
 	const op_name *n = kind_of_name(type, first->valuestring);
-	if (!n) { /* forward compatibility: keep verbatim, ignore */
+	tix_field field;
+	if (!n && field_of_name(type, first->valuestring, &field)) {
+		op->kind = TIX_OP_SET_FIELD;
+		op->u.set.field = field;
+	} else if (!n) { /* forward compatibility: keep verbatim, ignore */
 		op->kind = TIX_OP_UNKNOWN;
 		op->u.unknown.name = tix_xstrdup(first->valuestring);
 		op->u.unknown.raw = tix_xstrndup(line, len);
 		st = TIX_OK;
 		goto out;
 	}
-	op->kind = n->kind;
+	else
+		op->kind = n->kind;
 	if ((st = fill_op(j, op, algo, err)) || (st = check_op(type, op, err)))
 		goto out;
 	tix_buf enc = TIX_BUF_INIT;

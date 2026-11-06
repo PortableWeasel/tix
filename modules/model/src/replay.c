@@ -25,6 +25,8 @@ typedef struct op_ref {
 
 static const ctx *sort_ctx; /* qsort has no user pointer in C17 */
 
+#include <stdio.h>
+
 static int cmp_by_oid(const void *a, const void *b)
 {
 	return tix_oid_cmp(&sort_ctx->nodes[*(const size_t *)a].oid, &sort_ctx->nodes[*(const size_t *)b].oid);
@@ -164,11 +166,6 @@ static tix_status check_graph(ctx *c, size_t *root, size_t *head, tix_error *err
 	return TIX_OK;
 }
 
-static bool is_create(tix_op_kind k)
-{
-	return k == TIX_OP_TICKET_CREATE || k == TIX_OP_IDENTITY_CREATE;
-}
-
 static tix_status check_packs(ctx *c, tix_entity_type type, size_t root, tix_error *err)
 {
 	char hex[TIX_OID_MAX_HEX + 1];
@@ -195,7 +192,7 @@ static tix_status check_packs(ctx *c, tix_entity_type type, size_t root, tix_err
 			return node_err(err, c, i, "merge commit carries ops");
 		for (size_t k = 0; k < p->nops; k++) {
 			bool want_create = i == root && k == 0;
-			if (is_create(p->ops[k].kind) != want_create)
+			if (tix_op_is_create(p->ops[k].kind) != want_create)
 				return node_err(err, c, i, want_create ? "root must start with create"
 								       : "create outside the root");
 		}
@@ -237,7 +234,7 @@ static bool observes(const ctx *c, size_t rn, uint32_t rl, size_t an, uint32_t a
 }
 
 typedef struct or_ent {
-	const char *key;
+	char key[TIX_FPR_MAX + 1]; /* label, fingerprint, id hex or date range */
 	size_t node;
 	uint32_t line;
 	const tix_op *op; /* the op carrying the value (keys) */
@@ -264,13 +261,152 @@ static size_t or_survivor(const ctx *c, const or_vec *adds, const or_vec *rems, 
 
 static void push_or(or_vec *v, const char *key, const op_ref *r)
 {
-	or_ent e = {key, r->node, r->line, r->op};
+	or_ent e;
+	TIX_REQUIRE(strlen(key) < sizeof(e.key)); /* validated by the codec */
+	strcpy(e.key, key);
+	e.node = r->node;
+	e.line = r->line;
+	e.op = r->op;
 	TIX_VEC_PUSH(v, e);
+}
+
+static void push_or_id(or_vec *v, const tix_oid *id, const op_ref *r)
+{
+	char hex[TIX_OID_MAX_HEX + 1];
+	push_or(v, tix_oid_hex(id, hex), r);
+}
+
+static void push_or_range(or_vec *v, tix_date from, tix_date to, const op_ref *r)
+{
+	char a[TIX_DATE_STR], b[TIX_DATE_STR], key[2 * TIX_DATE_STR];
+	snprintf(key, sizeof(key), "%s:%s", tix_date_str(from, a), tix_date_str(to, b));
+	push_or(v, key, r);
+}
+
+int tix_order_cmp(const tix_order *a, const tix_order *b)
+{
+	if (a->lamport != b->lamport)
+		return a->lamport < b->lamport ? -1 : 1;
+	return tix_opid_cmp(&a->id, &b->id);
+}
+
+static tix_order order_of(const ctx *c, size_t node, uint32_t line)
+{
+	tix_order o = {c->packs[node].lamport, {c->nodes[node].oid, line}};
+	return o;
+}
+
+/* Latest set-field per field, in total order (LWW). */
+typedef struct lww {
+	const tix_value *v; /* NULL = never set */
+	tix_order order;
+} lww;
+
+static void fold_field(const ctx *c, const op_ref *r, lww *slots)
+{
+	lww *l = &slots[r->op->u.set.field];
+	l->v = &r->op->u.set.v;
+	l->order = order_of(c, r->node, r->line);
+}
+
+static bool lww_null(const lww *l)
+{
+	return !l->v || l->v->kind == TIX_V_NULL;
+}
+
+static int64_t lww_int(const lww *l, int64_t unset)
+{
+	return lww_null(l) ? unset : l->v->i;
+}
+
+static tix_date lww_date(const lww *l)
+{
+	return lww_null(l) ? TIX_DATE_NONE : (tix_date)l->v->i;
+}
+
+static tix_oid lww_id(const lww *l)
+{
+	tix_oid none;
+	memset(&none, 0, sizeof(none));
+	return lww_null(l) ? none : l->v->id;
+}
+
+static char *lww_str(const lww *l)
+{
+	return lww_null(l) ? NULL : tix_xstrdup(l->v->s);
+}
+
+static int cmp_dep(const void *a, const void *b)
+{
+	return tix_oid_cmp(&((const tix_dep *)a)->pred, &((const tix_dep *)b)->pred);
+}
+
+static int cmp_assignment(const void *a, const void *b)
+{
+	return tix_oid_cmp(&((const tix_assignment *)a)->resource, &((const tix_assignment *)b)->resource);
+}
+
+static void fold_plan(const ctx *c, const lww *f, const or_vec *dadd, const or_vec *drem, const or_vec *aadd,
+		      const or_vec *arem, tix_ticket_plan *pl)
+{
+	pl->parent = lww_id(&f[TIX_F_PARENT]);
+	pl->parent_order = f[TIX_F_PARENT].order;
+	pl->rank = lww_str(&f[TIX_F_RANK]);
+	pl->kind = (tix_ticket_kind)lww_int(&f[TIX_F_KIND], TIX_KIND_TASK);
+	pl->calendar = lww_id(&f[TIX_F_CALENDAR]);
+	pl->mode = (tix_sched_mode)lww_int(&f[TIX_F_MODE], TIX_MODE_AUTO);
+	pl->start = lww_date(&f[TIX_F_START]);
+	pl->finish = lww_date(&f[TIX_F_FINISH]);
+	pl->deadline = lww_date(&f[TIX_F_DEADLINE]);
+	pl->actual_start = lww_date(&f[TIX_F_ACTUAL_START]);
+	pl->actual_finish = lww_date(&f[TIX_F_ACTUAL_FINISH]);
+	pl->duration = lww_int(&f[TIX_F_DURATION], -1);
+	pl->effort = lww_int(&f[TIX_F_EFFORT], -1);
+	pl->progress = (int)lww_int(&f[TIX_F_PROGRESS], 0);
+
+	tix_strs seen = {0};
+	TIX_VEC(tix_dep) deps = {0};
+	for (size_t a = 0; a < dadd->n; a++) {
+		if (!tix_strs_add(&seen, dadd->v[a].key))
+			continue;
+		size_t s = or_survivor(c, dadd, drem, dadd->v[a].key);
+		if (s == SIZE_MAX)
+			continue;
+		const tix_op *op = dadd->v[s].op;
+		tix_dep d = {op->u.dep_add.pred, op->u.dep_add.kind, op->u.dep_add.lag,
+			     order_of(c, dadd->v[s].node, dadd->v[s].line)};
+		TIX_VEC_PUSH(&deps, d);
+	}
+	tix_strs_free(&seen);
+	TIX_VEC(tix_assignment) as = {0};
+	for (size_t a = 0; a < aadd->n; a++) {
+		if (!tix_strs_add(&seen, aadd->v[a].key))
+			continue;
+		size_t s = or_survivor(c, aadd, arem, aadd->v[a].key);
+		if (s == SIZE_MAX)
+			continue;
+		const tix_op *op = aadd->v[s].op;
+		tix_assignment x = {op->u.assign.resource, op->u.assign.units, op->u.assign.effort};
+		TIX_VEC_PUSH(&as, x);
+	}
+	tix_strs_free(&seen);
+	if (deps.n)
+		qsort(deps.v, deps.n, sizeof(tix_dep), cmp_dep);
+	if (as.n)
+		qsort(as.v, as.n, sizeof(tix_assignment), cmp_assignment);
+	pl->deps = deps.v;
+	pl->ndeps = deps.n;
+	pl->assignments = as.v;
+	pl->nassignments = as.n;
 }
 
 static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t)
 {
-	or_vec adds = {0}, rems = {0};
+	or_vec adds = {0}, rems = {0}, dadd = {0}, drem = {0}, aadd = {0}, arem = {0};
+	lww f[TIX_F_COUNT];
+	memset(f, 0, sizeof(f));
+	t->plan.started_at = -1;
+	t->plan.done_at = -1;
 	TIX_VEC(tix_comment) comments = {0};
 	for (size_t i = 0; i < n; i++) {
 		const op_ref *r = &ops[i];
@@ -294,7 +430,15 @@ static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t
 			break;
 		case TIX_OP_SET_STATUS:
 			t->status = op->u.set_status.status;
+			if (t->status == TIX_TICKET_IN_PROGRESS && t->plan.started_at < 0)
+				t->plan.started_at = p->time;
+			t->plan.done_at = t->status == TIX_TICKET_DONE ? p->time : -1;
 			break;
+		case TIX_OP_SET_FIELD: fold_field(c, r, f); break;
+		case TIX_OP_DEP_ADD: push_or_id(&dadd, &op->u.dep_add.pred, r); break;
+		case TIX_OP_DEP_REMOVE: push_or_id(&drem, &op->u.unref.target, r); break;
+		case TIX_OP_ASSIGN: push_or_id(&aadd, &op->u.assign.resource, r); break;
+		case TIX_OP_UNASSIGN: push_or_id(&arem, &op->u.unref.target, r); break;
 		case TIX_OP_LABEL:
 			for (size_t k = 0; k < op->u.label.add.n; k++)
 				push_or(&adds, op->u.label.add.v[k], r);
@@ -330,6 +474,89 @@ static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t
 			tix_strs_add(&t->labels, adds.v[a].key);
 	t->comments = comments.v;
 	t->ncomments = comments.n;
+	fold_plan(c, f, &dadd, &drem, &aadd, &arem, &t->plan);
+	free(adds.v);
+	free(rems.v);
+	free(dadd.v);
+	free(drem.v);
+	free(aadd.v);
+	free(arem.v);
+}
+
+static void fold_resource(const ctx *c, const op_ref *ops, size_t n, tix_resource *res)
+{
+	lww f[TIX_F_COUNT];
+	memset(f, 0, sizeof(f));
+	tix_resource_kind kind = TIX_RES_PERSON;
+	const char *name = "";
+	for (size_t i = 0; i < n; i++) {
+		const tix_op *op = ops[i].op;
+		if (op->kind == TIX_OP_RESOURCE_CREATE) {
+			name = op->u.resource_create.name;
+			kind = op->u.resource_create.kind;
+		} else if (op->kind == TIX_OP_SET_FIELD) {
+			fold_field(c, &ops[i], f);
+		}
+	}
+	res->name = f[TIX_F_RES_NAME].v ? lww_str(&f[TIX_F_RES_NAME]) : tix_xstrdup(name);
+	res->kind = (tix_resource_kind)lww_int(&f[TIX_F_RES_KIND], kind);
+	res->capacity = (int32_t)lww_int(&f[TIX_F_CAPACITY], 100);
+	res->calendar = lww_id(&f[TIX_F_RES_CALENDAR]);
+	res->identity = lww_id(&f[TIX_F_RES_IDENTITY]);
+	res->rate = lww_int(&f[TIX_F_RATE], -1);
+	res->currency = lww_str(&f[TIX_F_CURRENCY]);
+	res->active = lww_int(&f[TIX_F_ACTIVE], 1) != 0;
+}
+
+static int cmp_exception(const void *pa, const void *pb)
+{
+	const tix_cal_exception *a = pa, *b = pb;
+	if (a->from != b->from)
+		return a->from < b->from ? -1 : 1;
+	return (a->to > b->to) - (a->to < b->to);
+}
+
+static void fold_calendar(const ctx *c, const op_ref *ops, size_t n, tix_calendar *cal)
+{
+	lww f[TIX_F_COUNT];
+	or_vec adds = {0}, rems = {0};
+	memset(f, 0, sizeof(f));
+	const char *name = "";
+	for (size_t i = 0; i < n; i++) {
+		const tix_op *op = ops[i].op;
+		switch (op->kind) {
+		case TIX_OP_CALENDAR_CREATE: name = op->u.calendar_create.name; break;
+		case TIX_OP_SET_FIELD: fold_field(c, &ops[i], f); break;
+		case TIX_OP_EXCEPTION_ADD:
+			push_or_range(&adds, op->u.exception_add.from, op->u.exception_add.to, &ops[i]);
+			break;
+		case TIX_OP_EXCEPTION_REMOVE:
+			push_or_range(&rems, op->u.exception_remove.from, op->u.exception_remove.to, &ops[i]);
+			break;
+		default: break;
+		}
+	}
+	cal->name = f[TIX_F_CAL_NAME].v ? lww_str(&f[TIX_F_CAL_NAME]) : tix_xstrdup(name);
+	cal->weekdays = (unsigned)lww_int(&f[TIX_F_WEEKDAYS], TIX_WEEKDAYS_MON_FRI);
+	cal->hours = (int)lww_int(&f[TIX_F_HOURS], 8);
+	tix_strs seen = {0};
+	TIX_VEC(tix_cal_exception) ex = {0};
+	for (size_t a = 0; a < adds.n; a++) {
+		if (!tix_strs_add(&seen, adds.v[a].key))
+			continue;
+		size_t s = or_survivor(c, &adds, &rems, adds.v[a].key);
+		if (s == SIZE_MAX)
+			continue;
+		const tix_op *op = adds.v[s].op;
+		tix_cal_exception x = {op->u.exception_add.from, op->u.exception_add.to, op->u.exception_add.working,
+				       tix_xstrdup(op->u.exception_add.note), order_of(c, adds.v[s].node, adds.v[s].line)};
+		TIX_VEC_PUSH(&ex, x);
+	}
+	if (ex.n)
+		qsort(ex.v, ex.n, sizeof(*ex.v), cmp_exception);
+	cal->exceptions = ex.v;
+	cal->nexceptions = ex.n;
+	tix_strs_free(&seen);
 	free(adds.v);
 	free(rems.v);
 }
@@ -393,7 +620,7 @@ tix_status tix_replay(tix_entity_type type, const tix_dag_node *nodes, size_t n,
 		      tix_error *err)
 {
 	TIX_REQUIRE(out && (nodes || !n));
-	TIX_REQUIRE(type == TIX_ENTITY_TICKET || type == TIX_ENTITY_IDENTITY);
+	TIX_REQUIRE(type >= TIX_ENTITY_IDENTITY && type <= TIX_ENTITY_CALENDAR);
 	*out = NULL;
 	if (n == 0 || n > TIX_ENTITY_MAX_COMMITS)
 		return tix_error_set(err, TIX_ERR_INVALID, "entity has %zu commits", n);
@@ -431,8 +658,9 @@ tix_status tix_replay(tix_entity_type type, const tix_dag_node *nodes, size_t n,
 				continue;
 			}
 			e->nops++;
-			need_anc |= (op->kind == TIX_OP_LABEL && op->u.label.remove.n) ||
-				    op->kind == TIX_OP_KEY_REMOVE;
+			need_anc |= (op->kind == TIX_OP_LABEL && op->u.label.remove.n) || op->kind == TIX_OP_KEY_REMOVE ||
+				    op->kind == TIX_OP_DEP_REMOVE || op->kind == TIX_OP_UNASSIGN ||
+				    op->kind == TIX_OP_EXCEPTION_REMOVE;
 			op_ref r = {i, (uint32_t)(k + 2), op};
 			TIX_VEC_PUSH(&ops, r);
 		}
@@ -442,10 +670,12 @@ tix_status tix_replay(tix_entity_type type, const tix_dag_node *nodes, size_t n,
 	sort_ctx = &c;
 	if (ops.n)
 		qsort(ops.v, ops.n, sizeof(op_ref), cmp_op_ref);
-	if (type == TIX_ENTITY_TICKET)
-		fold_ticket(&c, ops.v, ops.n, &e->u.ticket);
-	else
-		fold_identity(&c, ops.v, ops.n, &e->u.identity);
+	switch (type) {
+	case TIX_ENTITY_TICKET: fold_ticket(&c, ops.v, ops.n, &e->u.ticket); break;
+	case TIX_ENTITY_IDENTITY: fold_identity(&c, ops.v, ops.n, &e->u.identity); break;
+	case TIX_ENTITY_RESOURCE: fold_resource(&c, ops.v, ops.n, &e->u.resource); break;
+	case TIX_ENTITY_CALENDAR: fold_calendar(&c, ops.v, ops.n, &e->u.calendar); break;
+	}
 	free(ops.v);
 	ctx_free(&c);
 	*out = e;
@@ -464,6 +694,17 @@ void tix_entity_free(tix_entity *e)
 		for (size_t i = 0; i < t->ncomments; i++)
 			free(t->comments[i].body);
 		free(t->comments);
+		free(t->plan.rank);
+		free(t->plan.deps);
+		free(t->plan.assignments);
+	} else if (e->type == TIX_ENTITY_RESOURCE) {
+		free(e->u.resource.name);
+		free(e->u.resource.currency);
+	} else if (e->type == TIX_ENTITY_CALENDAR) {
+		free(e->u.calendar.name);
+		for (size_t i = 0; i < e->u.calendar.nexceptions; i++)
+			free(e->u.calendar.exceptions[i].note);
+		free(e->u.calendar.exceptions);
 	} else {
 		tix_identity *id = &e->u.identity;
 		free(id->name);
@@ -476,6 +717,84 @@ void tix_entity_free(tix_entity *e)
 		free(id->keys);
 	}
 	free(e);
+}
+
+static void snap_id(tix_jw *w, const char *k, const tix_oid *id)
+{
+	char hex[TIX_OID_MAX_HEX + 1];
+	tix_jw_key(w, k);
+	if (tix_oid_is_null(id))
+		tix_jw_null(w);
+	else
+		tix_jw_str(w, tix_oid_hex(id, hex));
+}
+
+static void snap_date(tix_jw *w, const char *k, tix_date d)
+{
+	char s[TIX_DATE_STR];
+	tix_jw_key(w, k);
+	if (d == TIX_DATE_NONE)
+		tix_jw_null(w);
+	else
+		tix_jw_str(w, tix_date_str(d, s));
+}
+
+static void snap_int(tix_jw *w, const char *k, int64_t v)
+{
+	tix_jw_key(w, k);
+	if (v < 0)
+		tix_jw_null(w);
+	else
+		tix_jw_int(w, v);
+}
+
+static void snap_str(tix_jw *w, const char *k, const char *s)
+{
+	tix_jw_key(w, k);
+	if (s)
+		tix_jw_str(w, s);
+	else
+		tix_jw_null(w);
+}
+
+static void snap_plan(tix_jw *w, const tix_ticket_plan *pl)
+{
+	snap_id(w, "parent", &pl->parent);
+	snap_str(w, "rank", pl->rank);
+	snap_str(w, "kind", tix_field_get(TIX_F_KIND)->enums[pl->kind]);
+	snap_id(w, "calendar", &pl->calendar);
+	snap_str(w, "mode", tix_field_get(TIX_F_MODE)->enums[pl->mode]);
+	snap_date(w, "start", pl->start);
+	snap_date(w, "finish", pl->finish);
+	snap_int(w, "duration", pl->duration);
+	snap_int(w, "effort", pl->effort);
+	snap_date(w, "deadline", pl->deadline);
+	snap_int(w, "progress", pl->progress);
+	snap_date(w, "actual_start", pl->actual_start);
+	snap_date(w, "actual_finish", pl->actual_finish);
+	snap_int(w, "started_at", pl->started_at);
+	snap_int(w, "done_at", pl->done_at);
+	tix_jw_key(w, "deps");
+	tix_jw_arr_begin(w);
+	for (size_t i = 0; i < pl->ndeps; i++) {
+		tix_jw_obj_begin(w);
+		snap_id(w, "pred", &pl->deps[i].pred);
+		snap_str(w, "kind", tix_dep_kind_name(pl->deps[i].kind));
+		tix_jw_key(w, "lag");
+		tix_jw_int(w, pl->deps[i].lag);
+		tix_jw_obj_end(w);
+	}
+	tix_jw_arr_end(w);
+	tix_jw_key(w, "assignments");
+	tix_jw_arr_begin(w);
+	for (size_t i = 0; i < pl->nassignments; i++) {
+		tix_jw_obj_begin(w);
+		snap_id(w, "resource", &pl->assignments[i].resource);
+		snap_int(w, "units", pl->assignments[i].units);
+		snap_int(w, "effort", pl->assignments[i].effort);
+		tix_jw_obj_end(w);
+	}
+	tix_jw_arr_end(w);
 }
 
 void tix_entity_snapshot(const tix_entity *e, tix_buf *out)
@@ -522,6 +841,35 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out)
 			tix_jw_str(&w, cm->body);
 			tix_jw_key(&w, "edited");
 			tix_jw_bool(&w, cm->edited);
+			tix_jw_obj_end(&w);
+		}
+		tix_jw_arr_end(&w);
+		snap_plan(&w, &t->plan);
+	} else if (e->type == TIX_ENTITY_RESOURCE) {
+		const tix_resource *r = &e->u.resource;
+		snap_str(&w, "name", r->name);
+		snap_str(&w, "kind", tix_field_get(TIX_F_RES_KIND)->enums[r->kind]);
+		snap_int(&w, "capacity", r->capacity);
+		snap_id(&w, "calendar", &r->calendar);
+		snap_id(&w, "identity", &r->identity);
+		snap_int(&w, "rate", r->rate);
+		snap_str(&w, "currency", r->currency);
+		tix_jw_key(&w, "active");
+		tix_jw_bool(&w, r->active);
+	} else if (e->type == TIX_ENTITY_CALENDAR) {
+		const tix_calendar *cal = &e->u.calendar;
+		snap_str(&w, "name", cal->name);
+		snap_int(&w, "weekdays", cal->weekdays);
+		snap_int(&w, "hours", cal->hours);
+		tix_jw_key(&w, "exceptions");
+		tix_jw_arr_begin(&w);
+		for (size_t i = 0; i < cal->nexceptions; i++) {
+			tix_jw_obj_begin(&w);
+			snap_date(&w, "from", cal->exceptions[i].from);
+			snap_date(&w, "to", cal->exceptions[i].to);
+			tix_jw_key(&w, "working");
+			tix_jw_bool(&w, cal->exceptions[i].working);
+			snap_str(&w, "note", cal->exceptions[i].note);
 			tix_jw_obj_end(&w);
 		}
 		tix_jw_arr_end(&w);

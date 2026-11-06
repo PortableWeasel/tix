@@ -106,6 +106,8 @@ typedef struct bad_case {
 	tix_status want;
 } bad_case;
 
+#define TIX_ERR_UNKNOWN_OK ((tix_status)-1) /* test marker: decodes, as an unknown op */
+
 static void test_rejects(void)
 {
 	static const bad_case cases[] = {
@@ -192,11 +194,184 @@ static void test_encode_limits(void)
 	tix_buf_free(&b);
 }
 
+#define RHDR "{\"tix\":1,\"type\":\"resource\",\"author\":\"" A40 "\",\"lamport\":3,\"time\":9}\n"
+#define CHDR "{\"tix\":1,\"type\":\"calendar\",\"author\":\"" A40 "\",\"lamport\":3,\"time\":9}\n"
+
+static void round_trip(tix_entity_type type, tix_op *ops, size_t n, const char *want)
+{
+	tix_error e = TIX_ERROR_INIT;
+	tix_pack p = {type, oid_of(A40), 3, 9, ops, n}, d;
+	tix_buf b = TIX_BUF_INIT, b2 = TIX_BUF_INIT;
+	TK_OK(tix_pack_encode(&p, &b, &e), &e);
+	TK_STR_EQ(tix_buf_cstr(&b), want);
+	TK_OK(tix_pack_decode(b.data, b.len, TIX_HASH_SHA1, &d, &e), &e);
+	TK_CHECK(d.nops == n);
+	TK_OK(tix_pack_encode(&d, &b2, &e), &e);
+	TK_STR_EQ(tix_buf_cstr(&b2), want);
+	tix_pack_free(&d);
+	tix_buf_free(&b);
+	tix_buf_free(&b2);
+	for (size_t i = 0; i < n; i++)
+		tix_op_free(&ops[i]);
+}
+
+static void test_planning_ops(void)
+{
+	tix_date d1, d2;
+	TIX_REQUIRE(tix_date_parse("2026-11-09", &d1) && tix_date_parse("2026-12-24", &d2));
+	tix_oid b = oid_of(B40);
+	tix_op t[] = {
+		tix_op_set(TIX_F_PARENT, tix_value_id(&b)),
+		tix_op_set(TIX_F_PARENT, tix_value_null()),
+		tix_op_set(TIX_F_RANK, tix_value_str("i")),
+		tix_op_set(TIX_F_KIND, tix_value_int(TIX_V_ENUM, TIX_KIND_MILESTONE)),
+		tix_op_set(TIX_F_MODE, tix_value_int(TIX_V_ENUM, TIX_MODE_MANUAL)),
+		tix_op_set(TIX_F_START, tix_value_int(TIX_V_DATE, d1)),
+		tix_op_set(TIX_F_DURATION, tix_value_int(TIX_V_INT, 3)),
+		tix_op_set(TIX_F_EFFORT, tix_value_null()),
+		tix_op_set(TIX_F_PROGRESS, tix_value_int(TIX_V_INT, 40)),
+		tix_op_set(TIX_F_ACTUAL_FINISH, tix_value_int(TIX_V_DATE, d2)),
+		tix_op_dep_add(&b, TIX_DEP_SS, -2),
+		tix_op_dep_remove(&b),
+		tix_op_assign(&b, 50, 16),
+		tix_op_assign(&b, 100, -1),
+		tix_op_unassign(&b),
+	};
+	round_trip(TIX_ENTITY_TICKET, t, sizeof(t) / sizeof(*t),
+		"{\"tix\":1,\"type\":\"ticket\",\"author\":\"" A40 "\",\"lamport\":3,\"time\":9}\n"
+		"{\"op\":\"set-parent\",\"parent\":\"" B40 "\"}\n"
+		"{\"op\":\"set-parent\",\"parent\":null}\n"
+		"{\"op\":\"set-rank\",\"rank\":\"i\"}\n"
+		"{\"op\":\"set-kind\",\"kind\":\"milestone\"}\n"
+		"{\"op\":\"set-mode\",\"mode\":\"manual\"}\n"
+		"{\"op\":\"set-start\",\"start\":\"2026-11-09\"}\n"
+		"{\"op\":\"set-duration\",\"duration\":3}\n"
+		"{\"op\":\"set-effort\",\"effort\":null}\n"
+		"{\"op\":\"set-progress\",\"progress\":40}\n"
+		"{\"op\":\"set-actual-finish\",\"actual_finish\":\"2026-12-24\"}\n"
+		"{\"op\":\"dep-add\",\"pred\":\"" B40 "\",\"kind\":\"SS\",\"lag\":-2}\n"
+		"{\"op\":\"dep-remove\",\"pred\":\"" B40 "\"}\n"
+		"{\"op\":\"assign\",\"resource\":\"" B40 "\",\"units\":50,\"effort\":16}\n"
+		"{\"op\":\"assign\",\"resource\":\"" B40 "\",\"units\":100,\"effort\":null}\n"
+		"{\"op\":\"unassign\",\"resource\":\"" B40 "\"}\n");
+
+	tix_op r[] = {
+		tix_op_resource_create("0123456789abcdef0123456789abcdef", "Backend dev", TIX_RES_ROLE),
+		tix_op_set(TIX_F_RES_NAME, tix_value_str("Backend devs")),
+		tix_op_set(TIX_F_CAPACITY, tix_value_int(TIX_V_INT, 300)),
+		tix_op_set(TIX_F_RES_IDENTITY, tix_value_id(&b)),
+		tix_op_set(TIX_F_RATE, tix_value_int(TIX_V_INT, 9500)),
+		tix_op_set(TIX_F_CURRENCY, tix_value_str("EUR")),
+		tix_op_set(TIX_F_ACTIVE, tix_value_int(TIX_V_BOOL, 0)),
+	};
+	round_trip(TIX_ENTITY_RESOURCE, r, sizeof(r) / sizeof(*r), RHDR
+		"{\"op\":\"create\",\"nonce\":\"0123456789abcdef0123456789abcdef\",\"name\":\"Backend dev\",\"kind\":\"role\"}\n"
+		"{\"op\":\"set-name\",\"name\":\"Backend devs\"}\n"
+		"{\"op\":\"set-capacity\",\"capacity\":300}\n"
+		"{\"op\":\"set-identity\",\"identity\":\"" B40 "\"}\n"
+		"{\"op\":\"set-rate\",\"rate\":9500}\n"
+		"{\"op\":\"set-currency\",\"currency\":\"EUR\"}\n"
+		"{\"op\":\"set-active\",\"active\":false}\n");
+
+	tix_op c[] = {
+		tix_op_calendar_create("0123456789abcdef0123456789abcdef", "Site crew"),
+		tix_op_set(TIX_F_WEEKDAYS, tix_value_int(TIX_V_INT, 0x3f)),
+		tix_op_set(TIX_F_HOURS, tix_value_int(TIX_V_INT, 10)),
+		tix_op_exception_add(d2, d2 + 2, false, "Holidays"),
+		tix_op_exception_remove(d2, d2 + 2),
+	};
+	round_trip(TIX_ENTITY_CALENDAR, c, sizeof(c) / sizeof(*c), CHDR
+		"{\"op\":\"create\",\"nonce\":\"0123456789abcdef0123456789abcdef\",\"name\":\"Site crew\"}\n"
+		"{\"op\":\"set-weekdays\",\"weekdays\":63}\n"
+		"{\"op\":\"set-hours\",\"hours\":10}\n"
+		"{\"op\":\"exception-add\",\"from\":\"2026-12-24\",\"to\":\"2026-12-26\",\"working\":false,\"note\":\"Holidays\"}\n"
+		"{\"op\":\"exception-remove\",\"from\":\"2026-12-24\",\"to\":\"2026-12-26\"}\n");
+
+	/* encode-time validation */
+	tix_error e = TIX_ERROR_INIT;
+	tix_buf out = TIX_BUF_INIT;
+	tix_op bad[] = {
+		tix_op_set(TIX_F_PROGRESS, tix_value_int(TIX_V_INT, 101)),
+		tix_op_set(TIX_F_PROGRESS, tix_value_null()),
+		tix_op_set(TIX_F_RANK, tix_value_str("a0")),
+		tix_op_set(TIX_F_START, tix_value_str("2026-01-01")),
+		tix_op_set(TIX_F_CAPACITY, tix_value_int(TIX_V_INT, 100)), /* resource field on a ticket */
+		tix_op_dep_add(&b, TIX_DEP_FS, TIX_LAG_MAX + 1),
+		tix_op_assign(&b, 0, -1),
+	};
+	for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++) {
+		tix_pack p = {TIX_ENTITY_TICKET, oid_of(A40), 1, 0, &bad[i], 1};
+		TK_STATUS(tix_pack_encode(&p, &out, &e), TIX_ERR_INVALID, &e);
+		tix_op_free(&bad[i]);
+	}
+	tix_oid b256;
+	TIX_REQUIRE(tix_oid_from_hex(&b256, B40 B40 "bbbbbbbbbbbbbbbbbbbbbbbb", 64));
+	tix_op mixed = tix_op_dep_add(&b256, TIX_DEP_FS, 0);
+	tix_pack p = {TIX_ENTITY_TICKET, oid_of(A40), 1, 0, &mixed, 1};
+	TK_STATUS(tix_pack_encode(&p, &out, &e), TIX_ERR_INVALID, &e); /* sha256 id in a sha1 pack */
+	tix_op_free(&mixed);
+	TK_CHECK(out.len == 0);
+	tix_buf_free(&out);
+}
+
+static void test_planning_rejects(void)
+{
+	static const bad_case cases[] = {
+		{"date format", HDR "{\"op\":\"set-start\",\"start\":\"2026-1-09\"}\n", TIX_ERR_INVALID},
+		{"not a day", HDR "{\"op\":\"set-start\",\"start\":\"2026-02-30\"}\n", TIX_ERR_INVALID},
+		{"date as number", HDR "{\"op\":\"set-start\",\"start\":20260109}\n", TIX_ERR_INVALID},
+		{"missing value", HDR "{\"op\":\"set-start\"}\n", TIX_ERR_INVALID},
+		{"wrong key", HDR "{\"op\":\"set-start\",\"finish\":null}\n", TIX_ERR_INVALID},
+		{"progress null", HDR "{\"op\":\"set-progress\",\"progress\":null}\n", TIX_ERR_INVALID},
+		{"progress range", HDR "{\"op\":\"set-progress\",\"progress\":101}\n", TIX_ERR_INVALID},
+		{"progress float", HDR "{\"op\":\"set-progress\",\"progress\":4.5}\n", TIX_ERR_INVALID},
+		{"duration negative", HDR "{\"op\":\"set-duration\",\"duration\":-1}\n", TIX_ERR_INVALID},
+		{"duration huge", HDR "{\"op\":\"set-duration\",\"duration\":1e300}\n", TIX_ERR_INVALID},
+		{"kind", HDR "{\"op\":\"set-kind\",\"kind\":\"summary\"}\n", TIX_ERR_INVALID},
+		{"rank trailing 0", HDR "{\"op\":\"set-rank\",\"rank\":\"a0\"}\n", TIX_ERR_INVALID},
+		{"rank uppercase", HDR "{\"op\":\"set-rank\",\"rank\":\"A\"}\n", TIX_ERR_INVALID},
+		{"parent uppercase", HDR "{\"op\":\"set-parent\",\"parent\":\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\"}\n", TIX_ERR_INVALID},
+		{"parent short", HDR "{\"op\":\"set-parent\",\"parent\":\"bbbb\"}\n", TIX_ERR_INVALID},
+		{"dep kind", HDR "{\"op\":\"dep-add\",\"pred\":\"" B40 "\",\"kind\":\"fs\",\"lag\":0}\n", TIX_ERR_INVALID},
+		{"dep lag string", HDR "{\"op\":\"dep-add\",\"pred\":\"" B40 "\",\"kind\":\"FS\",\"lag\":\"2d\"}\n", TIX_ERR_INVALID},
+		{"dep key order", HDR "{\"op\":\"dep-add\",\"kind\":\"FS\",\"pred\":\"" B40 "\",\"lag\":0}\n", TIX_ERR_INVALID},
+		{"assign units 0", HDR "{\"op\":\"assign\",\"resource\":\"" B40 "\",\"units\":0,\"effort\":null}\n", TIX_ERR_INVALID},
+		{"assign no effort", HDR "{\"op\":\"assign\",\"resource\":\"" B40 "\",\"units\":10}\n", TIX_ERR_INVALID},
+		{"resource kind", RHDR "{\"op\":\"create\",\"nonce\":\"0123456789abcdef0123456789abcdef\",\"name\":\"x\",\"kind\":\"robot\"}\n", TIX_ERR_INVALID},
+		{"capacity 0", RHDR "{\"op\":\"set-capacity\",\"capacity\":0}\n", TIX_ERR_INVALID},
+		{"currency lower", RHDR "{\"op\":\"set-currency\",\"currency\":\"eur\"}\n", TIX_ERR_INVALID},
+		{"active as int", RHDR "{\"op\":\"set-active\",\"active\":1}\n", TIX_ERR_INVALID},
+		{"resource without author", "{\"tix\":1,\"type\":\"resource\",\"author\":null,\"lamport\":3,\"time\":9}\n", TIX_ERR_INVALID},
+		{"ticket op on calendar", CHDR "{\"op\":\"set-start\",\"start\":null}\n", TIX_ERR_UNKNOWN_OK},
+		{"weekdays range", CHDR "{\"op\":\"set-weekdays\",\"weekdays\":128}\n", TIX_ERR_INVALID},
+		{"hours 0", CHDR "{\"op\":\"set-hours\",\"hours\":0}\n", TIX_ERR_INVALID},
+		{"exception reversed", CHDR "{\"op\":\"exception-add\",\"from\":\"2026-12-26\",\"to\":\"2026-12-24\",\"working\":false,\"note\":\"\"}\n", TIX_ERR_INVALID},
+		{"exception too long", CHDR "{\"op\":\"exception-add\",\"from\":\"2000-01-01\",\"to\":\"2026-12-24\",\"working\":false,\"note\":\"\"}\n", TIX_ERR_INVALID},
+		{"exception note newline", CHDR "{\"op\":\"exception-add\",\"from\":\"2026-12-24\",\"to\":\"2026-12-24\",\"working\":false,\"note\":\"a\\nb\"}\n", TIX_ERR_INVALID},
+	};
+	for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+		tix_error e = TIX_ERROR_INIT;
+		tix_pack d;
+		tix_status st = tix_pack_decode(cases[i].pack, strlen(cases[i].pack), TIX_HASH_SHA1, &d, &e);
+		tix_status want = cases[i].want == TIX_ERR_UNKNOWN_OK ? TIX_OK : cases[i].want;
+		tk_checks++;
+		if (st != want)
+			tk_fail(__FILE__, __LINE__, "case '%s': got %s (want %s) %s", cases[i].what,
+				tix_status_name(st), tix_status_name(want), e.msg);
+		if (!st) { /* only acceptable as an unknown op, preserved verbatim */
+			TK_CHECK(d.nops == 1 && d.ops[0].kind == TIX_OP_UNKNOWN);
+			tix_pack_free(&d);
+		}
+	}
+}
+
 int main(void)
 {
 	test_round_trip();
 	test_identity_and_unknown();
 	test_rejects();
 	test_encode_limits();
+	test_planning_ops();
+	test_planning_rejects();
 	return tk_finish();
 }

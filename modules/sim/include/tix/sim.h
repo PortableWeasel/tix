@@ -48,7 +48,7 @@ tix_status tix_sim_load(tix_sim_clone *c, tix_entity_type t, const char *ref, ti
 			tix_error *err);
 
 /* Creates an entity from ops (BORROWS ops). Identity roots are written without
- * an author; tickets REQUIRE c->me to be set. ENSURES *id_out = root commit. */
+ * an author; other types REQUIRE c->me to be set. ENSURES *id_out = root commit. */
 tix_status tix_sim_create(tix_sim_clone *c, tix_entity_type t, const tix_op *ops, size_t n,
 			  tix_oid *id_out, tix_error *err);
 

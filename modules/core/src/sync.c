@@ -106,6 +106,13 @@ static tix_status integrate(tix_repo *r, tix_entity_type t, const tix_oid *id, c
 		tix_oid parents[2] = {lh, *rh};
 		tix_oid me;
 		bool has_me = tix_repo_identity(r, &me);
+		if (!has_me && t != TIX_ENTITY_IDENTITY) {
+			/* Only identity packs may lack an author (§4.1). */
+			tix_error_set(&why, TIX_ERR_NOT_FOUND, "diverged; merging needs an identity (tix id use)");
+			problem(rep, "not merged", local, &why);
+			rep->unpushable++;
+			return TIX_OK;
+		}
 		if ((st = core_write_pack(r, t, has_me ? &me : NULL, parents, 2, NULL, 0, &merge, &lamport, err)))
 			return st;
 		/* The union must validate too (size limits apply to the merged entity). */
