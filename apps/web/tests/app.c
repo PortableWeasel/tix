@@ -6,6 +6,7 @@
 #include "tix/store_mem.h"
 #include "tix/testkit.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -188,7 +189,7 @@ static void test_checks(void)
 	TK_CHECK(strstr(w.app.always_headers, "Content-Security-Policy: default-src 'none'; style-src 'self'; "
 					      "script-src 'self'") != NULL);
 	TK_CHECK(strstr(w.app.always_headers, "frame-ancestors 'none'") && strstr(w.app.always_headers, "nosniff"));
-	TK_CHECK(strstr(w.app.always_headers, "Referrer-Policy: no-referrer"));
+	TK_CHECK(strstr(w.app.always_headers, "Referrer-Policy: same-origin"));
 
 	/* Host first: DNS rebinding and foreign names get 421, no Host 400, even for login */
 	c.host = "evil.example:7480";
@@ -505,11 +506,308 @@ static void test_pages(void)
 	world_close(&w);
 }
 
+
+/* application/x-www-form-urlencoded from name, value, ... NULL (csrf added). */
+static const char *form(client *c, ...)
+{
+	static tix_buf b;
+	tix_buf_reset(&b);
+	tix_buf_addf(&b, "csrf=%s", c->csrf);
+	va_list ap;
+	va_start(ap, c);
+	for (const char *n; (n = va_arg(ap, const char *));) {
+		const char *v = va_arg(ap, const char *);
+		tix_buf_addf(&b, "&%s=", n);
+		for (const unsigned char *q = (const unsigned char *)v; *q; q++) {
+			if ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '-' ||
+			    *q == '.' || *q == '_')
+				tix_buf_addc(&b, (char)*q);
+			else
+				tix_buf_addf(&b, "%%%02X", *q);
+		}
+	}
+	va_end(ap);
+	return tix_buf_cstr(&b);
+}
+
+static tix_entity *ticket(world *w, const tix_oid *id)
+{
+	tix_entity *t = NULL;
+	TK_OK(tix_entity_load(w->repo, TIX_ENTITY_TICKET, id, &t, &e), &e);
+	return t;
+}
+
+/* The id at the end of a redirect to /t/ID (or /res/ID, /cal/ID). */
+static bool redirected_id(const client *c, const char *prefix, tix_oid *out)
+{
+	size_t n = strlen(prefix);
+	return !strncmp(c->loc, prefix, n) && tix_oid_from_hex(out, c->loc + n, strlen(c->loc + n));
+}
+
+static void test_forms(void)
+{
+	world w;
+	world_open(&w, false);
+	client c = new_client(&w);
+	login(&c);
+	char hex[TIX_OID_MAX_HEX + 1], head[TIX_OID_MAX_HEX + 1], target[256];
+	tix_oid house, t, crew, cal;
+	TK_OK(tix_ticket_create(w.repo, "House", "", NULL, &house, &e), &e);
+
+	/* the new-ticket form, prefilled from ?parent= */
+	snprintf(target, sizeof(target), "/new?parent=%s", tix_oid_hex(&house, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "name=\"o.parent\" value=\"\"");
+	HAS(&c, "name=\"rank\" value=\"last\"");
+
+	/* create: title, body, labels, parent by prefix, planning values in CLI syntax */
+	char pre[9];
+	snprintf(pre, sizeof(pre), "%.8s", hex);
+	TK_CHECK(call(&c, "POST", "/new", form(&c, "title", "Dig <deep>", "body", "line 1\r\nline 2", "labels", "site, p1, site",
+					    "o.labels", "", "parent", pre, "o.parent", "", "rank", "last", "o.rank", "",
+					    "effort", "16", "o.effort", "", "start", "2026-11-10", "o.start", "",
+					    "status", "in-progress", "o.status", "open", "kind", "task", "o.kind", "task",
+					    "deadline", "", "o.deadline", "", NULL)) == 303);
+	TK_CHECK(redirected_id(&c, "/t/", &t));
+	tix_entity *te = ticket(&w, &t);
+	TK_STR_EQ(te->u.ticket.title, "Dig <deep>");
+	TK_STR_EQ(te->u.ticket.body, "line 1\nline 2");
+	TK_CHECK(te->u.ticket.labels.n == 2 && te->u.ticket.status == TIX_TICKET_IN_PROGRESS);
+	TK_CHECK(tix_oid_eq(&te->u.ticket.plan.parent, &house) && te->u.ticket.plan.effort == 16);
+	TK_CHECK(te->u.ticket.plan.rank != NULL && te->u.ticket.plan.deadline == TIX_DATE_NONE);
+	tix_entity_free(te);
+
+	/* refused creates keep what was typed and say why (the CLI's words) */
+	TK_CHECK(call(&c, "POST", "/new", form(&c, "title", "", "o.title", "", NULL)) == 422);
+	HAS(&c, "A title is required.");
+	TK_CHECK(call(&c, "POST", "/new", form(&c, "title", "Keep me", "o.title", "", "duration", "3x", "o.duration", "",
+					    NULL)) == 422);
+	HAS(&c, "duration: &#39;3x&#39; should look like 3d (or none)");
+	HAS(&c, "value=\"Keep me\"");
+	HAS(&c, "value=\"3x\"");
+	TK_CHECK(call(&c, "POST", "/new", form(&c, "title", "x", "o.title", "", "parent", "deadbeef", "o.parent", "",
+					    NULL)) == 422);
+	HAS(&c, "no ticket matches");
+
+	/* the edit form shows the originals */
+	snprintf(target, sizeof(target), "/t/%s/edit", tix_oid_hex(&t, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "name=\"o.title\" value=\"Dig &lt;deep&gt;\"");
+	HAS(&c, "name=\"o.effort\" value=\"16\"");
+	HAS(&c, "name=\"o.labels\" value=\"p1, site\"");
+	HAS(&c, "name=\"head\" value=\"");
+
+	/* only changed fields are written: duration changes, the stale effort original doesn't matter */
+	snprintf(target, sizeof(target), "/t/%s", hex);
+	te = ticket(&w, &t);
+	tix_oid_hex(&te->head, head);
+	tix_entity_free(te);
+	TK_CHECK(call(&c, "POST", target, form(&c, "head", head, "duration", "5", "o.duration", "", "effort", "16",
+					    "o.effort", "16", "labels", "site, ui", "o.labels", "p1, site", NULL)) == 303);
+	te = ticket(&w, &t);
+	TK_CHECK(te->u.ticket.plan.duration == 5 && te->u.ticket.plan.effort == 16);
+	TK_CHECK(te->u.ticket.labels.n == 2 && tix_strs_contains(&te->u.ticket.labels, "ui") &&
+		 !tix_strs_contains(&te->u.ticket.labels, "p1"));
+	tix_oid_hex(&te->head, head);
+	tix_entity_free(te);
+
+	/* a stale tab: someone else retitles the ticket meanwhile */
+	tix_op other = tix_op_text(TIX_OP_SET_TITLE, "Dig (by Bob)");
+	TK_OK(tix_entity_apply(w.repo, TIX_ENTITY_TICKET, &t, &other, 1, &e), &e);
+	tix_op_free(&other);
+	TK_CHECK(call(&c, "POST", target, form(&c, "head", head, "title", "Dig (by Ada)", "o.title", "Dig <deep>",
+					    NULL)) == 422);
+	HAS(&c, "Changed by someone else meanwhile, to: Dig (by Bob)");
+	HAS(&c, "value=\"Dig (by Ada)\"");
+	HAS(&c, "name=\"o.title\" value=\"Dig (by Bob)\"");
+	te = ticket(&w, &t);
+	TK_STR_EQ(te->u.ticket.title, "Dig (by Bob)"); /* nothing applied */
+	char fresh[TIX_OID_MAX_HEX + 1];
+	tix_oid_hex(&te->head, fresh);
+	tix_entity_free(te);
+	/* sending again from the re-shown form (new head, new original) replaces it */
+	TK_CHECK(call(&c, "POST", target, form(&c, "head", fresh, "title", "Dig (by Ada)", "o.title", "Dig (by Bob)",
+					    NULL)) == 303);
+	te = ticket(&w, &t);
+	TK_STR_EQ(te->u.ticket.title, "Dig (by Ada)");
+	tix_entity_free(te);
+	/* a stale tab that changes a field nobody else touched just applies */
+	TK_CHECK(call(&c, "POST", target, form(&c, "head", head, "progress", "40", "o.progress", "0", NULL)) == 303);
+	te = ticket(&w, &t);
+	TK_CHECK(te->u.ticket.plan.progress == 40);
+	TK_STR_EQ(te->u.ticket.title, "Dig (by Ada)");
+	tix_oid_hex(&te->head, head);
+	tix_entity_free(te);
+	/* clearing a value: empty means none */
+	TK_CHECK(call(&c, "POST", target, form(&c, "head", head, "start", "", "o.start", "2026-11-10", NULL)) == 303);
+	te = ticket(&w, &t);
+	TK_CHECK(te->u.ticket.plan.start == TIX_DATE_NONE);
+	tix_entity_free(te);
+	/* the quick status form on the ticket page */
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "name=\"o.status\" value=\"in-progress\"");
+	TK_CHECK(call(&c, "POST", target, form(&c, "status", "blocked", "o.status", "in-progress", NULL)) == 303);
+	te = ticket(&w, &t);
+	TK_CHECK(te->u.ticket.status == TIX_TICKET_BLOCKED);
+	tix_entity_free(te);
+	TK_CHECK(call(&c, "POST", target, form(&c, "status", "wip", "o.status", "blocked", NULL)) == 422);
+	/* a ticket can't sit under itself: core's rule, shown on the form */
+	TK_CHECK(call(&c, "POST", target, form(&c, "parent", hex, "o.parent", "", NULL)) == 422);
+	HAS(&c, "Not saved");
+
+	/* comments */
+	snprintf(target, sizeof(target), "/t/%s/comment", hex);
+	TK_CHECK(call(&c, "POST", target, form(&c, "body", "First <b>!</b>", NULL)) == 303);
+	TK_CHECK(call(&c, "POST", target, form(&c, "body", "  \n ", NULL)) == 422);
+	te = ticket(&w, &t);
+	TK_CHECK(te->u.ticket.ncomments == 1);
+	char cid[TIX_OID_MAX_HEX + 16];
+	tix_opid_str(&te->u.ticket.comments[0].id, cid);
+	tix_entity_free(te);
+	snprintf(target, sizeof(target), "/t/%s", hex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	snprintf(target, sizeof(target), "/comment/%s\">edit</a>", cid);
+	HAS(&c, target);
+	snprintf(target, sizeof(target), "/t/%s/comment/%s", hex, cid);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "First &lt;b&gt;!&lt;/b&gt;</textarea>");
+	TK_CHECK(call(&c, "POST", target, form(&c, "body", "First, edited", NULL)) == 303);
+	te = ticket(&w, &t);
+	TK_STR_EQ(te->u.ticket.comments[0].body, "First, edited");
+	TK_CHECK(te->u.ticket.comments[0].edited);
+	tix_entity_free(te);
+
+	/* dependencies */
+	tix_oid pred;
+	TK_OK(tix_ticket_create(w.repo, "Survey", "", NULL, &pred, &e), &e);
+	char phex[TIX_OID_MAX_HEX + 1];
+	tix_oid_hex(&pred, phex);
+	snprintf(target, sizeof(target), "/t/%s/dep", hex);
+	TK_CHECK(call(&c, "POST", target, form(&c, "op", "add", "pred", phex, "kind", "SS", "lag", "-2", NULL)) == 303);
+	te = ticket(&w, &t);
+	TK_CHECK(te->u.ticket.plan.ndeps == 1 && te->u.ticket.plan.deps[0].kind == TIX_DEP_SS &&
+		 te->u.ticket.plan.deps[0].lag == -2);
+	tix_entity_free(te);
+	TK_CHECK(call(&c, "POST", target, form(&c, "op", "add", "pred", phex, "kind", "XX", NULL)) == 422);
+	HAS(&c, "dep: kind must be FS, SS, FF or SF");
+	TK_CHECK(call(&c, "POST", target, form(&c, "op", "add", "pred", phex, "lag", "2d", NULL)) == 422);
+	TK_CHECK(call(&c, "POST", target, form(&c, "op", "add", "pred", hex, NULL)) == 422); /* itself */
+	TK_CHECK(call(&c, "POST", target, form(&c, "op", "remove", "pred", phex, NULL)) == 303);
+	te = ticket(&w, &t);
+	TK_CHECK(te->u.ticket.plan.ndeps == 0);
+	tix_entity_free(te);
+
+	/* resources: create, edit, assign */
+	TK_CHECK(call(&c, "GET", "/res/new", NULL) == 200);
+	TK_CHECK(call(&c, "POST", "/res/new", form(&c, "name", "Crew", "o.name", "", "kind", "role", "o.kind", "person",
+						 "capacity", "300%", "o.capacity", "100", "rate", "95.5 eur", "o.rate", "",
+						 NULL)) == 303);
+	TK_CHECK(redirected_id(&c, "/res/", &crew));
+	tix_entity *re = NULL;
+	TK_OK(tix_entity_load(w.repo, TIX_ENTITY_RESOURCE, &crew, &re, &e), &e);
+	TK_CHECK(re->u.resource.kind == TIX_RES_ROLE && re->u.resource.capacity == 300 && re->u.resource.rate == 9550);
+	char rhead[TIX_OID_MAX_HEX + 1], rhex[TIX_OID_MAX_HEX + 1];
+	tix_oid_hex(&re->head, rhead);
+	tix_entity_free(re);
+	tix_oid_hex(&crew, rhex);
+	TK_CHECK(call(&c, "POST", "/res/new", form(&c, "name", "", "o.name", "", NULL)) == 422);
+	TK_CHECK(call(&c, "POST", "/res/new", form(&c, "name", "X", "o.name", "", "capacity", "0", "o.capacity", "100",
+						 NULL)) == 422);
+	HAS(&c, "capacity: percent of one full-time unit");
+	snprintf(target, sizeof(target), "/res/%s/edit", rhex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "name=\"o.rate\" value=\"95.50 EUR\"");
+	snprintf(target, sizeof(target), "/res/%s", rhex);
+	TK_CHECK(call(&c, "POST", target, form(&c, "head", rhead, "name", "Site crew", "o.name", "Crew", "active", "no",
+					    "o.active", "yes", NULL)) == 303);
+	TK_OK(tix_entity_load(w.repo, TIX_ENTITY_RESOURCE, &crew, &re, &e), &e);
+	TK_STR_EQ(re->u.resource.name, "Site crew");
+	TK_CHECK(!re->u.resource.active && re->u.resource.capacity == 300);
+	tix_entity_free(re);
+	snprintf(target, sizeof(target), "/t/%s/assign", hex);
+	TK_CHECK(call(&c, "POST", target, form(&c, "op", "add", "res", rhex, "units", "50", "effort", "8", NULL)) == 303);
+	te = ticket(&w, &t);
+	TK_CHECK(te->u.ticket.plan.nassignments == 1 && te->u.ticket.plan.assignments[0].units == 50 &&
+		 te->u.ticket.plan.assignments[0].effort == 8);
+	tix_entity_free(te);
+	TK_CHECK(call(&c, "POST", target, form(&c, "op", "add", "res", rhex, "units", "abc", NULL)) == 422);
+	HAS(&c, "assign: units must look like 50%");
+	TK_CHECK(call(&c, "POST", target, form(&c, "op", "remove", "res", rhex, NULL)) == 303);
+	te = ticket(&w, &t);
+	TK_CHECK(te->u.ticket.plan.nassignments == 0);
+	tix_entity_free(te);
+
+	/* calendars: create, exceptions */
+	TK_CHECK(call(&c, "POST", "/cal/new", form(&c, "name", "Site", "o.name", "", "weekdays", "mon-sat",
+						 "o.weekdays", "mon-fri", NULL)) == 303);
+	TK_CHECK(redirected_id(&c, "/cal/", &cal));
+	char chex[TIX_OID_MAX_HEX + 1];
+	tix_oid_hex(&cal, chex);
+	snprintf(target, sizeof(target), "/cal/%s/exception", chex);
+	TK_CHECK(call(&c, "POST", target, form(&c, "op", "off", "from", "2026-12-24", "to", "2026-12-26", "note",
+					    "Holidays", NULL)) == 303);
+	tix_entity *ce = NULL;
+	TK_OK(tix_entity_load(w.repo, TIX_ENTITY_CALENDAR, &cal, &ce, &e), &e);
+	TK_CHECK(ce->u.calendar.weekdays == 0x3f && ce->u.calendar.nexceptions == 1);
+	TK_STR_EQ(ce->u.calendar.exceptions[0].note, "Holidays");
+	tix_entity_free(ce);
+	snprintf(target, sizeof(target), "/cal/%s/edit", chex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "name=\"o.weekdays\" value=\"mon-sat\"");
+	snprintf(target, sizeof(target), "/cal/%s", chex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "Holidays");
+	snprintf(target, sizeof(target), "/cal/%s/exception", chex);
+	TK_CHECK(call(&c, "POST", target, form(&c, "op", "off", "from", "soon", NULL)) == 422);
+	TK_CHECK(call(&c, "POST", target, form(&c, "op", "clear", "from", "2026-12-24", "to", "2026-12-26", NULL)) == 303);
+	TK_OK(tix_entity_load(w.repo, TIX_ENTITY_CALENDAR, &cal, &ce, &e), &e);
+	TK_CHECK(ce->u.calendar.nexceptions == 0);
+	tix_entity_free(ce);
+
+	/* sync with no such remote: an error page, not a crash */
+	TK_CHECK(call(&c, "GET", "/sync", NULL) == 200);
+	HAS(&c, "Sync now");
+	TK_CHECK(call(&c, "POST", "/sync", form(&c, NULL)) == 502);
+
+	/* method mismatches */
+	TK_CHECK(call(&c, "GET", "/sync", NULL) == 200);
+	snprintf(target, sizeof(target), "/t/%s/dep", hex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 405);
+
+	web_response_free(&c.res);
+	world_close(&w);
+}
+
+static void test_read_only_pages(void)
+{
+	world w;
+	world_open(&w, true);
+	tix_oid t;
+	TK_OK(tix_ticket_create(w.repo, "T", "", NULL, &t, &e), &e);
+	client c = new_client(&w);
+	login(&c);
+	char hex[TIX_OID_MAX_HEX + 1], target[160];
+	snprintf(target, sizeof(target), "/t/%s", tix_oid_hex(&t, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HASNT(&c, "/edit\"");
+	HASNT(&c, "Add a comment");
+	HASNT(&c, "Add dependency");
+	TK_CHECK(call(&c, "GET", "/tickets", NULL) == 200);
+	HASNT(&c, "New ticket");
+	TK_CHECK(call(&c, "GET", "/sync", NULL) == 200);
+	HASNT(&c, "Sync now");
+	TK_CHECK(call(&c, "POST", "/new", form(&c, "title", "x", "o.title", "", NULL)) == 405);
+	web_response_free(&c.res);
+	world_close(&w);
+}
+
 int main(void)
 {
 	test_checks();
 	test_read_only();
 	test_escaping();
 	test_pages();
+	test_forms();
+	test_read_only_pages();
 	return tk_finish();
 }

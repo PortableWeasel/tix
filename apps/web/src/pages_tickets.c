@@ -115,6 +115,33 @@ void page_tickets(web_ctx *x)
 
 /* ---- /t/ID ------------------------------------------------------------------------------- */
 
+static bool writable(const web_ctx *x)
+{
+	return !x->app->cfg.read_only;
+}
+
+/* <form method=post action="/t/ID/<what>"> with the csrf token */
+static void small_form(web_ctx *x, const tix_oid *id, const char *what)
+{
+	html *h = &x->h;
+	HL(h, "<form class=\"inline\" method=\"post\" action=\"/t/");
+	h_id(h, id);
+	h_text(h, what);
+	HL(h, "\">");
+	form_csrf(x);
+}
+
+static void remove_button(web_ctx *x, const tix_oid *id, const char *what, const char *field, const tix_oid *target)
+{
+	html *h = &x->h;
+	small_form(x, id, what);
+	HL(h, "<input type=\"hidden\" name=\"op\" value=\"remove\"><input type=\"hidden\" name=\"");
+	h_text(h, field);
+	HL(h, "\" value=\"");
+	h_id(h, target);
+	HL(h, "\"><button title=\"remove\">remove</button></form>");
+}
+
 #define ROW(h, label)                     \
 	do {                              \
 		HL(h, "<tr><th>" label "</th><td>"); \
@@ -247,10 +274,22 @@ static void planning_table(web_ctx *x, const tix_entity *e, const tix_plan_resul
 			h_int(h, d->lag);
 			HL(h, "d");
 		}
-		HL(h, "</span></li>\n");
+		HL(h, "</span> ");
+		if (writable(x))
+			remove_button(x, &e->id, "/dep", "pred", &d->pred);
+		HL(h, "</li>\n");
 	}
 	if (p->ndeps)
 		HL(h, "</ul>\n");
+	if (writable(x)) {
+		small_form(x, &e->id, "/dep");
+		HL(h, "<input type=\"hidden\" name=\"op\" value=\"add\"><label>After <input name=\"pred\" size=\"12\" "
+		      "placeholder=\"ticket id\" required></label> <label>as <select name=\"kind\">"
+		      "<option value=\"FS\">finish to start</option><option value=\"SS\">start to start</option>"
+		      "<option value=\"FF\">finish to finish</option><option value=\"SF\">start to finish</option>"
+		      "</select></label> <label>lag <input name=\"lag\" size=\"4\" placeholder=\"0\"> working days</label> "
+		      "<button>Add dependency</button></form>\n");
+	}
 	any = false;
 	for (size_t i = 0; i < pr->tickets.n; i++) {
 		const tix_ticket_plan *op = &pr->tickets.v[i]->u.ticket.plan;
@@ -283,10 +322,29 @@ static void planning_table(web_ctx *x, const tix_entity *e, const tix_plan_resul
 			HL(h, ", ");
 			h_hours(h, a->effort);
 		}
+		HL(h, " ");
+		if (writable(x))
+			remove_button(x, &e->id, "/assign", "res", &a->resource);
 		HL(h, "</li>\n");
 	}
 	if (p->nassignments)
 		HL(h, "</ul>\n");
+	if (writable(x) && pr->resources.n) {
+		small_form(x, &e->id, "/assign");
+		HL(h, "<input type=\"hidden\" name=\"op\" value=\"add\"><label>Resource <select name=\"res\">");
+		for (size_t i = 0; i < pr->resources.n; i++) {
+			HL(h, "<option value=\"");
+			h_id(h, &pr->resources.v[i]->id);
+			HL(h, "\">");
+			h_text(h, pr->resources.v[i]->u.resource.name);
+			HL(h, "</option>");
+		}
+		HL(h, "</select></label> <label>at <input name=\"units\" size=\"4\" value=\"100\">%</label> "
+		      "<label>effort <input name=\"effort\" size=\"4\" placeholder=\"hours\"></label> "
+		      "<button>Assign</button></form>\n");
+	} else if (writable(x)) {
+		HL(h, "<p class=\"note\"><a href=\"/res/new\">Add a resource</a> to assign work.</p>\n");
+	}
 }
 
 void page_ticket(web_ctx *x)
@@ -319,6 +377,28 @@ void page_ticket(web_ctx *x)
 	HL(h, "</span></p>\n<p class=\"note\">id <span class=\"id\">");
 	h_id(h, &e->id);
 	HL(h, "</span></p>\n");
+	if (writable(x)) {
+		HL(h, "<div class=\"actions\"><a href=\"/t/");
+		h_id(h, &e->id);
+		HL(h, "/edit\">Edit</a> &middot; <a href=\"/new?parent=");
+		h_id(h, &e->id);
+		HL(h, "\">Add subtask</a> &middot; ");
+		small_form(x, &e->id, "");
+		HL(h, "<input type=\"hidden\" name=\"head\" value=\"");
+		h_id(h, &e->head);
+		HL(h, "\"><input type=\"hidden\" name=\"o.status\" value=\"");
+		h_text(h, tix_ticket_status_name(t->status));
+		HL(h, "\"><label>Status <select name=\"status\">");
+		for (int s = 0; s < 5; s++) {
+			HL(h, "<option");
+			if ((int)t->status == s)
+				HL(h, " selected");
+			HL(h, ">");
+			h_text(h, tix_ticket_status_name((tix_ticket_status)s));
+			HL(h, "</option>");
+		}
+		HL(h, "</select></label> <button>Set</button></form></div>\n");
+	}
 	if (t->body && *t->body) {
 		HL(h, "<div class=\"body\">");
 		h_text(h, t->body);
@@ -337,9 +417,26 @@ void page_ticket(web_ctx *x)
 		h_time(h, c->time);
 		if (c->edited)
 			HL(h, " (edited)");
+		tix_oid me;
+		if (writable(x) && tix_repo_identity(x->app->cfg.repo, &me) && tix_oid_eq(&me, &c->author)) {
+			char sid[TIX_OID_MAX_HEX + 16];
+			HL(h, " &middot; <a href=\"/t/");
+			h_id(h, &e->id);
+			HL(h, "/comment/");
+			h_text(h, tix_opid_str(&c->id, sid));
+			HL(h, "\">edit</a>");
+		}
 		HL(h, "</p><div class=\"body\">");
 		h_text(h, c->body);
 		HL(h, "</div></div>\n");
+	}
+	if (writable(x)) {
+		HL(h, "<form method=\"post\" action=\"/t/");
+		h_id(h, &e->id);
+		HL(h, "/comment\">");
+		form_csrf(x);
+		HL(h, "<label>Add a comment<br><textarea name=\"body\" rows=\"4\" cols=\"70\" required></textarea></label>"
+		      "<br><button>Comment</button></form>\n");
 	}
 	page_end(x);
 	tix_plan_result_free(&pr);

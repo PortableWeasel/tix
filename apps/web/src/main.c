@@ -185,8 +185,14 @@ int main(int argc, char **argv)
 		}
 	}
 
+	static char remote[128] = "origin";
+	tix_buf rb = TIX_BUF_INIT;
+	if (!tix_store_libgit_config_get(store, "tix.remote", &rb, NULL) && rb.len && rb.len < sizeof(remote))
+		snprintf(remote, sizeof(remote), "%s", rb.data);
+	tix_buf_free(&rb);
 	static web_app app; /* large; not on the stack */
-	web_app_config acfg = {.repo = repo, .random = env_random, .today = today, .read_only = read_only};
+	web_app_config acfg = {.repo = repo, .random = env_random, .today = today, .read_only = read_only,
+			       .remote = remote};
 	web_app_init(&app, &acfg);
 	runner r = {.app = &app, .open_browser = open_browser};
 	snprintf(r.host, sizeof(r.host), "%s", host);

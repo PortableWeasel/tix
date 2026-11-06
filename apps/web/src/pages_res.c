@@ -132,7 +132,13 @@ void page_resource(web_ctx *x)
 		HL(h, "yes");
 	else
 		HL(h, "no");
-	HL(h, "</td></tr>\n</tbody></table>\n<h2>Open assignments</h2>\n");
+	HL(h, "</td></tr>\n</tbody></table>\n");
+	if (!x->app->cfg.read_only) {
+		HL(h, "<p><a href=\"/res/");
+		h_id(h, &e->id);
+		HL(h, "/edit\">Edit</a></p>\n");
+	}
+	HL(h, "<h2>Open assignments</h2>\n");
 	if (!l.n)
 		HL(h, "<p class=\"note\">None.</p>\n");
 	else
@@ -197,7 +203,14 @@ void page_calendar(web_ctx *x)
 	h_weekdays(h, c->weekdays);
 	HL(h, "</td></tr>\n<tr><th>Hours per day</th><td>");
 	h_int(h, c->hours);
-	HL(h, "</td></tr>\n</tbody></table>\n<h2>Exceptions</h2>\n");
+	HL(h, "</td></tr>\n</tbody></table>\n");
+	bool w = !x->app->cfg.read_only;
+	if (w) {
+		HL(h, "<p><a href=\"/cal/");
+		h_id(h, &e->id);
+		HL(h, "/edit\">Edit</a></p>\n");
+	}
+	HL(h, "<h2>Exceptions</h2>\n");
 	if (!c->nexceptions)
 		HL(h, "<p class=\"note\">None.</p>\n");
 	else
@@ -215,10 +228,32 @@ void page_calendar(web_ctx *x)
 			HL(h, "off");
 		HL(h, "</td><td>");
 		h_text(h, ex->note);
+		HL(h, "</td><td>");
+		if (w) {
+			HL(h, "<form class=\"inline\" method=\"post\" action=\"/cal/");
+			h_id(h, &e->id);
+			HL(h, "/exception\">");
+			form_csrf(x);
+			HL(h, "<input type=\"hidden\" name=\"op\" value=\"clear\"><input type=\"hidden\" name=\"from\" value=\"");
+			h_date(h, ex->from);
+			HL(h, "\"><input type=\"hidden\" name=\"to\" value=\"");
+			h_date(h, ex->to);
+			HL(h, "\"><button>remove</button></form>");
+		}
 		HL(h, "</td></tr>\n");
 	}
 	if (c->nexceptions)
 		HL(h, "</tbody></table>\n");
+	if (w) {
+		HL(h, "<form method=\"post\" action=\"/cal/");
+		h_id(h, &e->id);
+		HL(h, "/exception\">");
+		form_csrf(x);
+		HL(h, "<label><select name=\"op\"><option value=\"off\">Day off</option><option value=\"on\">Extra working day"
+		      "</option></select></label> <label>from <input type=\"date\" name=\"from\" required></label> "
+		      "<label>to <input type=\"date\" name=\"to\"></label> <label>note <input name=\"note\" size=\"20\">"
+		      "</label> <button>Add</button></form>\n");
+	}
 	page_end(x);
 	tix_entity_free(e);
 }

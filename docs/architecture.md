@@ -690,8 +690,10 @@ Loopback alone doesn't keep other local users or web pages out.
     SameSite=Strict; Path=/) and answers 303 to `/`, so the token leaves the address bar
     at once. This works without JS. A URL fragment wouldn't, because only a script can
     read it.
-  - The server never logs URLs, and `Referrer-Policy: no-referrer` keeps the token out
-    of outgoing requests. It stays only in the user's own browser history. A `/login`
+  - The server never logs URLs, and `Referrer-Policy: same-origin` keeps the token out
+    of requests to other sites. (`no-referrer` is not an option: browsers then send
+    `Origin: null` on form posts, which the CSRF check must refuse. Found with a real
+    browser, M6.) It stays only in the user's own browser history. A `/login`
     form for pasting the token covers a browser on another machine.
   - Every other request without a valid cookie gets 401, with the login form and a note
     that `tix web` printed the URL.
@@ -709,7 +711,7 @@ Loopback alone doesn't keep other local users or web pages out.
   - `Content-Security-Policy: default-src 'none'; style-src 'self'; script-src 'self';
     img-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none';
     base-uri 'none'`
-  - `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+  - `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`,
     `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`
   - `Cache-Control: no-store` on pages
 - **Output escaping by construction**: `html.c` has `h_text`, `h_attr` and `h_url`

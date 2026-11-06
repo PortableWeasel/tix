@@ -36,6 +36,8 @@ void web_app_init(web_app *app, const web_app_config *cfg)
 {
 	memset(app, 0, sizeof(*app));
 	app->cfg = *cfg;
+	if (!app->cfg.remote)
+		app->cfg.remote = "origin"; /* as the CLI defaults */
 	app->err = (tix_error)TIX_ERROR_INIT;
 	random_hex(app, app->token);
 	snprintf(app->css_url, sizeof(app->css_url), "/assets/%s", asset_css_name());
@@ -44,7 +46,7 @@ void web_app_init(web_app *app, const web_app_config *cfg)
 		 "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'\r\n"
 		 "X-Content-Type-Options: nosniff\r\n"
 		 "X-Frame-Options: DENY\r\n"
-		 "Referrer-Policy: no-referrer\r\n"
+		 "Referrer-Policy: same-origin\r\n" /* no-referrer makes browsers send Origin: null */
 		 "Cross-Origin-Opener-Policy: same-origin\r\n"
 		 "Cross-Origin-Resource-Policy: same-origin\r\n");
 }
@@ -273,6 +275,69 @@ static void serve_asset(web_ctx *x)
 	tix_buf_add(&x->res->body, body, len);
 }
 
+static void res_edit(web_ctx *x) { page_named_edit(x, TIX_ENTITY_RESOURCE); }
+static void cal_edit(web_ctx *x) { page_named_edit(x, TIX_ENTITY_CALENDAR); }
+static void res_post(web_ctx *x) { post_named(x, TIX_ENTITY_RESOURCE); }
+static void cal_post(web_ctx *x) { post_named(x, TIX_ENTITY_CALENDAR); }
+
+typedef struct route_def {
+	const char *seg0;
+	size_t nsegs;
+	const char *seg_at;  /* NULL: any; else segs[at] must equal it */
+	size_t at;
+	void (*fn)(web_ctx *);
+} route_def;
+
+/* First match wins: specific paths (/res/new) come before patterns (/res/ID). */
+static const route_def get_routes[] = {
+	{"tickets", 1, NULL, 0, page_tickets},  {"new", 1, NULL, 0, page_new},
+	{"t", 3, "edit", 2, page_ticket_edit},  {"t", 4, "comment", 2, page_comment_edit},
+	{"t", 2, NULL, 0, page_ticket},         {"wbs", 1, NULL, 0, page_wbs},
+	{"plan", 1, NULL, 0, page_plan_view},   {"load", 1, NULL, 0, page_load},
+	{"export", 1, NULL, 0, page_export},    {"res", 1, NULL, 0, page_resources},
+	{"res", 2, "new", 1, res_edit},         {"res", 3, "edit", 2, res_edit},
+	{"res", 2, NULL, 0, page_resource},     {"cal", 1, NULL, 0, page_calendars},
+	{"cal", 2, "new", 1, cal_edit},         {"cal", 3, "edit", 2, cal_edit},
+	{"cal", 2, NULL, 0, page_calendar},     {"id", 1, NULL, 0, page_identities},
+	{"sync", 1, NULL, 0, page_sync},
+};
+static const route_def post_routes[] = {
+	{"new", 1, NULL, 0, post_new},            {"t", 2, NULL, 0, post_ticket},
+	{"t", 3, "comment", 2, post_comment},     {"t", 4, "comment", 2, post_comment},
+	{"t", 3, "dep", 2, post_dep},             {"t", 3, "assign", 2, post_assign},
+	{"res", 2, NULL, 0, res_post},            {"cal", 2, NULL, 0, cal_post},
+	{"cal", 3, "exception", 2, post_exception}, {"sync", 1, NULL, 0, post_sync},
+};
+
+static const route_def *match(const web_ctx *x, const route_def *r, size_t n)
+{
+	for (size_t i = 0; i < n; i++)
+		if (is(x, 0, r[i].seg0) && x->nsegs == r[i].nsegs && (!r[i].seg_at || is(x, r[i].at, r[i].seg_at)))
+			return &r[i];
+	return NULL;
+}
+
+/* RETURNS false when nothing matched (the caller answers 404). */
+static bool route(web_ctx *x, bool get, bool post)
+{
+	const route_def *g = match(x, get_routes, sizeof(get_routes) / sizeof(*get_routes));
+	const route_def *p = match(x, post_routes, sizeof(post_routes) / sizeof(*post_routes));
+	if (get && g) {
+		g->fn(x);
+		return true;
+	}
+	if (post && p) {
+		p->fn(x);
+		return true;
+	}
+	if (g || p) {
+		page_error(x, 405, "Method not allowed", get ? "This address only takes forms." : "This page has no form to send.");
+		web_header(x->res, "Allow", g && p ? "GET, HEAD, POST" : g ? "GET, HEAD" : "POST");
+		return true;
+	}
+	return false;
+}
+
 void web_app_handle(void *vapp, const web_request *req, web_response *res)
 {
 	web_app *app = vapp;
@@ -342,25 +407,7 @@ void web_app_handle(void *vapp, const web_request *req, web_response *res)
 		web_redirect(&x, "/tickets");
 		return;
 	}
-	static const struct {
-		const char *seg;
-		size_t nsegs;
-		void (*get)(web_ctx *);
-	} routes[] = {
-		{"tickets", 1, page_tickets}, {"t", 2, page_ticket},      {"wbs", 1, page_wbs},
-		{"plan", 1, page_plan_view},  {"load", 1, page_load},     {"export", 1, page_export},
-		{"res", 1, page_resources},   {"res", 2, page_resource},  {"cal", 1, page_calendars},
-		{"cal", 2, page_calendar},    {"id", 1, page_identities},
-	};
-	for (size_t i = 0; i < sizeof(routes) / sizeof(*routes); i++)
-		if (is(&x, 0, routes[i].seg) && x.nsegs == routes[i].nsegs) {
-			if (get) {
-				routes[i].get(&x);
-				return;
-			}
-			page_error(&x, 405, "Method not allowed", "This page has no form to send.");
-			web_header(res, "Allow", "GET, HEAD");
-			return;
-		}
+	if (route(&x, get, post))
+		return;
 	page_error(&x, 404, "Not found", "No such page.");
 }

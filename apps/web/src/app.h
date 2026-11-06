@@ -26,6 +26,7 @@ typedef struct web_app_config {
 	tix_date (*today)(void *ctx);
 	void *today_ctx;
 	bool read_only;
+	const char *remote; /* for sync: git config tix.remote, else "origin" */
 } web_app_config;
 
 typedef struct web_app {
@@ -117,5 +118,20 @@ void page_calendars(web_ctx *x);
 void page_calendar(web_ctx *x);
 void page_identities(web_ctx *x);
 void page_export(web_ctx *x);
+
+/* Forms (forms.c, actions.c). */
+void page_new(web_ctx *x);
+void post_new(web_ctx *x);
+void page_ticket_edit(web_ctx *x);
+void post_ticket(web_ctx *x);
+void post_comment(web_ctx *x);
+void page_comment_edit(web_ctx *x);
+void post_dep(web_ctx *x);
+void post_assign(web_ctx *x);
+void page_named_edit(web_ctx *x, tix_entity_type t);
+void post_named(web_ctx *x, tix_entity_type t);
+void post_exception(web_ctx *x);
+void page_sync(web_ctx *x);
+void post_sync(web_ctx *x);
 
 #endif
