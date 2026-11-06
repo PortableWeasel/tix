@@ -17,12 +17,10 @@ static int need_value(int i, int argc, const char *opt)
 
 int cmd_assign(cli *c, int argc, char **argv)
 {
-	const char *ticket = NULL, *res = NULL;
-	int64_t effort = -1, units = 100;
+	const char *ticket = NULL, *res = NULL, *effort = NULL;
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--effort") && need_value(i, argc, argv[i])) {
-			if (!cli_parse_count(argv[++i], "h", TIX_EFFORT_MAX, &effort))
-				return cli_usage("--effort: hours, like 16h");
+			effort = argv[++i];
 		} else if (argv[i][0] == '-') {
 			return cli_usage("assign: unexpected '%s'", argv[i]);
 		} else if (!ticket) {
@@ -35,25 +33,17 @@ int cmd_assign(cli *c, int argc, char **argv)
 	}
 	if (!ticket || !res)
 		return cli_usage("usage: tix assign TICKET RESOURCE[:50%%] [--effort 8h]");
-	char rbuf[128];
-	const char *colon = strchr(res, ':');
-	size_t rlen = colon ? (size_t)(colon - res) : strlen(res);
-	if (rlen >= sizeof(rbuf))
-		return cli_usage("assign: resource id too long");
-	memcpy(rbuf, res, rlen);
-	rbuf[rlen] = '\0';
-	if (colon && !cli_parse_count(colon + 1, "%", TIX_UNITS_MAX, &units))
-		return cli_usage("assign: units must look like 50%%");
-	if (units < 1)
-		return cli_usage("assign: units must be at least 1%%");
-	tix_oid t, r;
+	tix_oid t;
 	int rc = cli_resolve(c, TIX_ENTITY_TICKET, ticket, &t);
-	if (!rc)
-		rc = cli_resolve(c, TIX_ENTITY_RESOURCE, rbuf, &r);
 	if (rc)
 		return rc;
-	tix_op op = tix_op_assign(&r, (int32_t)units, effort);
-	tix_status st = tix_entity_apply(c->repo, TIX_ENTITY_TICKET, &t, &op, 1, &c->err);
+	tix_input_ctx ctx = cli_input_ctx(c);
+	tix_op op;
+	bool syntax;
+	tix_status st = tix_input_assignment(&ctx, res, effort, &op, &syntax, &c->err);
+	if (st)
+		return cli_input_fail(c, st, syntax, "");
+	st = tix_entity_apply(c->repo, TIX_ENTITY_TICKET, &t, &op, 1, &c->err);
 	tix_op_free(&op);
 	return st ? cli_fail(c, st) : EXIT_OK;
 }
@@ -89,7 +79,7 @@ static int parse_plan_args(int argc, char **argv, plan_args *a, bool allow_views
 	a->today = cli_today();
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--today") && need_value(i, argc, argv[i])) {
-			if (!cli_parse_date(argv[++i], &a->today))
+			if (!tix_input_date(argv[++i], cli_today(), &a->today))
 				return cli_usage("--today: not a date");
 		} else if (allow_views && !strcmp(argv[i], "--gantt")) {
 			a->gantt = true;

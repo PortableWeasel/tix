@@ -43,11 +43,11 @@ int cmd_new(cli *c, int argc, char **argv)
 {
 	tix_buf title = TIX_BUF_INIT, body = TIX_BUF_INIT, text = TIX_BUF_INIT;
 	tix_strs labels = {0};
-	cli_plan pl = {0};
+	tix_input pl = {0};
 	bool have_title = false, have_body = false;
 	int rc = EXIT_OK;
 	for (int i = 1; i < argc && rc == EXIT_OK; i++) {
-		int prc = cli_plan_opt(c, argc, argv, &i, &pl);
+		int prc = cli_input_opt(c, TIX_ENTITY_TICKET, false, argc, argv, &i, &pl);
 		if (prc != CLI_NOT_MINE) {
 			rc = prc;
 		} else if (!strcmp(argv[i], "-t") && need_value(i, argc, argv[i])) {
@@ -83,8 +83,10 @@ int cmd_new(cli *c, int argc, char **argv)
 	}
 	tix_oid id;
 	char s[16];
-	if (rc == EXIT_OK)
-		rc = cli_plan_finish(c, &pl, NULL, NULL);
+	tix_input_ctx ictx = cli_input_ctx(c);
+	tix_status fst;
+	if (rc == EXIT_OK && (fst = tix_input_finish(&ictx, &pl, NULL, NULL, &c->err)))
+		rc = cli_fail(c, fst);
 	if (rc == EXIT_OK) {
 		TIX_VEC(tix_op) ops = {0};
 		TIX_VEC_PUSH(&ops, tix_op_ticket_create(NULL, tix_buf_cstr(&title), tix_buf_cstr(&body), &labels));
@@ -98,7 +100,7 @@ int cmd_new(cli *c, int argc, char **argv)
 		else
 			printf("Created ticket %s\n", cli_short(&id, s));
 	}
-	cli_plan_free(&pl);
+	tix_input_free(&pl);
 	tix_buf_free(&title);
 	tix_buf_free(&body);
 	tix_buf_free(&text);
@@ -372,12 +374,12 @@ int cmd_edit(cli *c, int argc, char **argv)
 {
 	TIX_VEC(tix_op) ops = {0};
 	tix_strs add = {0}, rm = {0};
-	cli_plan pl = {0};
+	tix_input pl = {0};
 	const char *ticket = NULL;
 	int rc = EXIT_OK;
 	for (int i = 1; i < argc && rc == EXIT_OK; i++) {
 		const char *a = argv[i];
-		int prc = cli_plan_opt(c, argc, argv, &i, &pl);
+		int prc = cli_input_opt(c, TIX_ENTITY_TICKET, false, argc, argv, &i, &pl);
 		if (prc != CLI_NOT_MINE) {
 			rc = prc;
 		} else if (!strcmp(a, "--title") && need_value(i, argc, a)) {
@@ -413,7 +415,9 @@ int cmd_edit(cli *c, int argc, char **argv)
 		if (st) {
 			rc = cli_fail(c, st);
 		} else {
-			rc = cli_plan_finish(c, &pl, &id, &cur->u.ticket.plan.parent);
+			tix_input_ctx ictx = cli_input_ctx(c);
+			st = tix_input_finish(&ictx, &pl, &id, &cur->u.ticket.plan.parent, &c->err);
+			rc = st ? cli_fail(c, st) : EXIT_OK;
 			tix_entity_free(cur);
 		}
 	}
@@ -429,7 +433,7 @@ int cmd_edit(cli *c, int argc, char **argv)
 	for (size_t i = 0; i < ops.n; i++)
 		tix_op_free(&ops.v[i]);
 	free(ops.v);
-	cli_plan_free(&pl);
+	tix_input_free(&pl);
 	tix_strs_free(&add);
 	tix_strs_free(&rm);
 	return rc;

@@ -32,6 +32,7 @@ add_subdirectory(modules/index_contract)  # test support only
 add_subdirectory(modules/index_mem)
 add_subdirectory(modules/index_sqlite)
 add_subdirectory(modules/core)
+add_subdirectory(modules/input)
 add_subdirectory(modules/store_libgit)
 
 add_subdirectory(apps/cli)

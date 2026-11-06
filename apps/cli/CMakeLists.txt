@@ -2,7 +2,7 @@
 # so `git tix ...` works.
 add_executable(tix src/main.c src/cmd_id.c src/cmd_ticket.c src/cmd_sync.c src/cmd_plan.c
   src/cmd_res.c src/planopts.c src/editor.c)
-target_link_libraries(tix PRIVATE tix::core tix::export tix::index_sqlite tix::store_libgit)
+target_link_libraries(tix PRIVATE tix::core tix::input tix::export tix::index_sqlite tix::store_libgit)
 tix_apply_warnings(tix)
 
 add_custom_command(TARGET tix POST_BUILD

@@ -45,7 +45,7 @@ cmake/GitLib.cmake      builds git.git's libgit.a, xdiff, reftable → tix::gitl
 cmake/TixModule.cmake   tix_module() + configure-time include-boundary enforcement
 modules/<name>/         libraries: include/tix/<name>*.h, src/, tests/
                         base, store, store_mem, model, plan, export, index,
-                        index_mem, index_sqlite, core, store_libgit;
+                        index_mem, index_sqlite, core, input, store_libgit;
                         testkit, sim, store_contract, index_contract are test-only
 apps/cli/               the `tix` / `git-tix` frontend; tests/cli.sh is the end-to-end test
 spikes/                 throwaway proofs, deleted once the real module exists (none now)

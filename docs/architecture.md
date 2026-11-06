@@ -53,13 +53,14 @@ processes or a terminal is an adapter behind a vtable interface.
 | `store` | base | `tix_store` vtable: op-pack commit write/read (the adapter owns the one-blob tree layout), ref read / list-by-prefix / compare-and-swap (CAS) update, per-clone local state, and (M3) `remote_fetch` / `remote_push` to a configured remote |
 | `index` | base, model | `tix_index` vtable (M5 ✅): cache of replayed entities, keyed by (type, entity id); a lookup hits only when the stored head equals the ref's current head |
 | `core` | base, model, plan, store, index | The public API frontends use |
+| `input` | base, model, core | (M6 ✅) The text forms of field values shared by frontends: dates, `3d`/`16h`/`40%`, `+ID:FS+2d`, ranks, weekdays, ranges, rates. Field name + text → ops, with `<field>: …` messages |
 | `export` | base, model, plan | Render a computed plan to Mermaid gantt, CSV, JSON. No I/O: writes into a `tix_buf` |
 | `store_libgit` | base, store, **libgit.a** | The **only** module allowed git.git headers |
 | `store_mem` | base, store | In-memory store for fast, deterministic model/core/plan tests; content-addressed with a non-cryptographic hash; simulated fetch |
 | `index_mem`, `index_contract` | base, index | In-memory cache for core tests; the shared index contract (test-only) |
 | `testkit`, `sim` | (tests only) | Check macros + PRNG; simulated clones (store_mem + clock + identity) that write, fetch and merge like core/sync will |
 | `index_sqlite` | base, index, sqlite3 | `$GIT_DIR/tix/index.db`, disposable and rebuildable. The only module that includes `sqlite3.h` |
-| `apps/cli` | core, export + adapter ctors | Arg parsing, formatting, ASCII Gantt/tree, `$EDITOR`, exit codes. **No business logic** |
+| `apps/cli` | core, input, export + adapter ctors | Arg parsing, formatting, ASCII Gantt/tree, `$EDITOR`, exit codes. **No business logic** |
 
 Rules (enforced at CMake configure time, as in `~/projects/loom`):
 
