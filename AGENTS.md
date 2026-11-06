@@ -48,8 +48,10 @@ modules/<name>/         libraries: include/tix/<name>*.h, src/, tests/
                         index_mem, index_sqlite, core, input, store_libgit;
                         testkit, sim, store_contract, index_contract are test-only
 apps/cli/               the `tix` / `git-tix` frontend; tests/cli.sh is the end-to-end test
+apps/web/               `tix-web`, the web UI (M6); src/web_http.h is its view of HTTP
 spikes/                 throwaway proofs, deleted once the real module exists (none now)
 third_party/git/        git.git submodule, pinned at v2.47.3 (do not edit)
+third_party/mongoose/   Cesanta Mongoose submodule, pinned at 7.23 (do not edit); cmake/Mongoose.cmake
 docs/architecture.md    the design
 ```
 
@@ -82,12 +84,15 @@ cmake --preset release && cmake --build --preset release
 4. **git.git is quarantined.** Only `modules/store_libgit/src/` (and `spikes/`) may include
    git.git headers or link `tix::gitlib`. No git types (`struct object_id`, `strbuf`, …)
    may appear in any `tix/*.h` public header. Convert at the adapter boundary.
-5. **Frontends hold no business logic.** `apps/*` parse arguments, call `core`/`export`,
+5. **Mongoose is quarantined** too: only `apps/web/src/http_mongoose.c` includes
+   `mongoose.h` (configure fails otherwise). Its TLS, TCP/IP stack, logging, directory
+   listing and SSI stay compiled out. Bump the pin only after reading its advisories.
+6. **Frontends hold no business logic.** `apps/*` parse arguments, call `core`/`export`,
    and format output. If a CLI command needs a rule, the rule belongs in `core`, `model`
    or `plan`.
-6. **Library modules never** print, call `exit()`/`abort()` for recoverable errors, read
+7. **Library modules never** print, call `exit()`/`abort()` for recoverable errors, read
    argv/env, or read the clock. "Now" and the local identity are passed in by the caller.
-7. **Single-threaded** in v1 (git.git's library code is not thread-safe).
+8. **Single-threaded** in v1 (git.git's library code is not thread-safe).
 
 ## C conventions
 

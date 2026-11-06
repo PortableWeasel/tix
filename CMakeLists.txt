@@ -12,6 +12,7 @@ option(TIX_SANITIZE "Build with ASan + UBSan" OFF)
 include(CTest)
 include(cmake/TixModule.cmake)
 include(cmake/GitLib.cmake)
+include(cmake/Mongoose.cmake)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET libcjson)
@@ -36,3 +37,4 @@ add_subdirectory(modules/input)
 add_subdirectory(modules/store_libgit)
 
 add_subdirectory(apps/cli)
+add_subdirectory(apps/web)

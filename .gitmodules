@@ -2,3 +2,7 @@
 	path = third_party/git
 	url = https://github.com/git/git.git
 	shallow = true
+[submodule "third_party/mongoose"]
+	path = third_party/mongoose
+	url = https://github.com/cesanta/mongoose.git
+	shallow = true

@@ -566,7 +566,7 @@ mode is kept possible but not built (§13.8).
 | facil.io 0.7 / 0.8 (cstl) | 0.7 is stale with an unpatched JSON CVE. 0.8 is very new and churning (5 releases in 3 weeks, High advisories 2026-11-03), and handlers may run on several threads |
 | libevent evhttp, CivetWeb, h2o, Kore, lwan, libsoup, onion, own server on llhttp | No multipart/cookies (evhttp); a thread pool and no release since 2023 (CivetWeb); too large, a framework, Linux-only, GLib, unmaintained; or 1.5–3k lines of our own security-sensitive parsing |
 
-- **Vendored** as the submodule `third_party/mongoose` at tag `7.23`
+- ✅ (M6) **Vendored** as the submodule `third_party/mongoose` at tag `7.23`
   (`02bdbb9ed6f0a8f7c42228c6e7cb35d748b60551`), built by CMake as a plain static library.
   It is checked to compile warning-free under C17 with tix's full warning set and
   ASan/UBSan. Bumped deliberately, after reading the advisories
@@ -582,6 +582,10 @@ mode is kept possible but not built (§13.8).
   (method, path, decoded query and form fields, cookies, selected headers, peer address)
   and a response builder. Handlers are therefore plain functions from request to
   response, testable without sockets, and the library can be swapped behind one file.
+  Mongoose only splits a request into method, path, query, headers and body. Decoding
+  forms and cookies (with the limits of §13.6) is our own `request.c`, fuzzed in its tests.
+  Bodies that are too large (413), chunked (501) or not forms (415) are refused from the
+  headers alone, before the body is read.
 
 ### 13.2 Process and layering
 
