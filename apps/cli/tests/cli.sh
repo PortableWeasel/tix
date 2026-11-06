@@ -205,6 +205,8 @@ has "1.1        $paper    Paperwork                     2026-11-09  2026-11-10  
 has "plan: 2026-11-09..2026-11-19"; hasnt "LATE"
 expect 0 "$TIX" plan "$house" --critical; hasnt "Paperwork"; has "Walls"
 expect 0 "$TIX" plan "$house" --gantt; has "|2026-11-09"; has "Walls                       |       ####"
+[ "$(awk 'NF == 0 { exit } /\|/ { print index($0, "|") }' <<<"$out" | sort -u | wc -l)" = 1 ] ||
+	fail "gantt header and rows are misaligned: $out"
 expect 0 "$TIX" plan "$house" --load; has "Ada"; has "Crew"; hasnt "OVER-ALLOCATED"
 expect 0 "$TIX" edit "$walls" --duration 6d
 expect 0 "$TIX" plan "$house"; has "LATE"; has "after its deadline 2026-11-20"

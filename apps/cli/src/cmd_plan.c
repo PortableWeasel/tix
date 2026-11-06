@@ -225,14 +225,14 @@ static void gantt(const tix_schedule *s)
 	if (cols > 160)
 		cols = 160;
 	char d1[TIX_DATE_STR];
-	printf("%-10s %-30s |", "", step == 1 ? "(one column per day)" : "(one column per week)");
+	printf("%-10s %-30s|", "", step == 1 ? "(one column per day)" : "(one column per week)");
 	for (int64_t k = 0; k < cols; k++) { /* mark Mondays / month starts */
 		tix_date d = s->start + (tix_date)(k * step);
 		int day;
 		tix_date_ymd(d, NULL, NULL, &day);
 		putchar(step == 1 ? (tix_date_weekday(d) == 0 ? '|' : ' ') : (day <= 7 ? '|' : ' '));
 	}
-	printf("\n%-10s %-30s |%s\n", "", "", tix_date_str(s->start, d1));
+	printf("\n%-10s %-30s|%s\n", "", "", tix_date_str(s->start, d1));
 	for (size_t i = 0; i < s->ntasks; i++) {
 		const tix_plan_task *t = &s->tasks[i];
 		printf("%-10s ", t->wbs);
