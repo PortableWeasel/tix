@@ -1,6 +1,6 @@
 # tix — architecture
 
-Status: **draft v0.2 (2026-11-06)**. ✅ = agreed, ❓ = open.
+Status: **v1.0 (2026-11-06) — agreed baseline for implementation**. ✅ = agreed, ❓ = deferred beyond v1.
 
 ## 1. Goals
 
@@ -158,7 +158,7 @@ Tickets are both tracker items and plan nodes. A ticket with no parent is a **WB
 |---|---|---|
 | title | string | LWW |
 | body | markdown | LWW |
-| status | `open` \| `in-progress` \| `blocked` \| `done` \| `cancelled` | LWW |
+| status | `open` \| `in-progress` \| `blocked` \| `done` \| `cancelled` (✅ fixed set) | LWW |
 | labels | strings | OR-set |
 | comments | `{body}` + `edit-comment` | append log; edit = LWW per comment, author must match |
 
@@ -206,6 +206,8 @@ can't leave codes out of date.
 | rate | `{amount, currency, per: hour}` \| null | LWW | optional cost estimate |
 | active | bool | LWW | archive without deleting |
 
+✅ v1 has no edit control on resources or calendars (same as tickets): any author may edit.
+
 ### 4.4 Calendar — `refs/tix/calendars/<id>`
 
 | Field | Type | Merge |
@@ -234,10 +236,10 @@ per-resource daily load, diagnostics).
    (A→B on one clone, B→A on another). Drop the cycle edge whose op is greatest in total
    order. Every clone drops the same edge, and a diagnostic is reported. Dependency cycles
    are broken the same way and also reported.
-3. **Duration.** Use `duration` if set. Otherwise `effort / Σ(assignment units × capacity ×
+3. **Duration** ✅. Use `duration` if set. Otherwise `effort / Σ(assignment units × capacity ×
    calendar hours/day)`, rounded up to whole working days. Otherwise the task is
    *unscheduled* (listed but not drawn). Milestones are 0.
-4. **CPM forward/backward pass** on working-day calendars (the task's inherited calendar)
+4. **CPM forward/backward pass** on working-day calendars (✅ whole working days in v1; hours only for effort) (the task's inherited calendar)
    gives early/late start and finish, total float and the critical path. Inputs are
    FS/SS/FF/SF dependencies with lag, `start` (start-no-earlier-than) and the parent's start.
    Manual tasks are fixed points. Summary tasks span min(child start) to max(child finish).
@@ -356,10 +358,17 @@ Also installed as `git-tix`, so `git tix …` works.
 6. **M5 index**: SQLite cache and queries.
 7. Later: signature enforcement, baselines, TUI, Forgejo issue bridge, MS Project XML export.
 
-## 12. Open questions
+## 12. Resolved decisions (2026-11-06)
 
-1. Status set: fixed five values (above), or configurable per WBS root?
-2. Effort-driven duration: the simple formula in §5.3 is enough for v1?
-3. Time granularity: whole working days in v1 (hours only for effort). OK?
-4. Who may edit resources and calendars: anyone (as with tickets), or the creator plus
-   listed maintainers once signatures exist?
+| # | Question | Decision |
+|---|---|---|
+| 1 | Hosting / storage | Custom refs + op-pack DAG (git-bug model) |
+| 2 | Language / git | C17, git.git `libgit.a` pinned to system git v2.47.3 |
+| 3 | License | GPL-2.0-only |
+| 4 | Network transport | `git` subprocess |
+| 5 | Identities | Identity refs in v1 |
+| 6 | Op-pack encoding | NDJSON |
+| 7 | Status set | Fixed five values |
+| 8 | Effort → duration | Simple formula (§5.3) |
+| 9 | Time granularity | Whole working days; hours for effort only |
+| 10 | Edit control on resources/calendars | None in v1 |
