@@ -526,7 +526,8 @@ Also installed as `git-tix`, so `git tix …` works.
 5. ✅ **M4 planning** (done 2026-11-06): WBS/scheduling/assignment fields, resource and calendar
    entities, `plan`, `tix wbs/plan/assign/res/cal`, `export`.
 6. ✅ **M5 index** (done 2026-11-06): SQLite cache of replayed entities, `tix index`.
-7. **M6 web UI, no JavaScript** (§13): `input` module, Mongoose adapter, pages, forms, SVG Gantt, `tix web`.
+7. ✅ **M6 web UI, no JavaScript** (done 2026-11-06, §13): `input` module, store refresh, Mongoose
+   adapter, pages, forms, SVG Gantt, `tix web`.
 8. **M7 web UI enhancements** (§13.4): search as you type, Gantt editing, live refresh.
 9. Later: signature enforcement, baselines, TUI, Forgejo issue bridge, MS Project XML export,
    hosted web mode (§13.8).
@@ -725,7 +726,7 @@ Loopback alone doesn't keep other local users or web pages out.
 - **`--read-only`**: no POST routes are registered and forms are not rendered.
 - **No file system serving**: assets are compiled in and looked up by exact name.
 
-### 13.7 Testing
+### 13.7 Testing (M6 ✅)
 
 - **Handler tests** (no sockets): fake `web_http` requests against core on `store_mem`.
   They cover golden HTML fragments, PRG redirects, 422 re-rendering, changed-fields-only
@@ -736,10 +737,20 @@ Loopback alone doesn't keep other local users or web pages out.
   - hostile titles, bodies, labels and comments (`<script>`, quotes, `javascript:` URLs,
     RTL overrides) escaped in every page and in the SVG;
   - a fuzz target for the form/query decoder.
-- **Socket smoke test**: start `tix-web` on port 0 against a throwaway repo, then log in,
-  create, edit and comment over real HTTP. Plus an ASan soak test of a few thousand
-  requests to catch leaks across requests.
-- **No-JS check**: every M7 interaction has a test proving its form fallback works.
+- **Adapter tests** (`web.http`): a forked server on port 0 and raw sockets: keep-alive and
+  pipelining, HEAD, 413/501/415/400 before the body is read, garbage, 200 headers, idle
+  timeout, the connection cap.
+- **Smoke test** (`web.smoke`): the real `tix-web` on port 0 in a throwaway git repository.
+  It logs in, creates, edits and comments over real HTTP, while the CLI writes next to it
+  (the next page must show it). The CLI then sees the web's writes. A forged form is
+  refused. Then a soak of 3000 requests; under ASan, `tix-web` must exit 0 on SIGTERM, so
+  a leak per request fails the test (mutation-checked).
+- **Mutation checks**: the stale-tab test fails with conflict detection off; the store
+  refresh test fails with refresh as a no-op.
+- **Browser checks** (by hand in M6, headless Chrome): every page in light and dark with no
+  CSP violation, and the forms driven with JavaScript disabled. This found the
+  `Referrer-Policy` / `Origin: null` problem (§13.6).
+- **No-JS check** (M7): every M7 interaction has a test proving its form fallback works.
 
 ### 13.8 Hosted mode later (not built in M6–M7)
 

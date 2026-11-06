@@ -25,7 +25,11 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
   resource load, and `export` to Mermaid gantt, CSV and JSON.
 - **M5 done**: a disposable SQLite cache of replayed entities (`$GIT_DIR/tix/index.db`),
   which makes listing and planning about 10× faster on warm runs (`tix index status|clear`).
-- Later: commit signature enforcement, plan baselines, a TUI, issue-tracker bridges.
+- **M6 done**: `tix web`, a browser UI that needs no JavaScript: tickets, WBS, plan with an
+  SVG Gantt, resource load, resources, calendars, sync, and forms for all of it. Loopback
+  only, with a login URL printed at start; edits only write the fields you changed.
+- Next (M7): search as you type, Gantt drag editing, live refresh. Later: commit signature
+  enforcement, plan baselines, a TUI, issue-tracker bridges, a hosted web mode.
 
 tix tracks its own work: `tix pull && tix wbs` in a clone of this repo.
 
@@ -39,6 +43,7 @@ tix show 7a3fe37
 tix comment 7a3fe37 -m "looking into it"
 tix edit 7a3fe37 --status in-progress +p1 -ui
 tix sync                                  # pull + merge + push (origin, or git config tix.remote)
+tix web                                   # browser UI on 127.0.0.1:7480 (prints a login URL)
 
 # planning
 tix cal new "Site crew" --weekdays mon-sat --off 2026-12-24..2026-12-26=Holidays

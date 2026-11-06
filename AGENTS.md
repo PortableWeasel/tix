@@ -22,6 +22,8 @@ change and say why. Never let the code and the doc drift apart silently.
 | M3: pull/merge/push | ✅ done |
 | M4: planning (WBS, scheduling, resources, calendars, `plan`, `export`) | ✅ done |
 | M5: SQLite `index` | ✅ done |
+| M6: web UI without JavaScript (`input`, Mongoose, `tix web`, §13) | ✅ done |
+| M7: web UI JavaScript enhancements (§13.4) | next (not started) |
 | Later: signature enforcement, baselines, TUI, issue bridges (§11) | tracked in tix |
 
 Work on the current milestone unless asked otherwise. Don't build ahead into later
@@ -175,6 +177,11 @@ cmake --preset release && cmake --build --preset release
 - `plan` tests build entities directly (plain data) and assert golden dates. A change to
   scheduling semantics needs a golden case and the doc's §5 conventions updated. Keep
   `test_determinism` (shuffled input) passing.
+- Web behaviour is covered by `apps/web/tests`: `app.c` (handlers on store_mem: checks,
+  pages, forms, conflicts), `request.c` (decoder + fuzz), `http.c` (the Mongoose adapter
+  over raw sockets) and `smoke.c` (the real `tix-web` in a git repo, plus an ASan soak).
+  Every new page or form gets a handler test that feeds it hostile content
+  (`clean()`), and every POST must go through the session/csrf/Origin checks.
 - CLI behaviour is covered by `apps/cli/tests/cli.sh` (real repos, editor flow, clone
   round trip, a corrupt ref). Extend it with every new command or flag.
 - **Convergence tests**: for any op set, every merge order and DAG shape must produce a

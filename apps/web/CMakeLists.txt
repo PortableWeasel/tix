@@ -37,3 +37,10 @@ target_link_libraries(test_web_app PRIVATE tix_web_app tix::store_mem tix::testk
 tix_apply_warnings(test_web_app)
 add_test(NAME web.app COMMAND test_web_app)
 set_tests_properties(web.app PROPERTIES LABELS web TIMEOUT 60)
+
+# End to end: the real tix-web in a throwaway git repository, plus an ASan soak.
+add_executable(test_web_smoke tests/smoke.c)
+target_link_libraries(test_web_smoke PRIVATE tix::testkit tix::base)
+tix_apply_warnings(test_web_smoke)
+add_test(NAME web.smoke COMMAND test_web_smoke $<TARGET_FILE:tix> $<TARGET_FILE:tix-web>)
+set_tests_properties(web.smoke PROPERTIES LABELS web TIMEOUT 300)
