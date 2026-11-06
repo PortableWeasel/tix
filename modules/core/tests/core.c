@@ -1,5 +1,6 @@
 /* core on store_mem: identity flow, writes, resolve, retries, validation, queries. */
 #include "tix/core.h"
+#include "tix/index_mem.h"
 #include "tix/store_mem.h"
 #include "tix/testkit.h"
 
@@ -56,7 +57,7 @@ static const tix_store_vt flaky_vt = {f_cw, f_cr, f_rr, f_rl, f_cas, f_lg, f_ls,
 
 static tix_repo *open_repo(tix_store *s, fake_env *env, const tix_oid *identity)
 {
-	tix_repo_config cfg = {s, {fake_now, fake_random, env}, {0}};
+	tix_repo_config cfg = {.store = s, .env = {fake_now, fake_random, env}};
 	tix_repo *r = NULL;
 	if (identity)
 		cfg.identity = *identity;
@@ -264,7 +265,7 @@ static void test_list_and_validation(void)
 
 	/* corrupt clock refuses to open; unknown identity refuses to open */
 	TK_OK(tix_store_local_set(s, "clock", "12x\n", 4, &e), &e);
-	tix_repo_config cfg = {s, {fake_now, fake_random, &env}, {0}};
+	tix_repo_config cfg = {.store = s, .env = {fake_now, fake_random, &env}};
 	TK_STATUS(tix_repo_open(&r, &cfg, &e), TIX_ERR_INVALID, &e);
 	TK_OK(tix_store_local_set(s, "clock", "12\n", 3, &e), &e);
 	cfg.identity = a; /* a ticket id, not an identity */
@@ -642,6 +643,103 @@ static void test_planning(void)
 	tix_store_destroy(server);
 }
 
+static void snapshots(tix_repo *r, tix_buf *out)
+{
+	tix_entity_list l;
+	tix_buf_reset(out);
+	TK_OK(tix_ticket_list(r, NULL, &l, &e), &e);
+	for (size_t i = 0; i < l.n; i++)
+		tix_entity_snapshot(l.v[i], out);
+	tix_entity_list_free(&l);
+}
+
+static void test_index(void)
+{
+	fake_env env = {1700000000, 41};
+	tix_store *s = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_index *x = tix_index_mem_new();
+	tix_repo_config cfg = {.store = s, .env = {fake_now, fake_random, &env}, .index = x};
+	tix_repo *r = NULL, *plain = NULL;
+	tix_oid me, t[3];
+	TK_OK(tix_repo_open(&r, &cfg, &e), &e);
+	TK_OK(tix_identity_create(r, "Ada", "a@x", &me, &e), &e);
+	TK_OK(tix_repo_set_identity(r, &me, &e), &e);
+	for (int i = 0; i < 3; i++)
+		TK_OK(tix_ticket_create(r, "T", "", NULL, &t[i], &e), &e);
+	tix_op op = tix_op_text(TIX_OP_COMMENT, "hello");
+	TK_OK(tix_entity_apply(r, TIX_ENTITY_TICKET, &t[1], &op, 1, &e), &e);
+	tix_op_free(&op);
+
+	tix_buf with = TIX_BUF_INIT, without = TIX_BUF_INIT;
+	size_t h0 = tix_index_mem_hits(x);
+	snapshots(r, &with); /* fills the cache */
+	size_t h1 = tix_index_mem_hits(x), m1 = tix_index_mem_misses(x);
+	snapshots(r, &with);
+	TK_CHECK(tix_index_mem_hits(x) - h1 == 3 && tix_index_mem_misses(x) == m1 && h1 >= h0);
+	TK_OK(tix_repo_open(&plain, &(tix_repo_config){.store = s, .env = {fake_now, fake_random, &env}, .identity = me}, &e), &e);
+	snapshots(plain, &without);
+	TK_STR_EQ(tix_buf_cstr(&with), tix_buf_cstr(&without));
+
+	/* a moved ref misses once, then hits again */
+	op = tix_op_set_status(TIX_TICKET_DONE);
+	TK_OK(tix_entity_apply(plain, TIX_ENTITY_TICKET, &t[0], &op, 1, &e), &e); /* a writer without the cache */
+	tix_op_free(&op);
+	size_t m2 = tix_index_mem_misses(x);
+	tix_entity *ent = load_ticket(r, &t[0]);
+	TK_CHECK(ent && ent->u.ticket.status == TIX_TICKET_DONE && tix_index_mem_misses(x) == m2 + 1);
+	tix_entity_free(ent);
+	ent = load_ticket(r, &t[0]);
+	TK_CHECK(ent && tix_index_mem_misses(x) == m2 + 1);
+	tix_entity_free(ent);
+
+	/* garbage, or another entity's (valid) bytes, are ignored and replaced */
+	tix_index_mem_corrupt(x, TIX_ENTITY_TICKET, &t[1], "{\"v\":1,");
+	ent = load_ticket(r, &t[1]);
+	TK_CHECK(ent && ent->u.ticket.ncomments == 1);
+	tix_entity_free(ent);
+	tix_buf other = TIX_BUF_INIT, head2 = TIX_BUF_INIT;
+	ent = load_ticket(r, &t[2]);
+	if (ent)
+		tix_entity_encode(ent, &other);
+	tix_entity_free(ent);
+	tix_index_mem_corrupt(x, TIX_ENTITY_TICKET, &t[1], tix_buf_cstr(&other));
+	ent = load_ticket(r, &t[1]);
+	TK_CHECK(ent && tix_oid_eq(&ent->id, &t[1]) && ent->u.ticket.ncomments == 1);
+	tix_entity_free(ent);
+	snapshots(r, &with);
+	snapshots(plain, &without);
+	TK_STR_EQ(tix_buf_cstr(&with), tix_buf_cstr(&without));
+
+	/* cache hits still advance the clock: a fresh repo whose clock was lost writes after them */
+	tix_repo_close(r);
+	TK_OK(tix_store_local_set(s, "clock", "1\n", 2, &e), &e);
+	cfg.identity = me;
+	TK_OK(tix_repo_open(&r, &cfg, &e), &e);
+	size_t h3 = tix_index_mem_hits(x);
+	tix_entity_list l;
+	TK_OK(tix_ticket_list(r, NULL, &l, &e), &e);
+	uint64_t maxl = 0;
+	for (size_t i = 0; i < l.n; i++)
+		maxl = l.v[i]->max_lamport > maxl ? l.v[i]->max_lamport : maxl;
+	tix_entity_list_free(&l);
+	TK_CHECK(tix_index_mem_hits(x) > h3);
+	op = tix_op_text(TIX_OP_COMMENT, "after a lost clock");
+	TK_OK(tix_entity_apply(r, TIX_ENTITY_TICKET, &t[2], &op, 1, &e), &e);
+	tix_op_free(&op);
+	ent = load_ticket(r, &t[2]);
+	TK_CHECK(ent && ent->max_lamport > maxl);
+	tix_entity_free(ent);
+
+	tix_buf_free(&with);
+	tix_buf_free(&without);
+	tix_buf_free(&other);
+	tix_buf_free(&head2);
+	tix_repo_close(r);
+	tix_repo_close(plain);
+	tix_index_destroy(x);
+	tix_store_destroy(s);
+}
+
 int main(void)
 {
 	test_flow();
@@ -652,5 +750,6 @@ int main(void)
 	test_sync_hostile();
 	test_sync_convergence();
 	test_planning();
+	test_index();
 	return tk_finish();
 }

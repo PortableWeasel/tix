@@ -11,6 +11,7 @@ struct tix_repo {
 	tix_env env;
 	tix_oid identity;
 	uint64_t clock;
+	tix_index *index; /* optional */
 };
 
 /* Open-addressing set of oids. Zero-initialise; free with core_oidset_free. */

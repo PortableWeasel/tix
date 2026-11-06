@@ -21,7 +21,8 @@ change and say why. Never let the code and the doc drift apart silently.
 | M2: `store_libgit`, `core`, CLI basics | ✅ done |
 | M3: pull/merge/push | ✅ done |
 | M4: planning (WBS, scheduling, resources, calendars, `plan`, `export`) | ✅ done |
-| M5: SQLite `index` | next |
+| M5: SQLite `index` | ✅ done |
+| Later: signature enforcement, baselines, TUI, issue bridges (§11) | |
 
 Work on the current milestone unless asked otherwise. Don't build ahead into later
 milestones "while you're there".
@@ -34,9 +35,9 @@ CMakePresets.json       dev (Debug, -Werror, ASan+UBSan) / release
 cmake/GitLib.cmake      builds git.git's libgit.a, xdiff, reftable → tix::gitlib
 cmake/TixModule.cmake   tix_module() + configure-time include-boundary enforcement
 modules/<name>/         libraries: include/tix/<name>*.h, src/, tests/
-                        base, store, store_mem, model, plan, export, core,
-                        store_libgit;
-                        testkit, sim, store_contract are test-only
+                        base, store, store_mem, model, plan, export, index,
+                        index_mem, index_sqlite, core, store_libgit;
+                        testkit, sim, store_contract, index_contract are test-only
 apps/cli/               the `tix` / `git-tix` frontend; tests/cli.sh is the end-to-end test
 spikes/                 throwaway proofs, deleted once the real module exists (none now)
 third_party/git/        git.git submodule, pinned at v2.47.3 (do not edit)
@@ -55,7 +56,7 @@ cmake --preset release && cmake --build --preset release
   before you commit. Report failures honestly, with the output. Don't weaken a test to
   make it pass.
 - The first build compiles git.git (about 35 s). Later builds reuse it.
-- Requirements: CMake ≥ 3.28, Ninja, GCC 14 / Clang, GNU make, zlib headers.
+- Requirements: CMake ≥ 3.28, Ninja, GCC 14 / Clang, GNU make, zlib, cJSON (`libcjson-dev`) and SQLite 3 (`libsqlite3-dev`) headers.
 - Use `uv run` for any Python helper. Never call the system Python directly.
 
 ## Architecture rules (hard constraints)
@@ -67,15 +68,17 @@ cmake --preset release && cmake --build --preset release
    own module or a module listed in `DEPS` (tests: plus `TEST_DEPS`). Transitive includes
    don't count, so declare what you include. Add modules to the top-level `CMakeLists.txt`
    in dependency order. Cycles are impossible by construction, so keep it that way.
-3. **git.git is quarantined.** Only `modules/store_libgit/src/` (and `spikes/`) may include
+3. **SQLite is quarantined** the same way: only `modules/index_sqlite/src/` includes
+   `sqlite3.h`. The cache is disposable. Nothing may depend on its contents surviving.
+4. **git.git is quarantined.** Only `modules/store_libgit/src/` (and `spikes/`) may include
    git.git headers or link `tix::gitlib`. No git types (`struct object_id`, `strbuf`, …)
    may appear in any `tix/*.h` public header. Convert at the adapter boundary.
-4. **Frontends hold no business logic.** `apps/*` parse arguments, call `core`/`export`,
+5. **Frontends hold no business logic.** `apps/*` parse arguments, call `core`/`export`,
    and format output. If a CLI command needs a rule, the rule belongs in `core`, `model`
    or `plan`.
-5. **Library modules never** print, call `exit()`/`abort()` for recoverable errors, read
+6. **Library modules never** print, call `exit()`/`abort()` for recoverable errors, read
    argv/env, or read the clock. "Now" and the local identity are passed in by the caller.
-6. **Single-threaded** in v1 (git.git's library code is not thread-safe).
+7. **Single-threaded** in v1 (git.git's library code is not thread-safe).
 
 ## C conventions
 
@@ -139,6 +142,8 @@ cmake --preset release && cmake --build --preset release
   `refs/remotes/<remote>/tix/`; `refs/tix/` changes only by create, fast-forward or merge
   (core `tix_pull`). Local refs that don't validate are never pushed.
 - Unknown op types are preserved and ignored, for forward compatibility.
+- Bump `TIX_ENTITY_CODEC_VERSION` (model) whenever `tix_entity` or the replay rules change,
+  so cached entities miss instead of serving stale state.
 - WBS codes and summary rollups are derived, never stored.
 
 ## Testing
@@ -146,7 +151,8 @@ cmake --preset release && cmake --build --preset release
 - `model`/`core`/`plan` tests run against `store_mem`. They are fast and deterministic, with
   no filesystem or git. `tix/sim.h` gives simulated clones (write, fetch, merge) for
   multi-clone scenarios. `tix/testkit.h` has `TK_CHECK`/`TK_OK`/`TK_STR_EQ` and a seeded PRNG.
-- `testkit`, `sim` and `store_contract` are test-only modules. Only `TEST_DEPS` may name
+- **Every index adapter must pass `tix_index_contract_run`** (`tix/index_contract.h`).
+- `testkit`, `sim`, `store_contract` and `index_contract` are test-only modules. Only `TEST_DEPS` may name
   them, never `DEPS`.
 - **Every store adapter must pass `tix_store_contract_run`** (`tix/store_contract.h`).
   New port behaviour gets a contract case first.

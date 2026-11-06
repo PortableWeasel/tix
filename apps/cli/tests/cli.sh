@@ -240,6 +240,33 @@ expect 1 "$TIX" cal edit "$cal" --clear 2026-12-01; has "no such exception"
 git fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || fail "plan repo fsck"
 unset TIX_TODAY
 
+# ---- index cache (M5) ------------------------------------------------------------
+cd "$T/a"
+expect 0 "$TIX" index clear; has "index: 0 cached"
+expect 0 "$TIX" ls --all; cached=$out
+expect 0 "$TIX" index status; has "cached entit"; hasnt "index: 0 "
+expect 0 "$TIX" ls --all; [ "$out" = "$cached" ] || fail "cached listing differs"
+TIX_NO_INDEX=1 expect 0 "$TIX" ls --all; [ "$out" = "$cached" ] || fail "uncached listing differs"
+TIX_NO_INDEX=1 expect 0 "$TIX" index status; has "index: off"
+# a ref moved behind tix's back (plain git) is re-validated, not served stale
+before=$(git rev-parse "refs/tix/tickets/$(git for-each-ref --format='%(refname:lstrip=3)' "refs/tix/tickets/$t2*")")
+expect 0 "$TIX" edit "$t2" --title "Second ticket, renamed"
+after=$(git rev-parse "refs/tix/tickets/$(git for-each-ref --format='%(refname:lstrip=3)' "refs/tix/tickets/$t2*")")
+expect 0 "$TIX" show "$t2"; has "Second ticket, renamed"
+git update-ref "refs/tix/tickets/$(git for-each-ref --format='%(refname:lstrip=3)' "refs/tix/tickets/$t2*")" "$before" "$after"
+expect 0 "$TIX" show "$t2"; hasnt "renamed"; has "Second ticket"
+# a corrupt cache file is thrown away and rebuilt
+rm -f .git/tix/index.db-wal .git/tix/index.db-shm
+printf 'garbage, not a database at all, garbage garbage garbage garbage' > .git/tix/index.db
+expect 0 "$TIX" ls --all; [ "$out" = "$cached" ] || fail "listing after cache corruption differs"
+expect 0 "$TIX" index status; hasnt "index: off"
+# a symlink in its place is refused, and tix carries on without a cache
+rm -f .git/tix/index.db .git/tix/index.db-wal .git/tix/index.db-shm
+ln -s /dev/null .git/tix/index.db
+expect 0 "$TIX" ls --all; [ "$out" = "$cached" ] || fail "listing with a symlinked cache differs"
+expect 0 "$TIX" index status; has "index: off"
+rm -f .git/tix/index.db
+
 # SHA-256 + reftable repository
 git init -q --object-format=sha256 --ref-format=reftable "$T/s" && cd "$T/s"
 expect 0 "$TIX" id new --name S --email s@example.org

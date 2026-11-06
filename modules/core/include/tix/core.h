@@ -12,6 +12,7 @@
 #ifndef TIX_CORE_H
 #define TIX_CORE_H
 
+#include "tix/index.h"
 #include "tix/model.h"
 #include "tix/model_replay.h"
 #include "tix/plan.h"
@@ -29,6 +30,7 @@ typedef struct tix_repo_config {
 	tix_store *store; /* BORROWS: must outlive the repo */
 	tix_env env;
 	tix_oid identity; /* the local user's identity, or null if none chosen yet */
+	tix_index *index; /* BORROWS, optional: cache of replayed entities (M5); NULL = none */
 } tix_repo_config;
 
 typedef struct tix_repo tix_repo;
@@ -57,7 +59,10 @@ tix_status tix_repo_set_identity(tix_repo *r, const tix_oid *id, tix_error *err)
 tix_status tix_entity_resolve(tix_repo *r, tix_entity_type t, const char *prefix, tix_oid *out,
 			      tix_error *err);
 
-/* Loads, validates and replays. ENSURES on TIX_OK: *out owned by caller. */
+/* Loads, validates and replays. With an index, an entity whose ref still points at
+ * a head that validated before comes from the cache instead (a cache entry that
+ * doesn't decode, or describes another entity, is ignored and replaced).
+ * ENSURES on TIX_OK: *out owned by caller. */
 tix_status tix_entity_load(tix_repo *r, tix_entity_type t, const tix_oid *id, tix_entity **out,
 			   tix_error *err);
 

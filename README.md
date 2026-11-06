@@ -23,7 +23,9 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
   dependencies with lags, durations from effort and assignments, working-day calendars with
   holidays, resources with capacity, CPM scheduling with float and critical path, rollups,
   resource load, and `export` to Mermaid gantt, CSV and JSON.
-- Next: **M5**: SQLite index (fast listing and queries on large repositories).
+- **M5 done**: a disposable SQLite cache of replayed entities (`$GIT_DIR/tix/index.db`),
+  which makes listing and planning about 10× faster on warm runs (`tix index status|clear`).
+- Later: commit signature enforcement, plan baselines, a TUI, issue-tracker bridges.
 
 ## Usage
 
@@ -61,7 +63,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 cmake --preset release && cmake --build --preset release   # build/release/apps/cli/tix
 ```
 
-Needs: CMake ≥ 3.28, Ninja, GCC/Clang (C17), GNU make, zlib headers.
+Needs: CMake ≥ 3.28, Ninja, GCC/Clang (C17), GNU make, zlib, cJSON and SQLite 3 headers.
 
 ## License
 

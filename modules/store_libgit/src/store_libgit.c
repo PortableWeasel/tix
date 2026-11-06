@@ -4,6 +4,7 @@
  */
 #define USE_THE_REPOSITORY_VARIABLE
 #include "git-compat-util.h"
+#include "abspath.h"
 #include "commit.h"
 #include "config.h"
 #include "environment.h"
@@ -478,4 +479,29 @@ tix_status tix_store_libgit_config_set(tix_store *s, const char *key, const char
 	if (repo_config_set_gently(the_repository, key, value))
 		return tix_error_set(err, TIX_ERR_IO, "cannot set config %s", key);
 	return TIX_OK;
+}
+
+tix_status tix_store_libgit_local_path(tix_store *s, const char *name, tix_buf *out, tix_error *err)
+{
+	struct strbuf dir = STRBUF_INIT, path = STRBUF_INIT;
+	char base[40];
+	size_t n = strlen(name);
+	check_store(s);
+	TIX_REQUIRE(n < sizeof(base));
+	memcpy(base, name, n + 1);
+	if (n > 3 && !strcmp(base + n - 3, ".db"))
+		base[n - 3] = '\0';
+	TIX_REQUIRE(tix_local_name_valid(base));
+	local_path(&dir, NULL);
+	strbuf_addf(&path, "%s/%s", absolute_path(dir.buf), name);
+	tix_status st = TIX_OK;
+	if (mkdir(dir.buf, 0777) && errno != EEXIST)
+		st = tix_error_set(err, TIX_ERR_IO, "%s: %s", dir.buf, strerror(errno));
+	else {
+		tix_buf_reset(out);
+		tix_buf_adds(out, path.buf);
+	}
+	strbuf_release(&dir);
+	strbuf_release(&path);
+	return st;
 }

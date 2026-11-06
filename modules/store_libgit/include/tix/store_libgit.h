@@ -29,4 +29,8 @@ tix_status tix_store_libgit_config_get(tix_store *s, const char *key, tix_buf *o
 /* Sets key in the repository-local config file ($GIT_DIR/config). */
 tix_status tix_store_libgit_config_set(tix_store *s, const char *key, const char *value, tix_error *err);
 
+/* Absolute path of $GIT_DIR/tix/<name> (creating $GIT_DIR/tix), for per-clone files
+ * such as the index cache. REQUIRES name is a local name or that plus ".db". */
+tix_status tix_store_libgit_local_path(tix_store *s, const char *name, tix_buf *out, tix_error *err);
+
 #endif

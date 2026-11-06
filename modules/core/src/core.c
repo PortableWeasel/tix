@@ -167,6 +167,7 @@ tix_status tix_repo_open(tix_repo **out, const tix_repo_config *cfg, tix_error *
 	tix_repo *r = tix_xcalloc(1, sizeof(*r));
 	r->store = cfg->store;
 	r->env = cfg->env;
+	r->index = cfg->index;
 	tix_status st = clock_load(r, err);
 	if (!st && !tix_oid_is_null(&cfg->identity))
 		st = tix_repo_set_identity(r, &cfg->identity, err);
@@ -243,6 +244,24 @@ tix_status tix_entity_resolve(tix_repo *r, tix_entity_type t, const char *prefix
 	return TIX_OK;
 }
 
+/* RETURNS true and fills *out on a usable cache hit; any failure is a miss. */
+static bool cache_get(tix_repo *r, tix_entity_type t, const tix_oid *id, const tix_oid *head, tix_entity **out)
+{
+	tix_buf b = TIX_BUF_INIT;
+	tix_entity *e = NULL;
+	bool ok = !tix_index_get(r->index, t, id, head, &b, NULL) &&
+		  !tix_entity_decode(b.data ? b.data : "", b.len, r->store->algo, &e, NULL) && e->type == t &&
+		  tix_oid_eq(&e->id, id) && tix_oid_eq(&e->head, head);
+	tix_buf_free(&b);
+	if (!ok) {
+		tix_entity_free(e);
+		return false;
+	}
+	core_clock_see(r, e->max_lamport);
+	*out = e;
+	return true;
+}
+
 tix_status tix_entity_load(tix_repo *r, tix_entity_type t, const tix_oid *id, tix_entity **out, tix_error *err)
 {
 	char ref[128];
@@ -252,12 +271,20 @@ tix_status tix_entity_load(tix_repo *r, tix_entity_type t, const tix_oid *id, ti
 	tix_status st = tix_store_ref_read(r->store, ref, &head, err);
 	if (st)
 		return st;
+	if (r->index && cache_get(r, t, id, &head, out))
+		return TIX_OK;
 	if ((st = core_load_at(r, t, &head, out, err)))
 		return st;
 	if (!tix_oid_eq(&(*out)->id, id)) { /* ref name must match its root */
 		tix_entity_free(*out);
 		*out = NULL;
 		return tix_error_set(err, TIX_ERR_INVALID, "%s does not point at the history of that id", ref);
+	}
+	if (r->index) { /* only validated entities are cached */
+		tix_buf enc = TIX_BUF_INIT;
+		tix_entity_encode(*out, &enc);
+		tix_index_put(r->index, t, id, &head, enc.data, enc.len, NULL);
+		tix_buf_free(&enc);
 	}
 	return TIX_OK;
 }

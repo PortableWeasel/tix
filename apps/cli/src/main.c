@@ -46,6 +46,9 @@ static const char usage_text[] =
 	"  push [REMOTE]    send yours (never forced)\n"
 	"  sync [REMOTE]    pull, then push; repeats if the remote moved meanwhile\n"
 	"\n"
+	"cache\n"
+	"  index status | index clear      $GIT_DIR/tix/index.db (disposable; TIX_NO_INDEX=1 disables)\n"
+	"\n"
 	"statuses: open, in-progress, blocked, done, cancelled\n";
 
 int cli_fail(cli *c, tix_status st)
@@ -133,6 +136,36 @@ static void configured_identity(cli *c, tix_oid *out)
 	tix_buf_free(&b);
 }
 
+/* The cache is optional: any failure just means running without it. */
+static void open_index(cli *c)
+{
+	const char *off = getenv("TIX_NO_INDEX");
+	tix_buf path = TIX_BUF_INIT;
+	if ((off && *off && strcmp(off, "0")) ||
+	    tix_store_libgit_local_path(c->store, "index.db", &path, NULL) ||
+	    tix_index_sqlite_open(path.data, &c->index, NULL))
+		c->index = NULL;
+	tix_buf_free(&path);
+}
+
+int cmd_index(cli *c, int argc, char **argv)
+{
+	size_t n;
+	if (argc != 2 || (strcmp(argv[1], "status") && strcmp(argv[1], "clear")))
+		return cli_usage("usage: tix index status|clear");
+	if (!c->index) {
+		printf("index: off (TIX_NO_INDEX set, or $GIT_DIR/tix/index.db unusable)\n");
+		return EXIT_OK;
+	}
+	tix_status st = !strcmp(argv[1], "clear") ? tix_index_clear(c->index, &c->err) : TIX_OK;
+	if (!st)
+		st = tix_index_count(c->index, &n, &c->err);
+	if (st)
+		return cli_fail(c, st);
+	printf("index: %zu cached entit%s\n", n, n == 1 ? "y" : "ies");
+	return EXIT_OK;
+}
+
 int main(int argc, char **argv)
 {
 	cli c = {0};
@@ -148,7 +181,7 @@ int main(int argc, char **argv)
 		{"comment", cmd_comment}, {"edit", cmd_edit}, {"pull", cmd_pull},
 		{"push", cmd_push}, {"sync", cmd_sync}, {"assign", cmd_assign},
 		{"unassign", cmd_unassign}, {"res", cmd_res}, {"cal", cmd_cal},
-		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"export", cmd_export},
+		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"export", cmd_export}, {"index", cmd_index},
 	};
 	int (*fn)(cli *, int, char **) = NULL;
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(*cmds); i++)
@@ -160,7 +193,8 @@ int main(int argc, char **argv)
 	tix_status st = tix_store_libgit_open(&c.store, &c.err);
 	if (st)
 		return cli_fail(&c, st);
-	tix_repo_config cfg = {c.store, {env_now, env_random, NULL}, {0}};
+	open_index(&c);
+	tix_repo_config cfg = {.store = c.store, .env = {env_now, env_random, NULL}, .index = c.index};
 	configured_identity(&c, &cfg.identity);
 	if ((st = tix_repo_open(&c.repo, &cfg, &c.err))) {
 		if (tix_oid_is_null(&cfg.identity))
@@ -174,6 +208,7 @@ int main(int argc, char **argv)
 	}
 	int rc = fn(&c, argc - 1, argv + 1);
 	tix_repo_close(c.repo);
+	tix_index_destroy(c.index);
 	tix_store_destroy(c.store);
 	return rc;
 }

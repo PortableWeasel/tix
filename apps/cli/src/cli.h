@@ -7,6 +7,7 @@
 
 #include "tix/core.h"
 #include "tix/export.h"
+#include "tix/index_sqlite.h"
 #include "tix/store_libgit.h"
 
 #include <stdio.h>
@@ -15,6 +16,7 @@ enum { EXIT_OK = 0, EXIT_ERR = 1, EXIT_USAGE = 2 };
 
 typedef struct cli {
 	tix_store *store;
+	tix_index *index; /* NULL when disabled ($TIX_NO_INDEX) or unavailable */
 	tix_repo *repo;
 	tix_error err;
 } cli;
@@ -81,5 +83,6 @@ int cmd_cal(cli *c, int argc, char **argv);
 int cmd_wbs(cli *c, int argc, char **argv);
 int cmd_plan(cli *c, int argc, char **argv);
 int cmd_export(cli *c, int argc, char **argv);
+int cmd_index(cli *c, int argc, char **argv);
 
 #endif

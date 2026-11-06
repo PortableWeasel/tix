@@ -51,13 +51,14 @@ processes or a terminal is an adapter behind a vtable interface.
 | `model` | base (+ cJSON, private) | Generic **entity framework** (DAG of op-packs, Lamport ordering, replay) plus the entity types: identity, ticket (M1), resource, calendar (M4). Op schemas, canonical codec, validation, merge rules. cJSON is used only to *parse*, inside `src/` |
 | `plan` | base, model | Pure scheduling: WBS tree, rollups, working-day calendars, CPM (critical path method), critical path, resource load / over-allocation |
 | `store` | base | `tix_store` vtable: op-pack commit write/read (the adapter owns the one-blob tree layout), ref read / list-by-prefix / compare-and-swap (CAS) update, per-clone local state, and (M3) `remote_fetch` / `remote_push` to a configured remote |
-| `index` | base, model | `tix_index` vtable: snapshot cache keyed by (entity id, head oid), queries |
+| `index` | base, model | `tix_index` vtable (M5 ✅): cache of replayed entities, keyed by (type, entity id); a lookup hits only when the stored head equals the ref's current head |
 | `core` | base, model, plan, store, index | The public API frontends use |
 | `export` | base, model, plan | Render a computed plan to Mermaid gantt, CSV, JSON. No I/O: writes into a `tix_buf` |
 | `store_libgit` | base, store, **libgit.a** | The **only** module allowed git.git headers |
 | `store_mem` | base, store | In-memory store for fast, deterministic model/core/plan tests; content-addressed with a non-cryptographic hash; simulated fetch |
+| `index_mem`, `index_contract` | base, index | In-memory cache for core tests; the shared index contract (test-only) |
 | `testkit`, `sim` | (tests only) | Check macros + PRNG; simulated clones (store_mem + clock + identity) that write, fetch and merge like core/sync will |
-| `index_sqlite` | base, model, index, sqlite3 | `.git/tix/index.db`, disposable and rebuildable |
+| `index_sqlite` | base, index, sqlite3 | `$GIT_DIR/tix/index.db`, disposable and rebuildable. The only module that includes `sqlite3.h` |
 | `apps/cli` | core, export + adapter ctors | Arg parsing, formatting, ASCII Gantt/tree, `$EDITOR`, exit codes. **No business logic** |
 
 Rules (enforced at CMake configure time, as in `~/projects/loom`):
@@ -434,6 +435,30 @@ these: concurrent edits can still form cycles, which `plan` breaks deterministic
   different root than its name is invalid.
 - **Read models** are model's `tix_entity` (plain data). `TIX_ID_MIN_PREFIX` = 7.
 
+### 8.1 Index cache (M5 ✅)
+
+- **What is cached**: whole replayed entities, as `tix_entity_encode` bytes (lossless JSON,
+  `model/src/codec.c`), under (type, id) together with the head they were replayed from.
+  `tix_entity_load` reads the ref, and on a hit with the same head decodes instead of
+  replaying. Any problem counts as a miss: an entry that doesn't decode, a different codec
+  version, or an entry describing another entity. The entity is then replayed and the entry
+  rewritten. Only entities that validated are ever stored.
+- **What is not**: sync (`tix_pull` replays every fetched history) and writes (`apply`
+  replays the current head before building on it) always validate in full. The cache only
+  speeds up reads.
+- `TIX_ENTITY_CODEC_VERSION` must be bumped whenever `tix_entity` or replay semantics
+  change. Stale entries then miss instead of returning old results.
+- **SQLite adapter**: one `WITHOUT ROWID` table, `PRAGMA user_version` as the schema
+  version, WAL with `synchronous=OFF` (it is a cache). A file that isn't a usable tix cache
+  is deleted and recreated. A symlink or non-file in its place is refused, and tix then runs
+  without a cache. Busy timeout 2 s, so concurrent tix processes don't fail.
+- **Queries** still filter decoded entities in core. With the decode cost this low, SQL
+  queries weren't needed for the target size (thousands of tickets). An `entities`
+  side table with indexed columns can come later without changing the port much.
+- Measured (release build, 500 tickets × 5 commits, loose objects): `tix ls --all` 300 ms
+  without the cache, 340 ms cold (filling it), 25 ms warm. After `git gc`: 50 ms → 21 ms.
+- CLI: `tix index status|clear`. `TIX_NO_INDEX=1` disables the cache.
+
 ## 9. CLI v1
 
 M2 ✅ implements `id`, `new`, `ls`, `show`, `comment` (incl. `--edit COMMENT-ID`) and `edit`.
@@ -493,7 +518,7 @@ Also installed as `git-tix`, so `git tix …` works.
 4. ✅ **M3 sync** (done 2026-11-06): pull/merge/push against Forgejo; M0 spike removed.
 5. ✅ **M4 planning** (done 2026-11-06): WBS/scheduling/assignment fields, resource and calendar
    entities, `plan`, `tix wbs/plan/assign/res/cal`, `export`.
-6. **M5 index**: SQLite cache and queries.
+6. ✅ **M5 index** (done 2026-11-06): SQLite cache of replayed entities, `tix index`.
 7. Later: signature enforcement, baselines, TUI, Forgejo issue bridge, MS Project XML export.
 
 ## 12. Resolved decisions (2026-11-06)
