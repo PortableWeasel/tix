@@ -79,7 +79,8 @@ typedef struct web_server_opts {
 	web_handler handler;
 	void *app;
 	/* Called once listening, with the bound port. */
-	void (*on_listen)(void *app, int port);
+	void (*on_listen)(void *listen_ctx, int port);
+	void *listen_ctx;
 	/* Called before each poll; returning false stops the loop. */
 	bool (*keep_going)(void *app);
 	/* Extra headers on every response, including errors the server makes itself. */

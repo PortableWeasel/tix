@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/random.h>
 #include <time.h>
+#include <unistd.h>
 
 static const char usage_text[] =
 	"usage: tix <command> [<args>]\n"
@@ -45,6 +46,9 @@ static const char usage_text[] =
 	"  pull [REMOTE]    fetch, validate and merge the remote's tickets and identities\n"
 	"  push [REMOTE]    send yours (never forced)\n"
 	"  sync [REMOTE]    pull, then push; repeats if the remote moved meanwhile\n"
+	"\n"
+	"web\n"
+	"  web [--listen 127.0.0.1:7480] [--read-only] [--no-open]   browser UI for this repository\n"
 	"\n"
 	"cache\n"
 	"  index status | index clear      $GIT_DIR/tix/index.db (disposable; TIX_NO_INDEX=1 disables)\n"
@@ -166,9 +170,37 @@ int cmd_index(cli *c, int argc, char **argv)
 	return EXIT_OK;
 }
 
+/* `tix web ...` runs tix-web from this executable's directory, else from PATH (argv only). */
+static int exec_web(int argc, char **argv)
+{
+	char self[4096], path[4200];
+	ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+	char **args = calloc((size_t)argc + 1, sizeof(char *));
+	if (!args)
+		return EXIT_ERR;
+	args[0] = "tix-web";
+	for (int i = 2; i < argc; i++)
+		args[i - 1] = argv[i];
+	if (n > 0) {
+		self[n] = '\0';
+		char *slash = strrchr(self, '/');
+		if (slash) {
+			*slash = '\0';
+			snprintf(path, sizeof(path), "%s/tix-web", self);
+			execv(path, args);
+		}
+	}
+	execvp("tix-web", args);
+	fprintf(stderr, "tix: can't run tix-web (installed next to tix?)\n");
+	free(args);
+	return EXIT_ERR;
+}
+
 int main(int argc, char **argv)
 {
 	cli c = {0};
+	if (argc >= 2 && !strcmp(argv[1], "web"))
+		return exec_web(argc, argv);
 	if (argc < 2 || !strcmp(argv[1], "help") || !strcmp(argv[1], "--help") || !strcmp(argv[1], "-h")) {
 		fputs(usage_text, argc < 2 ? stderr : stdout);
 		return argc < 2 ? EXIT_USAGE : EXIT_OK;

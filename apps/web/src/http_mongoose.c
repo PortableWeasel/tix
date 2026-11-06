@@ -177,7 +177,7 @@ bool web_serve(const web_server_opts *o, volatile sig_atomic_t *stop, tix_error 
 		return false;
 	}
 	if (o->on_listen)
-		o->on_listen(o->app, (int)mg_ntohs(lc->loc.port));
+		o->on_listen(o->listen_ctx, (int)mg_ntohs(lc->loc.port));
 	while (!(stop && *stop) && (!o->keep_going || o->keep_going(o->app)))
 		mg_mgr_poll(&mgr, 200);
 	mg_mgr_free(&mgr);

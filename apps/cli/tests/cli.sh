@@ -25,6 +25,9 @@ git config user.name "Ada Lovelace" && git config user.email ada@example.org
 expect 2 "$TIX"; has "usage: tix"
 expect 0 "$TIX" help; has "statuses:"
 expect 2 "$TIX" frobnicate; has "unknown command"
+expect 0 "$TIX" web --help; has "--read-only"   # execs tix-web next to tix
+expect 2 "$TIX" web --listen 0.0.0.0:7480; has "hosted mode"
+expect 2 "$TIX" web --listen 192.168.1.5:80; has "hosted mode"
 expect 1 "$TIX" new -t "No identity yet"; has "tix id new"
 
 expect 0 "$TIX" id new; has "Created identity"; has "Now writing as"

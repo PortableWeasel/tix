@@ -686,12 +686,16 @@ Loopback alone doesn't keep other local users or web pages out.
   - The server never logs URLs, and `Referrer-Policy: no-referrer` keeps the token out
     of outgoing requests. It stays only in the user's own browser history. A `/login`
     form for pasting the token covers a browser on another machine.
-  - Every other request without a valid cookie gets 401, with a page explaining how to
-    get the URL again (`tix web` prints it).
-  - The token is compared in constant time, and the token file is
-    `$GIT_DIR/tix/web.token`, mode 0600.
-- **CSRF**: every POST needs a form field `csrf` = HMAC(session, path), plus an
-  `Origin` (or `Referer`) header matching the server. SameSite=Strict is the third layer.
+  - Every other request without a valid cookie gets 401, with the login form and a note
+    that `tix web` printed the URL.
+  - Tokens, session ids and form tokens are compared in constant time. The login token
+    lives only in memory and in the printed URL: there is no token file to protect, and
+    a restart prints a new one (M6 ✅).
+  - Sessions live in memory: at most 16, the least recently used is dropped. Each has its
+    own form token. Every page carries a log-out form.
+- **CSRF**: every POST needs the session's form token in a field `csrf`, plus an `Origin`
+  (or, without one, a `Referer`) matching the server exactly. SameSite=Strict is the third
+  layer. Failures are 403 with a "reload and try again" page.
 - **DNS rebinding**: the `Host` header must be exactly the listening `host:port`
   (`127.0.0.1`, `[::1]` or `localhost`). Anything else gets 421.
 - **Response headers on every response**:
