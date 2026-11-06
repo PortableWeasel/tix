@@ -1,0 +1,256 @@
+#include "tix/store_mem.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct mem_commit {
+	tix_oid oid;
+	tix_oid *parents;
+	size_t nparents;
+	char *pack;
+	size_t pack_len;
+	char *message;
+} mem_commit;
+
+typedef struct mem_store {
+	tix_store base; /* must be first */
+	TIX_VEC(mem_commit) commits; /* sorted by oid */
+	TIX_VEC(tix_ref) refs;       /* sorted by name */
+} mem_store;
+
+static const tix_store_vt mem_vt;
+
+static mem_store *as_mem(tix_store *s)
+{
+	TIX_REQUIRE(s && s->vt == &mem_vt);
+	return (mem_store *)s;
+}
+
+/* 4 independent FNV-1a lanes; deterministic, not cryptographic. */
+static void hash_bytes(uint64_t lane[4], const void *data, size_t n)
+{
+	const unsigned char *p = data;
+	for (size_t i = 0; i < n; i++)
+		for (int l = 0; l < 4; l++)
+			lane[l] = (lane[l] ^ (uint64_t)(p[i] + l)) * 0x100000001b3ull;
+}
+
+static void compute_oid(tix_hash_algo algo, const tix_oid *parents, size_t np, const char *pack,
+			size_t len, const char *msg, tix_oid *out)
+{
+	uint64_t lane[4] = {0xcbf29ce484222325ull, 0x84222325cbf29ce4ull, 0x9ce484222325cbf2ull,
+			    0x2325cbf29ce48422ull};
+	size_t raw = tix_oid_rawlen(algo);
+	hash_bytes(lane, &np, sizeof(np));
+	for (size_t i = 0; i < np; i++)
+		hash_bytes(lane, parents[i].bytes, raw);
+	hash_bytes(lane, &len, sizeof(len));
+	hash_bytes(lane, pack, len);
+	hash_bytes(lane, msg, strlen(msg));
+	memset(out, 0, sizeof(*out));
+	out->algo = (uint8_t)algo;
+	for (size_t i = 0; i < raw; i++)
+		out->bytes[i] = (uint8_t)(lane[i % 4] >> (8 * (i / 4)));
+}
+
+static mem_commit *find_commit(mem_store *m, const tix_oid *oid, size_t *at)
+{
+	size_t lo = 0, hi = m->commits.n;
+	while (lo < hi) {
+		size_t mid = lo + (hi - lo) / 2;
+		int c = tix_oid_cmp(&m->commits.v[mid].oid, oid);
+		if (!c)
+			return &m->commits.v[mid];
+		if (c < 0)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (at)
+		*at = lo;
+	return NULL;
+}
+
+static void insert_commit(mem_store *m, const tix_oid *oid, const tix_oid *parents, size_t np,
+			  const char *pack, size_t len, const char *msg)
+{
+	size_t at = 0;
+	if (find_commit(m, oid, &at))
+		return;
+	TIX_VEC_GROW(&m->commits);
+	memmove(m->commits.v + at + 1, m->commits.v + at, (m->commits.n - at) * sizeof(mem_commit));
+	m->commits.n++;
+	mem_commit *c = &m->commits.v[at];
+	c->oid = *oid;
+	c->nparents = np;
+	c->parents = np ? tix_xcalloc(np, sizeof(tix_oid)) : NULL;
+	if (np)
+		memcpy(c->parents, parents, np * sizeof(tix_oid));
+	c->pack = tix_xstrndup(pack ? pack : "", len);
+	c->pack_len = len;
+	c->message = tix_xstrdup(msg);
+}
+
+static tix_status mem_commit_write(tix_store *s, const tix_oid *parents, size_t np, const char *pack,
+				   size_t len, const char *msg, tix_oid *out, tix_error *err)
+{
+	mem_store *m = as_mem(s);
+	for (size_t i = 0; i < np; i++) {
+		TIX_REQUIRE(parents[i].algo == s->algo);
+		if (!find_commit(m, &parents[i], NULL))
+			return tix_error_set(err, TIX_ERR_NOT_FOUND, "parent commit not in store");
+	}
+	compute_oid(s->algo, parents, np, pack ? pack : "", len, msg, out);
+	insert_commit(m, out, parents, np, pack, len, msg);
+	return TIX_OK;
+}
+
+static tix_status mem_commit_read(tix_store *s, const tix_oid *oid, tix_commit *out, tix_error *err)
+{
+	mem_commit *c = find_commit(as_mem(s), oid, NULL);
+	if (!c)
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no such commit");
+	memset(out, 0, sizeof(*out));
+	out->oid = c->oid;
+	out->nparents = c->nparents;
+	if (c->nparents) {
+		out->parents = tix_xcalloc(c->nparents, sizeof(tix_oid));
+		memcpy(out->parents, c->parents, c->nparents * sizeof(tix_oid));
+	}
+	tix_buf_add(&out->pack, c->pack, c->pack_len);
+	out->message = tix_xstrdup(c->message);
+	return TIX_OK;
+}
+
+static tix_ref *find_ref(mem_store *m, const char *name, size_t *at)
+{
+	size_t lo = 0, hi = m->refs.n;
+	while (lo < hi) {
+		size_t mid = lo + (hi - lo) / 2;
+		int c = strcmp(m->refs.v[mid].name, name);
+		if (!c)
+			return &m->refs.v[mid];
+		if (c < 0)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (at)
+		*at = lo;
+	return NULL;
+}
+
+static void set_ref(mem_store *m, const char *name, const tix_oid *oid)
+{
+	size_t at = 0;
+	tix_ref *r = find_ref(m, name, &at);
+	if (r) {
+		r->oid = *oid;
+		return;
+	}
+	TIX_VEC_GROW(&m->refs);
+	memmove(m->refs.v + at + 1, m->refs.v + at, (m->refs.n - at) * sizeof(tix_ref));
+	m->refs.n++;
+	m->refs.v[at].name = tix_xstrdup(name);
+	m->refs.v[at].oid = *oid;
+}
+
+static tix_status mem_ref_read(tix_store *s, const char *name, tix_oid *out, tix_error *err)
+{
+	tix_ref *r = find_ref(as_mem(s), name, NULL);
+	if (!r)
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no ref %s", name);
+	*out = r->oid;
+	return TIX_OK;
+}
+
+static tix_status mem_ref_list(tix_store *s, const char *prefix, tix_refs *out, tix_error *err)
+{
+	mem_store *m = as_mem(s);
+	size_t plen = strlen(prefix);
+	out->v = NULL;
+	out->n = 0;
+	for (size_t i = 0; i < m->refs.n; i++) {
+		if (strncmp(m->refs.v[i].name, prefix, plen))
+			continue;
+		out->v = tix_xreallocarray(out->v, out->n + 1, sizeof(tix_ref));
+		out->v[out->n].name = tix_xstrdup(m->refs.v[i].name);
+		out->v[out->n].oid = m->refs.v[i].oid;
+		out->n++;
+	}
+	return TIX_OK;
+}
+
+static tix_status mem_ref_cas(tix_store *s, const char *name, const tix_oid *old_oid,
+			      const tix_oid *new_oid, tix_error *err)
+{
+	mem_store *m = as_mem(s);
+	tix_ref *r = find_ref(m, name, NULL);
+	if (!find_commit(m, new_oid, NULL))
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "%s: new value is not a stored commit", name);
+	if (!old_oid && r)
+		return tix_error_set(err, TIX_ERR_EXISTS, "%s already exists", name);
+	if (old_oid && (!r || !tix_oid_eq(&r->oid, old_oid)))
+		return tix_error_set(err, TIX_ERR_CONFLICT, "%s changed underneath", name);
+	set_ref(m, name, new_oid);
+	return TIX_OK;
+}
+
+static void mem_destroy(tix_store *s)
+{
+	mem_store *m = as_mem(s);
+	for (size_t i = 0; i < m->commits.n; i++) {
+		free(m->commits.v[i].parents);
+		free(m->commits.v[i].pack);
+		free(m->commits.v[i].message);
+	}
+	free(m->commits.v);
+	for (size_t i = 0; i < m->refs.n; i++)
+		free(m->refs.v[i].name);
+	free(m->refs.v);
+	free(m);
+}
+
+static const tix_store_vt mem_vt = {
+	.commit_write = mem_commit_write,
+	.commit_read = mem_commit_read,
+	.ref_read = mem_ref_read,
+	.ref_list = mem_ref_list,
+	.ref_cas = mem_ref_cas,
+	.destroy = mem_destroy,
+};
+
+tix_store *tix_store_mem_new(tix_hash_algo algo)
+{
+	TIX_REQUIRE(algo == TIX_HASH_SHA1 || algo == TIX_HASH_SHA256);
+	mem_store *m = tix_xcalloc(1, sizeof(*m));
+	m->base.vt = &mem_vt;
+	m->base.algo = algo;
+	return &m->base;
+}
+
+void tix_store_mem_fetch(tix_store *dst, tix_store *src, const char *remote)
+{
+	mem_store *d = as_mem(dst), *s = as_mem(src);
+	TIX_REQUIRE(dst->algo == src->algo && remote && !strchr(remote, '/'));
+	for (size_t i = 0; i < s->commits.n; i++) {
+		mem_commit *c = &s->commits.v[i];
+		insert_commit(d, &c->oid, c->parents, c->nparents, c->pack, c->pack_len, c->message);
+	}
+	for (size_t i = 0; i < s->refs.n; i++) {
+		const char *name = s->refs.v[i].name;
+		if (strncmp(name, "refs/tix/", 9))
+			continue;
+		tix_buf rn = TIX_BUF_INIT;
+		tix_buf_addf(&rn, "refs/remotes/%s/tix/%s", remote, name + 9);
+		TIX_REQUIRE(tix_refname_valid(rn.data));
+		set_ref(d, rn.data, &s->refs.v[i].oid);
+		tix_buf_free(&rn);
+	}
+}
+
+size_t tix_store_mem_count(tix_store *s)
+{
+	return as_mem(s)->commits.n;
+}

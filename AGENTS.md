@@ -17,8 +17,8 @@ change and say why. Never let the code and the doc drift apart silently.
 | Milestone | State |
 |---|---|
 | M0: link `libgit.a`, CAS refs, child-git sync | ✅ done (`spikes/m0/`) |
-| M1: `base`, `model` (entity framework, identity, ticket tracking), `store` port, `store_mem`, convergence tests | next |
-| M2: `store_libgit`, `core`, CLI basics | |
+| M1: `base`, `model` (entity framework, identity, ticket tracking), `store` port, `store_mem`, convergence tests | ✅ done |
+| M2: `store_libgit`, `core`, CLI basics | next |
 | M3: pull/merge/push | |
 | M4: planning (WBS, scheduling, resources, calendars, `plan`, `export`) | |
 | M5: SQLite `index` | |
@@ -33,7 +33,8 @@ CMakeLists.txt          top level: modules are added here in dependency order
 CMakePresets.json       dev (Debug, -Werror, ASan+UBSan) / release
 cmake/GitLib.cmake      builds git.git's libgit.a, xdiff, reftable → tix::gitlib
 cmake/TixModule.cmake   tix_module() + configure-time include-boundary enforcement
-modules/<name>/         libraries (from M1): include/tix/<name>*.h, src/, tests/
+modules/<name>/         libraries: include/tix/<name>*.h, src/, tests/
+                        base, store, store_mem, model; testkit + sim are test-only
 apps/cli/               the `tix` / `git-tix` frontend (from M2)
 spikes/                 throwaway proofs; deleted once the real module exists
 third_party/git/        git.git submodule, pinned at v2.47.3 (do not edit)
@@ -118,8 +119,12 @@ cmake --preset release && cmake --build --preset release
 
 - Op-packs are immutable. **Never rewrite history or force-push `refs/tix/*`.** A
   divergence is resolved by a merge commit.
-- Entity id = root commit oid. Op id = `<commit oid>:<line>`. Total order =
-  `(lamport, commit oid, line)` with one repo-wide Lamport clock.
+- Entity id = root commit oid. Every `create` op carries a fresh 128-bit `nonce` (callers
+  supply real randomness; `model` stays pure). Op id = `<commit oid>:<line>`. Total order =
+  `(lamport, commit oid, line)` with one repo-wide Lamport clock, and a pack's Lamport value
+  must exceed each parent's.
+- The codec is canonical: decode re-encodes and rejects any byte difference. Changing an
+  existing op's fields is a format change (new op name or header `tix` version).
 - NDJSON: UTF-8, LF, final newline, header line first, keys in schema order.
 - **Everything fetched from a remote is hostile until `model` has validated it**: size
   limits, strict schema, author rules. A malformed pack rejects the whole incoming ref
@@ -130,7 +135,9 @@ cmake --preset release && cmake --build --preset release
 ## Testing
 
 - `model`/`core`/`plan` tests run against `store_mem`. They are fast and deterministic, with
-  no filesystem or git.
+  no filesystem or git. `tix/sim.h` gives simulated clones (write, fetch, merge) for
+  multi-clone scenarios. `tix/testkit.h` has `TK_CHECK`/`TK_OK`/`TK_STR_EQ` and a seeded PRNG.
+- `testkit` and `sim` are test-only modules. Only `TEST_DEPS` may name them, never `DEPS`.
 - **Convergence tests**: for any op set, every merge order and DAG shape must produce a
   byte-identical snapshot. New merge semantics need a convergence case.
 - `store_libgit` tests use throwaway repos in `mktemp -d` with `GIT_CONFIG_GLOBAL=/dev/null`

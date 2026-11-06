@@ -13,7 +13,15 @@ include(CTest)
 include(cmake/TixModule.cmake)
 include(cmake/GitLib.cmake)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET libcjson)
+
 # Modules, in dependency order (a module may only depend on ones above it).
-# (none yet -- M1 adds base, model, store, store_mem)
+add_subdirectory(modules/base)
+add_subdirectory(modules/testkit)    # test support only
+add_subdirectory(modules/store)
+add_subdirectory(modules/store_mem)
+add_subdirectory(modules/model)
+add_subdirectory(modules/sim)        # test support only
 
 add_subdirectory(spikes)

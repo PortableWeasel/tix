@@ -47,15 +47,16 @@ processes or a terminal is an adapter behind a vtable interface.
 
 | Module | Depends on | Contents |
 |---|---|---|
-| `base` | — | `tix_status`/`tix_error`, `TIX_REQUIRE`, `tix_x*` allocators, `tix_buf`, string views, `tix_oid` (opaque bytes + algo), `tix_date` (civil date, no time zone), durations, NDJSON line reader/writer (on cJSON) |
-| `model` | base | Generic **entity framework** (DAG of op-packs, Lamport ordering, replay) plus the entity types: identity, ticket, resource, calendar. Op schemas, validation, merge rules |
+| `base` | — | `tix_status`/`tix_error`, `TIX_REQUIRE`, `tix_x*` allocators, `TIX_VEC`, sorted string sets, `tix_buf`, `tix_oid` (opaque bytes + algo), canonical JSON writer, strict UTF-8 check. `tix_date` and durations arrive with M4 |
+| `model` | base (+ cJSON, private) | Generic **entity framework** (DAG of op-packs, Lamport ordering, replay) plus the entity types: identity, ticket (M1), resource, calendar (M4). Op schemas, canonical codec, validation, merge rules. cJSON is used only to *parse*, inside `src/` |
 | `plan` | base, model | Pure scheduling: WBS tree, rollups, working-day calendars, CPM (critical path method), critical path, resource load / over-allocation |
-| `store` | base | `tix_store` vtable: blob/tree/commit read+write, ref read / list-by-prefix / compare-and-swap (CAS) update, merge-base, fetch, push |
+| `store` | base | `tix_store` vtable: op-pack commit write/read (the adapter owns the one-blob tree layout), ref read / list-by-prefix / compare-and-swap (CAS) update. Fetch/push are added in M3 |
 | `index` | base, model | `tix_index` vtable: snapshot cache keyed by (entity id, head oid), queries |
 | `core` | base, model, plan, store, index | The public API frontends use |
 | `export` | base, model, plan | Render a computed plan to Mermaid gantt, CSV, JSON. No I/O: writes into a `tix_buf` |
 | `store_libgit` | base, store, **libgit.a** | The **only** module allowed git.git headers |
-| `store_mem` | base, store | In-memory store for fast, deterministic model/core/plan tests |
+| `store_mem` | base, store | In-memory store for fast, deterministic model/core/plan tests; content-addressed with a non-cryptographic hash; simulated fetch |
+| `testkit`, `sim` | (tests only) | Check macros + PRNG; simulated clones (store_mem + clock + identity) that write, fetch and merge like core/sync will |
 | `index_sqlite` | base, model, index, sqlite3 | `.git/tix/index.db`, disposable and rebuildable |
 | `apps/cli` | core, export + adapter ctors | Arg parsing, formatting, ASCII Gantt/tree, `$EDITOR`, exit codes. **No business logic** |
 
@@ -95,9 +96,15 @@ commit   parents: previous op-pack commit(s); none for the root
 ```
 
 - **Entity id** = OID of the root commit. Shown as hex; any unique prefix of 7+ characters
-  is accepted. The id is unique per type namespace.
+  is accepted. The id is unique per type namespace. Every `create` op carries a 128-bit
+  random **`nonce`**, so two otherwise identical creates (same content, author, second and
+  Lamport value) still get distinct ids. The M1 convergence test caught exactly that collapse.
 - Op-packs are immutable. History is never rewritten or force-pushed.
-- Merge commits (two parents) carry a header-only pack. They just join histories.
+- Merge commits (two or more parents) carry a header-only pack (no ops). They just join
+  histories. Their author is whoever merged, and the identity author rule (§4.1) doesn't
+  apply to them.
+- A pack's Lamport value must be **strictly greater than each parent's**. The total order
+  below is then a linear extension of causality: a later edit always sorts after what it saw.
 
 ### 3.3 Op-pack format: NDJSON ✅
 
@@ -107,7 +114,7 @@ header; every following line is one operation.
 
 ```
 {"tix":1,"type":"ticket","author":"3f9c1e…","lamport":42,"time":1762430000}
-{"op":"create","title":"Pour foundations","body":"…","labels":["site"]}
+{"op":"create","nonce":"9f86d081884c7d659a2feaa0c55ad015","title":"Pour foundations","body":"…","labels":["site"]}
 {"op":"set-parent","parent":"a71d0b…"}
 {"op":"dep-add","pred":"c02e9f…","kind":"FS","lag":"2d"}
 ```
@@ -120,17 +127,27 @@ header; every following line is one operation.
   clock (`.git/tix/clock`) is shared by all entity types. That makes cross-entity
   tie-breaks (WBS cycle breaking, §5.2) deterministic. Clock = max(seen) + 1 on write, and is
   advanced past everything seen on fetch.
-- Unknown op types are kept and ignored, for forward compatibility. A malformed pack rejects
+- **Canonical form is enforced on read** ✅. Decoding re-encodes every known line and rejects
+  any byte difference: whitespace, key order, extra or duplicate keys, `1.0`/`1e0`, `\u`
+  escapes of printable characters, unsorted or duplicate set members. One logical pack has
+  exactly one byte form, and no parser leniency can be exploited.
+- Unknown op *names* are kept verbatim and ignored, for forward compatibility. Adding a
+  field to an existing op is therefore a format change: it needs a new op name, or `tix: 2`
+  in the header (readers return "unsupported" rather than guess). A malformed pack rejects
   the whole incoming ref update.
+- Field rules: titles 1–256 bytes, single line. Bodies and comments ≤ 64 KiB, which may contain
+  `\n`/`\t`. Labels are 1–64 bytes with no spaces or commas, at most 64 per op. Names ≤ 256.
+  A pack is ≤ 1 MiB and ≤ 1000 ops. An entity is ≤ 20 000 commits. All text is strict UTF-8
+  with no NUL and no other control characters.
 
 ### 3.4 Merge primitives (CRDT building blocks in `model`)
 
 | Primitive | Semantics | Used for |
 |---|---|---|
 | LWW register | latest op in total order wins; may be set to `null` | scalars |
-| OR-set | observed-remove: a remove cancels only the adds it has seen | labels, keys, exceptions |
+| OR-set | observed-remove: a remove cancels exactly the adds that are its causal ancestors (an ancestor commit, or an earlier line in the same commit). Concurrent add + remove → present | labels, keys, exceptions |
 | OR-map | OR-set of keys, each value an LWW register | dependencies, assignments |
-| append log | ordered by total order | comments |
+| append log | ordered by total order; `edit-comment` is LWW per comment and applies only when its author is the comment's author (otherwise ignored, identically on every clone) | comments |
 
 ## 4. Entities
 
@@ -356,6 +373,9 @@ Also installed as `git-tix`, so `git tix …` works.
 - Contracts documented in headers (REQUIRES / ENSURES / OWNS / BORROWS), as in loom.
 - **Convergence tests** (model): generate random op sequences and DAG shapes across simulated
   clones on `store_mem`; every merge order must give byte-identical snapshots.
+  M1: 150 seeds × 3 clones × 60 random steps (≈ 8.4k ops, ≈ 2k merge commits, every fifth seed
+  SHA-256), plus replay of each DAG in shuffled input order. Mutation check: making the
+  tie-break depend on input order fails the test (33 divergences).
 - **Plan tests**: CPM golden cases (all four dependency types, lag, calendars and exceptions,
   manual tasks, cycles); load tests for over-allocation.
 - `store_libgit` is tested against throwaway repos, including a two-clone pull/push round trip
@@ -365,7 +385,7 @@ Also installed as `git-tix`, so `git tix …` works.
 
 1. ✅ **M0 spike** (done 2026-11-06): git.git submodule at v2.47.3, `libgit.a` linked; write blob/tree/commit,
    CAS `refs/tix/test`, `git fetch/push` subprocess round trip.
-2. **M1 domain**: `base`, `model` entity framework + identity/ticket (tracking fields),
+2. ✅ **M1 domain** (done 2026-11-06): `base`, `model` entity framework + identity/ticket (tracking fields),
    `store_mem`, convergence tests.
 3. **M2 core + CLI**: `store_libgit`, `core`, `tix id/new/ls/show/comment/edit`.
 4. **M3 sync**: pull/merge/push against Forgejo.
