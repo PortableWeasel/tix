@@ -415,6 +415,12 @@ static tix_status git_remote_push(tix_store *s, const char *remote, const char *
 	return st;
 }
 
+static void git_refresh(tix_store *s)
+{
+	(void)s;
+	forget_caches();
+}
+
 static void git_destroy(tix_store *s)
 {
 	free(s);
@@ -430,6 +436,7 @@ static const tix_store_vt git_vt = {
 	.local_set = git_local_set,
 	.remote_fetch = git_remote_fetch,
 	.remote_push = git_remote_push,
+	.refresh = git_refresh,
 	.destroy = git_destroy,
 };
 

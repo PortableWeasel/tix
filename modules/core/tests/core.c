@@ -52,8 +52,9 @@ static tix_status f_cas(tix_store *s, const char *n, const tix_oid *old, const t
 }
 static tix_status f_rf(tix_store *s, const char *r, tix_error *er) { return tix_store_remote_fetch(inner(s), r, er); }
 static tix_status f_rp(tix_store *s, const char *r, const char *const *refs, size_t n, tix_error *er) { return tix_store_remote_push(inner(s), r, refs, n, er); }
+static void f_refresh(tix_store *s) { tix_store_refresh(inner(s)); }
 static void f_destroy(tix_store *s) { (void)s; }
-static const tix_store_vt flaky_vt = {f_cw, f_cr, f_rr, f_rl, f_cas, f_lg, f_ls, f_rf, f_rp, f_destroy};
+static const tix_store_vt flaky_vt = {f_cw, f_cr, f_rr, f_rl, f_cas, f_lg, f_ls, f_rf, f_rp, f_refresh, f_destroy};
 
 static tix_repo *open_repo(tix_store *s, fake_env *env, const tix_oid *identity)
 {
@@ -740,6 +741,40 @@ static void test_index(void)
 	tix_store_destroy(s);
 }
 
+/* tix_repo_refresh: another process (a second repo on the same store) advanced the clock. */
+static void test_refresh(void)
+{
+	fake_env env = {1700000000, 11};
+	tix_store *s = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_repo *a = open_repo(s, &env, NULL);
+	tix_oid me, t, u;
+	TK_OK(tix_identity_create(a, "Ada", "ada@example.org", &me, &e), &e);
+	TK_OK(tix_repo_set_identity(a, &me, &e), &e);
+	tix_repo *b = open_repo(s, &env, &me);
+	for (int i = 0; i < 5; i++)
+		TK_OK(tix_ticket_create(b, "busy", "", NULL, &t, &e), &e);
+	tix_entity *bt = load_ticket(b, &t);
+	uint64_t seen = bt->max_lamport;
+	tix_entity_free(bt);
+	TK_OK(tix_repo_refresh(a, &e), &e);
+	TK_OK(tix_ticket_create(a, "after refresh", "", NULL, &u, &e), &e);
+	tix_entity *at = load_ticket(a, &u);
+	TK_CHECK(at->max_lamport > seen); /* a's next write is ordered after b's */
+	tix_entity_free(at);
+	/* the clock never moves backwards, and a corrupt clock is reported, state unchanged */
+	TK_OK(tix_store_local_set(s, "clock", "1\n", 2, &e), &e);
+	TK_OK(tix_repo_refresh(a, &e), &e);
+	TK_OK(tix_ticket_create(a, "still ordered", "", NULL, &u, &e), &e);
+	at = load_ticket(a, &u);
+	TK_CHECK(at->max_lamport > seen + 1);
+	tix_entity_free(at);
+	TK_OK(tix_store_local_set(s, "clock", "x\n", 2, &e), &e);
+	TK_STATUS(tix_repo_refresh(a, &e), TIX_ERR_INVALID, &e);
+	tix_repo_close(b);
+	tix_repo_close(a);
+	tix_store_destroy(s);
+}
+
 int main(void)
 {
 	test_flow();
@@ -751,5 +786,6 @@ int main(void)
 	test_sync_convergence();
 	test_planning();
 	test_index();
+	test_refresh();
 	return tk_finish();
 }

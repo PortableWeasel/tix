@@ -10,7 +10,7 @@ static tix_status clock_load(tix_repo *r, tix_error *err)
 {
 	tix_buf b = TIX_BUF_INIT;
 	tix_status st = tix_store_local_get(r->store, "clock", &b, err);
-	r->clock = 0;
+	uint64_t had = r->clock; /* never moves backwards (refresh) */
 	if (st == TIX_ERR_NOT_FOUND) {
 		tix_buf_free(&b);
 		return TIX_OK;
@@ -23,10 +23,17 @@ static tix_status clock_load(tix_repo *r, tix_error *err)
 		if (i == 0 || v > TIX_LAMPORT_MAX || (i < b.len && !(i + 1 == b.len && b.data[i] == '\n')))
 			st = tix_error_set(err, TIX_ERR_INVALID, "corrupt local clock '%s'", tix_buf_cstr(&b));
 		else
-			r->clock = v;
+			r->clock = v > had ? v : had;
 	}
 	tix_buf_free(&b);
 	return st;
+}
+
+tix_status tix_repo_refresh(tix_repo *r, tix_error *err)
+{
+	TIX_REQUIRE(r);
+	tix_store_refresh(r->store);
+	return clock_load(r, err);
 }
 
 tix_status core_clock_save(tix_repo *r, tix_error *err)

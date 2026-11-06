@@ -43,6 +43,12 @@ typedef struct tix_repo tix_repo;
 tix_status tix_repo_open(tix_repo **out, const tix_repo_config *cfg, tix_error *err);
 void tix_repo_close(tix_repo *r);
 
+/* For long-running frontends: forget the store's caches and re-read the local Lamport
+ * clock (another process may have advanced it), so the next calls see changes other
+ * processes made. The clock never moves backwards. RETURNS TIX_ERR_INVALID for a corrupt
+ * clock (state is unchanged). */
+tix_status tix_repo_refresh(tix_repo *r, tix_error *err);
+
 /* RETURNS false (and leaves *out alone) when no identity is set. */
 bool tix_repo_identity(const tix_repo *r, tix_oid *out);
 /* Makes id the identity new ops are written as (in memory; persisting the choice,

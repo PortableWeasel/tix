@@ -427,6 +427,10 @@ these: concurrent edits can still form cycles, which `plan` breaks deterministic
   identity all come in through `tix_repo_config`. Core never reads env, time or config itself.
 - **Local state** goes through the store port (`local_get`/`local_set`). The Lamport clock is
   `$GIT_DIR/tix/clock` in store_libgit, written under git's lockfile.
+- **Long-running frontends** (M6 ✅) call `tix_repo_refresh` before each unit of work. It runs
+  the store's `refresh` (store_libgit: drop the ref store, re-prepare packs; a store contract
+  case, plus a test where a real `git update-ref`/`pack-refs` moves refs under an open store)
+  and re-reads the Lamport clock, which never moves backwards.
 - **Identity choice** is git config `tix.identity`. The frontend reads and writes it through
   `tix_store_libgit_config_get/_set` and hands it to core.
 - **Writes** validate the current history first (never build on invalid data), write one pack
@@ -601,8 +605,8 @@ tix web [--listen 127.0.0.1:7480] [--read-only] [--no-open]
 - **Staying fresh in a long-running process.** Other processes (the CLI, `git gc`)
   change refs and packs behind libgit's back. A new store operation `refresh` drops
   libgit's ref store and re-prepares packs (the existing `forget_caches`). The web app
-  calls it at the start of every request. The index cache stays correct because hits
-  require the current head.
+  calls it at the start of every request (`tix_repo_refresh`, M6 ✅). The index cache stays
+  correct because hits require the current head.
 - **Long life.** libgit leaks are bounded per request and checked by an ASan soak test
   (thousands of requests). Any libgit path that can `die()` would kill the server, just
   as it ends a CLI command today. Such paths are bugs to be fixed in `store_libgit`.

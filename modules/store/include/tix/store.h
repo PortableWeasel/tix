@@ -59,6 +59,7 @@ typedef struct tix_store_vt {
 	tix_status (*remote_fetch)(tix_store *s, const char *remote, tix_error *err);
 	tix_status (*remote_push)(tix_store *s, const char *remote, const char *const *refs, size_t n,
 				  tix_error *err);
+	void (*refresh)(tix_store *s);
 	void (*destroy)(tix_store *s);
 } tix_store_vt;
 
@@ -193,6 +194,17 @@ static inline tix_status tix_store_remote_push(tix_store *s, const char *remote,
 	for (size_t i = 0; i < n; i++)
 		TIX_REQUIRE(tix_refname_valid(refs[i]));
 	return n ? s->vt->remote_push(s, remote, refs, n, err) : TIX_OK;
+}
+
+/*
+ * Forgets anything the adapter cached about refs and objects, so changes made by other
+ * processes since (another tix, git gc, a child git) are seen. Long-running frontends
+ * call it before each unit of work. Never fails; local writes are never lost.
+ */
+static inline void tix_store_refresh(tix_store *s)
+{
+	TIX_REQUIRE(s);
+	s->vt->refresh(s);
 }
 
 static inline void tix_store_destroy(tix_store *s)

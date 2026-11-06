@@ -330,6 +330,11 @@ static void mem_destroy(tix_store *s)
 	free(m);
 }
 
+static void mem_refresh(tix_store *s)
+{
+	(void)s; /* nothing cached: every call reads the live state */
+}
+
 static const tix_store_vt mem_vt = {
 	.commit_write = mem_commit_write,
 	.commit_read = mem_commit_read,
@@ -340,6 +345,7 @@ static const tix_store_vt mem_vt = {
 	.local_set = mem_local_set,
 	.remote_fetch = mem_remote_fetch,
 	.remote_push = mem_remote_push,
+	.refresh = mem_refresh,
 	.destroy = mem_destroy,
 };
 

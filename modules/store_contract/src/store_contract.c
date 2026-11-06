@@ -86,6 +86,22 @@ static void refs(tix_store *s)
 
 	TK_STATUS(tix_store_ref_cas(s, "refs/tix/../x", NULL, &a, &e), TIX_ERR_INVALID, &e);
 	TK_STATUS(tix_store_ref_read(s, "tix/x", &got, &e), TIX_ERR_INVALID, &e);
+
+	/* refresh forgets caches, never state: refs, commits and CAS all still work */
+	tix_store_refresh(s);
+	tix_store_refresh(s);
+	TK_OK(tix_store_ref_read(s, x, &got, &e), &e);
+	TK_CHECK(tix_oid_eq(&got, &b));
+	TK_OK(tix_store_ref_list(s, "refs/tix/contract/", &r, &e), &e);
+	TK_CHECK(r.n == 2);
+	tix_refs_free(&r);
+	tix_commit c;
+	TK_OK(tix_store_commit_read(s, &b, &c, &e), &e);
+	tix_commit_free(&c);
+	TK_STATUS(tix_store_ref_cas(s, x, &a, &a, &e), TIX_ERR_CONFLICT, &e);
+	TK_OK(tix_store_ref_cas(s, "refs/tix/contract/after-refresh", NULL, &a, &e), &e);
+	tix_store_refresh(s);
+	TK_OK(tix_store_ref_read(s, "refs/tix/contract/after-refresh", &got, &e), &e);
 }
 
 static void local(tix_store *s)
