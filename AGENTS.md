@@ -22,10 +22,19 @@ change and say why. Never let the code and the doc drift apart silently.
 | M3: pull/merge/push | ✅ done |
 | M4: planning (WBS, scheduling, resources, calendars, `plan`, `export`) | ✅ done |
 | M5: SQLite `index` | ✅ done |
-| Later: signature enforcement, baselines, TUI, issue bridges (§11) | |
+| Later: signature enforcement, baselines, TUI, issue bridges (§11) | tracked in tix |
 
 Work on the current milestone unless asked otherwise. Don't build ahead into later
 milestones "while you're there".
+
+### Tracking work (dogfooding)
+
+tix tracks its own work. After cloning, run `tix pull` (plain `git clone` doesn't copy
+`refs/tix/*`), then `tix wbs` for the tree: `tix v1` (done history) and `tix: after v1`
+(backlog). When you finish a ticket: `tix edit ID --status done --actual-start D
+--actual-finish D` and `tix comment ID -m "commit abc1234"`; file bugs you find while
+working as new tickets under the backlog (`--parent 5484c09 --rank last`). `tix sync`
+after committing. An item in the backlog is not permission to start it.
 
 ## Layout
 

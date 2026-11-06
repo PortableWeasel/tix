@@ -27,6 +27,8 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
   which makes listing and planning about 10× faster on warm runs (`tix index status|clear`).
 - Later: commit signature enforcement, plan baselines, a TUI, issue-tracker bridges.
 
+tix tracks its own work: `tix pull && tix wbs` in a clone of this repo.
+
 ## Usage
 
 ```bash
@@ -61,6 +63,7 @@ git clone --recurse-submodules git@git.spacegoose.org:spacegoose/tix.git
 cd tix
 cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 cmake --preset release && cmake --build --preset release   # build/release/apps/cli/tix
+sudo cmake --install build/release --prefix /usr/local     # tix and git-tix
 ```
 
 Needs: CMake ≥ 3.28, Ninja, GCC/Clang (C17), GNU make, zlib, cJSON and SQLite 3 headers.
