@@ -125,6 +125,51 @@ static void snapshot_at(tix_sim_clone *c, const char *ref, tix_entity_type t, ti
 	tix_entity_free(ent);
 }
 
+/* The cache codec must reproduce the entity exactly. */
+static void check_codec(const tix_entity *ent, tix_hash_algo algo)
+{
+	tix_buf enc = TIX_BUF_INIT, enc2 = TIX_BUF_INIT, s1 = TIX_BUF_INIT, s2 = TIX_BUF_INIT;
+	tix_entity *back = NULL;
+	tix_entity_encode(ent, &enc);
+	TK_OK(tix_entity_decode(enc.data, enc.len, algo, &back, &e), &e);
+	if (back) {
+		tix_entity_encode(back, &enc2);
+		TK_STR_EQ(tix_buf_cstr(&enc2), tix_buf_cstr(&enc));
+		tix_entity_snapshot(ent, &s1);
+		tix_entity_snapshot(back, &s2);
+		TK_STR_EQ(tix_buf_cstr(&s2), tix_buf_cstr(&s1));
+		TK_CHECK(back->max_lamport == ent->max_lamport && tix_oid_eq(&back->head, &ent->head));
+	}
+	/* every truncation is rejected, never crashes */
+	for (size_t cut = 0; cut < enc.len; cut += 1 + enc.len / 7) {
+		tix_entity *x = NULL;
+		tix_status st = tix_entity_decode(enc.data, cut, algo, &x, NULL);
+		tk_checks++;
+		if (st == TIX_OK)
+			tk_fail(__FILE__, __LINE__, "truncated cache entry (%zu of %zu bytes) decoded", cut, enc.len);
+		tix_entity_free(x);
+	}
+	/* flipped bytes: any status is fine, as long as nothing crashes or leaks */
+	for (size_t at = 0; at < enc.len; at += 1 + enc.len / 11) {
+		static const char subst[] = {'"', '0', '-', '9', '{', ']', 'x', '\\', ','};
+		char saved = enc.data[at];
+		enc.data[at] = subst[at % sizeof(subst)];
+		tix_entity *x = NULL;
+		if (tix_entity_decode(enc.data, enc.len, algo, &x, NULL) == TIX_OK) {
+			tix_buf again = TIX_BUF_INIT;
+			tix_entity_encode(x, &again); /* whatever decoded must be usable */
+			tix_buf_free(&again);
+		}
+		tix_entity_free(x);
+		enc.data[at] = saved;
+	}
+	tix_entity_free(back);
+	tix_buf_free(&enc);
+	tix_buf_free(&enc2);
+	tix_buf_free(&s1);
+	tix_buf_free(&s2);
+}
+
 static void check_order_independence(uint64_t *rng, tix_sim_clone *c, const tix_ref *ref,
 				     tix_entity_type t, const tix_buf *want)
 {
@@ -138,6 +183,8 @@ static void check_order_independence(uint64_t *rng, tix_sim_clone *c, const tix_
 		d.nodes[j] = tmp;
 	}
 	TK_OK(tix_replay(t, d.nodes, d.n, &ent, &e), &e);
+	if (ent)
+		check_codec(ent, (tix_hash_algo)ref->oid.algo);
 	if (ent) {
 		tix_buf s = TIX_BUF_INIT;
 		tix_entity_snapshot(ent, &s);

@@ -15,6 +15,7 @@ include(cmake/GitLib.cmake)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET libcjson)
+pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 
 # Modules, in dependency order (a module may only depend on ones above it).
 add_subdirectory(modules/base)
@@ -26,6 +27,10 @@ add_subdirectory(modules/model)
 add_subdirectory(modules/sim)        # test support only
 add_subdirectory(modules/plan)
 add_subdirectory(modules/export)
+add_subdirectory(modules/index)
+add_subdirectory(modules/index_contract)  # test support only
+add_subdirectory(modules/index_mem)
+add_subdirectory(modules/index_sqlite)
 add_subdirectory(modules/core)
 add_subdirectory(modules/store_libgit)
 

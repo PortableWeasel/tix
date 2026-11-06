@@ -163,4 +163,19 @@ void tix_entity_free(tix_entity *e);
  */
 void tix_entity_snapshot(const tix_entity *e, tix_buf *out);
 
+/*
+ * Lossless serialisation of a replayed entity, for caches (the M5 index). Not a
+ * wire format: never synced, never compared across versions. Bump
+ * TIX_ENTITY_CODEC_VERSION whenever tix_entity or the replay rules change, so
+ * stale cache entries miss instead of lying.
+ */
+#define TIX_ENTITY_CODEC_VERSION 1
+
+void tix_entity_encode(const tix_entity *e, tix_buf *out);
+/* Checks every field (types, ranges, UTF-8, id algo). RETURNS TIX_ERR_INVALID for
+ * malformed input, TIX_ERR_UNSUPPORTED for another codec version.
+ * ENSURES on TIX_OK: *out owned by the caller. */
+tix_status tix_entity_decode(const char *data, size_t len, tix_hash_algo algo, tix_entity **out,
+			     tix_error *err);
+
 #endif

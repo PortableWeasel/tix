@@ -1,5 +1,5 @@
 tix_module(model
-  SOURCES src/model.c src/fields.c src/pack.c src/replay.c
+  SOURCES src/model.c src/fields.c src/pack.c src/replay.c src/codec.c
   DEPS base
   EXTERNAL_PRIVATE PkgConfig::CJSON m
   TESTS pack replay convergence
