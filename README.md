@@ -5,7 +5,7 @@ Tickets, identities, resources and calendars live inside the git repository itse
 `refs/tix/*`, and sync with ordinary `git push`/`git fetch`. Planning fields support a
 work breakdown structure, Gantt scheduling and resource assignment.
 
-Design: [`docs/architecture.md`](docs/architecture.md).
+Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules: [`AGENTS.md`](AGENTS.md).
 
 ## Status
 
