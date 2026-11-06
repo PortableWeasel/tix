@@ -287,6 +287,22 @@ git.git ships no supported library. Its Makefile builds `libgit.a`, `xdiff/lib.a
 | Macros / `banned.h` | Headers quarantined in `store_libgit/src` |
 | GPL-2.0-only | ✅ accepted; `LICENSE` = GPL-2.0-only |
 
+### 7.1 M0 findings (2026-11-06) ✅
+
+- `make libgit.a xdiff/lib.a reftable/libreftable.a` (≈35 s, 4 cores) links into a standalone
+  program with **only one missing symbol, `common_exit()`**, normally from `common-main.c`.
+  The adapter defines it. The archives reference each other and are linked as a rescan group.
+- Headers need git's feature macros (`SHA1_DC`, `SHA256_BLK`, `HAVE_*`, `NO_*`). CMake reads
+  them from git's own `ALL_CFLAGS` at configure time, and the headers are included `-isystem`.
+- Init sequence: `sanitize_stdfds()`, `initialize_repository(the_repository)`,
+  `setup_git_directory()`, `git_config(git_default_config, NULL)`.
+- APIs used: `write_object_file`, `commit_tree` (author/committer default from config),
+  `ref_store_transaction_begin` / `ref_transaction_update(old_oid)` / `_commit` for CAS
+  (null old oid = must not exist), `get_tree_entry`, `repo_read_object_file`,
+  `run_command` with `git_cmd = 1` for fetch/push.
+- Verified by `spikes/m0/roundtrip.sh`: CAS refusal, `fsck --strict` clean, two-clone round
+  trip through a bare remote, and a **SHA-256 + reftable** repo.
+
 ## 8. Core API sketch
 
 ```c
@@ -347,7 +363,7 @@ Also installed as `git-tix`, so `git tix …` works.
 
 ## 11. Milestones
 
-1. **M0 spike**: git.git submodule at v2.47.3, `libgit.a` linked; write blob/tree/commit,
+1. ✅ **M0 spike** (done 2026-11-06): git.git submodule at v2.47.3, `libgit.a` linked; write blob/tree/commit,
    CAS `refs/tix/test`, `git fetch/push` subprocess round trip.
 2. **M1 domain**: `base`, `model` entity framework + identity/ticket (tracking fields),
    `store_mem`, convergence tests.
