@@ -615,7 +615,7 @@ tix web [--listen 127.0.0.1:7480] [--read-only] [--no-open]
   (thousands of requests). Any libgit path that can `die()` would kill the server, just
   as it ends a CLI command today. Such paths are bugs to be fixed in `store_libgit`.
 
-### 13.3 Pages and endpoints (M6, no JavaScript)
+### 13.3 Pages and endpoints (M6, no JavaScript; read pages ✅)
 
 | Method + path | Purpose |
 |---|---|
@@ -638,6 +638,13 @@ tix web [--listen 127.0.0.1:7480] [--read-only] [--no-open]
 - **Post/Redirect/Get**: a successful POST redirects (303) to the entity. A rejected one
   re-renders the form with the user's values and the error messages (422). Errors come
   from `input` and core, with the same wording as the CLI.
+- **Ticket search** (`q`) is core's `tix_ticket_query.text`: an id prefix or a title substring,
+  ASCII case-insensitive. The default list shows active tickets; any filter replaces that.
+- **Ticket pages** run the whole plan (dependencies reach outside any subtree) to show the
+  computed dates, float, subtasks, successors and the inherited calendar.
+- **Gantt SVG**: one column per day (24 px up to 45 days, 14 px up to 120), else per week.
+  Classes only, no `style` attributes (the CSP forbids them); arrows for all four
+  dependency kinds; bars are links with a `<title>` tooltip.
 - **HTML**: semantic, with tables, `<label>` and native date inputs. It is usable in
   w3m/lynx (checked in tests with `w3m -dump` where available). One small CSS file and
   system fonts. Short ids are shown, with full ids in `title` and the URL.

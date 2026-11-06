@@ -298,6 +298,11 @@ void web_app_handle(void *vapp, const web_request *req, web_response *res)
 		web_header(res, "Allow", "GET, HEAD, POST");
 		return;
 	}
+	if (is(&x, 0, "favicon.ico") && x.nsegs == 1) {
+		res->status = 204; /* no icon; keeps browsers from logging a 404 */
+		web_header(res, "Cache-Control", "public, max-age=86400");
+		return;
+	}
 	if (is(&x, 0, "assets")) {
 		serve_asset(&x);
 		return;
@@ -337,9 +342,25 @@ void web_app_handle(void *vapp, const web_request *req, web_response *res)
 		web_redirect(&x, "/tickets");
 		return;
 	}
-	if (is(&x, 0, "tickets") && x.nsegs == 1 && get) {
-		page_home(&x);
-		return;
-	}
+	static const struct {
+		const char *seg;
+		size_t nsegs;
+		void (*get)(web_ctx *);
+	} routes[] = {
+		{"tickets", 1, page_tickets}, {"t", 2, page_ticket},      {"wbs", 1, page_wbs},
+		{"plan", 1, page_plan_view},  {"load", 1, page_load},     {"export", 1, page_export},
+		{"res", 1, page_resources},   {"res", 2, page_resource},  {"cal", 1, page_calendars},
+		{"cal", 2, page_calendar},    {"id", 1, page_identities},
+	};
+	for (size_t i = 0; i < sizeof(routes) / sizeof(*routes); i++)
+		if (is(&x, 0, routes[i].seg) && x.nsegs == routes[i].nsegs) {
+			if (get) {
+				routes[i].get(&x);
+				return;
+			}
+			page_error(&x, 405, "Method not allowed", "This page has no form to send.");
+			web_header(res, "Allow", "GET, HEAD");
+			return;
+		}
 	page_error(&x, 404, "Not found", "No such page.");
 }

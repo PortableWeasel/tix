@@ -76,7 +76,46 @@ void form_csrf(web_ctx *x);
 bool asset_find(const char *name, const char **type, const char **body, size_t *len);
 const char *asset_css_name(void); /* "tix-<hash>.css" */
 
-/* Page handlers. Each handles GET (and POST where it has a form). */
-void page_home(web_ctx *x);
+/* ---- shared page helpers (util.c) ---- */
+
+/* Resolves path segment i (a full id or a prefix) of type t. On failure writes a 404 page
+ * and RETURNS false. */
+bool route_id(web_ctx *x, size_t seg, tix_entity_type t, tix_oid *out);
+/* Resolves an optional query field (e.g. root=ID); "" or absent -> *have = false. Writes a
+ * 404 page and RETURNS false for an id that doesn't resolve. */
+bool query_id(web_ctx *x, const char *field, tix_entity_type t, tix_oid *out, bool *have);
+/* today, or the page's ?today=D. */
+tix_date page_today(web_ctx *x);
+/* Runs the planner (root may be NULL). Writes a 500 page and RETURNS false on failure. */
+bool page_plan(web_ctx *x, const tix_oid *root, tix_plan_result *out);
+
+/* "2026-11-06 14:03 UTC" */
+void h_time(html *h, int64_t t);
+void h_status(html *h, tix_ticket_status s);
+/* <a href="/t/ID">short</a> title, from a list (or loaded when list is NULL). */
+void h_ticket(web_ctx *x, const tix_oid *id, const tix_entity_list *known);
+void h_who(web_ctx *x, const tix_oid *identity);
+void h_named(web_ctx *x, tix_entity_type t, const tix_oid *id, const tix_entity_list *known);
+const tix_entity *list_find(const tix_entity_list *l, const tix_oid *id);
+void h_labels(html *h, const tix_strs *labels);
+/* Days, hours, percent; nothing for unknown (< 0). */
+void h_days(html *h, int64_t d);
+void h_hours(html *h, int64_t hrs);
+
+/* SVG Gantt of a schedule (gantt.c). */
+void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_only);
+
+/* Page handlers (pages_*.c). Each handles GET (and POST where it has a form). */
+void page_tickets(web_ctx *x);
+void page_ticket(web_ctx *x);
+void page_wbs(web_ctx *x);
+void page_plan_view(web_ctx *x);
+void page_load(web_ctx *x);
+void page_resources(web_ctx *x);
+void page_resource(web_ctx *x);
+void page_calendars(web_ctx *x);
+void page_calendar(web_ctx *x);
+void page_identities(web_ctx *x);
+void page_export(web_ctx *x);
 
 #endif

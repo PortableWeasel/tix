@@ -255,6 +255,7 @@ static void test_list_and_validation(void)
 	TK_CHECK(l.n == 2 && !strcmp(l.v[0]->u.identity.name, "Ada"));
 	tix_entity_list_free(&l);
 
+
 	/* a ticket ref pointing at an identity's history is skipped and reported */
 	char ref[160], hex[TIX_OID_MAX_HEX + 1];
 	snprintf(ref, sizeof(ref), "refs/tix/tickets/%s", tix_oid_hex(&me, hex));
@@ -775,6 +776,40 @@ static void test_refresh(void)
 	tix_store_destroy(s);
 }
 
+/* tix_ticket_query.text: id prefix or title substring, ASCII case-insensitive. */
+static void test_text_query(void)
+{
+	fake_env env = {1700000000, 5};
+	tix_store *s = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_repo *r = open_repo(s, &env, NULL);
+	tix_oid me, a, t;
+	TK_OK(tix_identity_create(r, "Ada", "a@x", &me, &e), &e);
+	TK_OK(tix_repo_set_identity(r, &me, &e), &e);
+	TK_OK(tix_ticket_create(r, "Crash on Save \xe2\x9c\x93", "", NULL, &a, &e), &e);
+	TK_OK(tix_ticket_create(r, "Other", "", NULL, &t, &e), &e);
+	TK_OK(tix_ticket_create(r, "Saved search", "", NULL, &t, &e), &e);
+	struct {
+		const char *text;
+		size_t n;
+	} hits[] = {{"SAVE", 2}, {"crash on s", 1}, {"\xe2\x9c\x93", 1}, {"zzz", 0}, {"", 3}, {"save x", 0}};
+	tix_entity_list l;
+	for (size_t i = 0; i < sizeof(hits) / sizeof(*hits); i++) {
+		tix_ticket_query q = {.text = hits[i].text};
+		TK_OK(tix_ticket_list(r, &q, &l, &e), &e);
+		TK_CHECK(l.n == hits[i].n);
+		tix_entity_list_free(&l);
+	}
+	char ahex[TIX_OID_MAX_HEX + 1];
+	tix_oid_hex(&a, ahex);
+	ahex[8] = '\0';
+	tix_ticket_query q = {.text = ahex};
+	TK_OK(tix_ticket_list(r, &q, &l, &e), &e);
+	TK_CHECK(l.n == 1 && tix_oid_eq(&l.v[0]->id, &a));
+	tix_entity_list_free(&l);
+	tix_repo_close(r);
+	tix_store_destroy(s);
+}
+
 int main(void)
 {
 	test_flow();
@@ -787,5 +822,6 @@ int main(void)
 	test_planning();
 	test_index();
 	test_refresh();
+	test_text_query();
 	return tk_finish();
 }

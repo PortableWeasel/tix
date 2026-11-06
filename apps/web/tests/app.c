@@ -338,10 +338,178 @@ static void test_escaping(void)
 	world_close(&w);
 }
 
+
+/* Ops through core, as the CLI would write them. */
+static void apply1(world *w, tix_entity_type t, const tix_oid *id, tix_op op)
+{
+	TK_OK(tix_entity_apply(w->repo, t, id, &op, 1, &e), &e);
+	tix_op_free(&op);
+}
+
+static void field(world *w, tix_entity_type t, const tix_oid *id, const char *name, const char *text)
+{
+	tix_input_ctx ctx = {w->repo, fixed_today(NULL)};
+	tix_input in = {0};
+	TK_OK(tix_input_field(&ctx, t, name, text, &in, &e), &e);
+	TK_OK(tix_input_finish(&ctx, &in, id, NULL, &e), &e);
+	TK_OK(tix_entity_apply(w->repo, t, id, in.ops.v, in.ops.n, &e), &e);
+	tix_input_free(&in);
+}
+
+/* No page may carry markup that came from the data. */
+static void clean(client *c, const char *what)
+{
+	const char *b = body(c);
+	if (strstr(b, "<script") || strstr(b, "<img") || strstr(b, "\xe2\x80\xae") || strstr(b, "href=\"javascript"))
+		tk_fail(__FILE__, __LINE__, "unescaped hostile content on %s", what);
+}
+
+static void test_pages(void)
+{
+	world w;
+	world_open(&w, false);
+	tix_oid house, dig, pour, hand, crew, cal, other;
+	char hex[TIX_OID_MAX_HEX + 1], buf[256];
+	TK_OK(tix_calendar_create(w.repo, "Site <script>x</script>", &cal, &e), &e);
+	field(&w, TIX_ENTITY_CALENDAR, &cal, "off", "2026-11-11=<img src=x onerror=alert(1)>");
+	TK_OK(tix_resource_create(w.repo, "Crew \xe2\x80\xae<img src=x>", TIX_RES_ROLE, &crew, &e), &e);
+	field(&w, TIX_ENTITY_RESOURCE, &crew, "capacity", "200%");
+	tix_strs lab = {0};
+	tix_strs_add(&lab, "<script>");
+	TK_OK(tix_ticket_create(w.repo, "House <script>alert(1)</script>", "Body with <b>tags</b>\nand javascript:x",
+				&lab, &house, &e), &e);
+	tix_strs_free(&lab);
+	field(&w, TIX_ENTITY_TICKET, &house, "calendar", tix_oid_hex(&cal, hex));
+	TK_OK(tix_ticket_create(w.repo, "Dig", "", NULL, &dig, &e), &e);
+	TK_OK(tix_ticket_create(w.repo, "Pour \"slab\" & 'cure'", "", NULL, &pour, &e), &e);
+	TK_OK(tix_ticket_create(w.repo, "Handover", "", NULL, &hand, &e), &e);
+	TK_OK(tix_ticket_create(w.repo, "Unrelated", "", NULL, &other, &e), &e);
+	tix_oid_hex(&house, hex);
+	field(&w, TIX_ENTITY_TICKET, &dig, "parent", hex);
+	field(&w, TIX_ENTITY_TICKET, &pour, "parent", hex);
+	field(&w, TIX_ENTITY_TICKET, &hand, "parent", hex);
+	field(&w, TIX_ENTITY_TICKET, &dig, "effort", "32h");
+	field(&w, TIX_ENTITY_TICKET, &pour, "duration", "2d");
+	field(&w, TIX_ENTITY_TICKET, &hand, "kind", "milestone");
+	field(&w, TIX_ENTITY_TICKET, &house, "start", "2026-11-09");
+	snprintf(buf, sizeof(buf), "+%s:FS+1d", tix_oid_hex(&dig, hex));
+	field(&w, TIX_ENTITY_TICKET, &pour, "dep", buf);
+	snprintf(buf, sizeof(buf), "+%s", tix_oid_hex(&pour, hex));
+	field(&w, TIX_ENTITY_TICKET, &hand, "dep", buf);
+	field(&w, TIX_ENTITY_TICKET, &hand, "deadline", "2026-11-12");
+	tix_op as = tix_op_assign(&crew, 100, -1);
+	apply1(&w, TIX_ENTITY_TICKET, &dig, as);
+	apply1(&w, TIX_ENTITY_TICKET, &dig, tix_op_text(TIX_OP_COMMENT, "<script>steal()</script> looks fine"));
+	apply1(&w, TIX_ENTITY_TICKET, &other, tix_op_set_status(TIX_TICKET_DONE));
+
+	client c = new_client(&w);
+	login(&c);
+	char target[256];
+
+	/* list: active by default, filters, hostile labels */
+	TK_CHECK(call(&c, "GET", "/tickets", NULL) == 200);
+	clean(&c, "/tickets");
+	HAS(&c, "House &lt;script&gt;alert(1)&lt;/script&gt;");
+	HASNT(&c, "Unrelated"); /* done: not in the default view */
+	HAS(&c, "href=\"/tickets?label=%3Cscript%3E\"");
+	TK_CHECK(call(&c, "GET", "/tickets?status=done", NULL) == 200);
+	HAS(&c, "Unrelated");
+	HASNT(&c, "Dig<");
+	TK_CHECK(call(&c, "GET", "/tickets?q=POUR&status=open", NULL) == 200);
+	HAS(&c, "Pour &quot;slab&quot; &amp; &#39;cure&#39;");
+	HASNT(&c, ">Dig<");
+	snprintf(target, sizeof(target), "/tickets?status=open&under=%.8s", tix_oid_hex(&house, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, ">Dig<");
+	HASNT(&c, "House &lt;");
+	snprintf(target, sizeof(target), "/tickets?status=open&assignee=%s", tix_oid_hex(&crew, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, ">Dig<");
+	HASNT(&c, "Pour");
+	TK_CHECK(call(&c, "GET", "/tickets?under=deadbeef", NULL) == 404);
+
+	/* one ticket */
+	snprintf(target, sizeof(target), "/t/%s", tix_oid_hex(&dig, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, "/t/dig");
+	HAS(&c, "&lt;script&gt;steal()&lt;/script&gt; looks fine");
+	HAS(&c, "Ada &lt;script&gt;"); /* the comment's author, escaped */
+	HAS(&c, "2026-11-09 to 2026-11-10");
+	HAS(&c, "at 100%");
+	HAS(&c, "Followed by");
+	snprintf(target, sizeof(target), "/t/%.7s", tix_oid_hex(&pour, hex)); /* a prefix works too */
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "after <span class=\"id\">");
+	HAS(&c, "FS+1d");
+	snprintf(target, sizeof(target), "/t/%s", tix_oid_hex(&house, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, "/t/house");
+	HAS(&c, "Body with &lt;b&gt;tags&lt;/b&gt;");
+	HAS(&c, "Subtasks");
+	HAS(&c, "Site &lt;script&gt;x&lt;/script&gt;");
+	TK_CHECK(call(&c, "GET", "/t/deadbeef", NULL) == 404);
+	TK_CHECK(call(&c, "GET", "/t/xyz", NULL) == 404);
+	TK_CHECK(call(&c, "POST", target, "") == 403); /* no csrf */
+
+	/* wbs, plan + gantt, load, export */
+	TK_CHECK(call(&c, "GET", "/wbs", NULL) == 200);
+	clean(&c, "/wbs");
+	HAS(&c, "<td>1.1</td>");
+	TK_CHECK(call(&c, "GET", "/plan", NULL) == 200);
+	clean(&c, "/plan");
+	HAS(&c, "<svg class=\"gantt\"");
+	snprintf(buf, sizeof(buf), "<a href=\"/t/%s\"><title>", tix_oid_hex(&dig, hex));
+	HAS(&c, buf);
+	HAS(&c, "class=\"arrow\"");
+	HAS(&c, "class=\"ms");     /* the milestone diamond */
+	HAS(&c, "class=\"bar sum"); /* the summary bar */
+	HAS(&c, "class=\"today\"");
+	HAS(&c, "<b class=\"crit\">late</b>");
+	HASNT(&c, "style=");       /* the CSP forbids style attributes */
+	snprintf(target, sizeof(target), "/plan?root=%s&critical=1&today=2026-11-10", tix_oid_hex(&house, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HASNT(&c, "Unrelated");
+	TK_CHECK(call(&c, "GET", "/plan?root=nope", NULL) == 404);
+	TK_CHECK(call(&c, "GET", "/load", NULL) == 200);
+	clean(&c, "/load");
+	HAS(&c, "Crew \xef\xbf\xbd&lt;img src=x&gt;");
+	TK_CHECK(call(&c, "GET", "/export?format=csv", NULL) == 200);
+	HEADER(&c, "Content-Type: text/csv");
+	HEADER(&c, "Content-Disposition: attachment; filename=\"plan.csv\"");
+	TK_CHECK(call(&c, "GET", "/export?format=json", NULL) == 200);
+	HEADER(&c, "Content-Type: application/json");
+	TK_CHECK(call(&c, "GET", "/export?format=exe", NULL) == 400);
+	TK_CHECK(call(&c, "GET", "/export", NULL) == 400);
+
+	/* resources, calendars, identities */
+	TK_CHECK(call(&c, "GET", "/res", NULL) == 200);
+	clean(&c, "/res");
+	HAS(&c, "200%");
+	snprintf(target, sizeof(target), "/res/%s", tix_oid_hex(&crew, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, "/res/crew");
+	HAS(&c, ">Dig<");
+	TK_CHECK(call(&c, "GET", "/cal", NULL) == 200);
+	clean(&c, "/cal");
+	snprintf(target, sizeof(target), "/cal/%s", tix_oid_hex(&cal, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, "/cal/site");
+	HAS(&c, "&lt;img src=x onerror=alert(1)&gt;");
+	snprintf(target, sizeof(target), "/res/%s", tix_oid_hex(&cal, hex)); /* wrong type */
+	TK_CHECK(call(&c, "GET", target, NULL) == 404);
+	TK_CHECK(call(&c, "GET", "/id", NULL) == 200);
+	clean(&c, "/id");
+	HAS(&c, "written as <b>Ada &lt;script&gt;</b>");
+
+	web_response_free(&c.res);
+	world_close(&w);
+}
+
 int main(void)
 {
 	test_checks();
 	test_read_only();
 	test_escaping();
+	test_pages();
 	return tk_finish();
 }

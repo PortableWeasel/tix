@@ -117,6 +117,8 @@ typedef struct tix_ticket_query {
 	const tix_oid *author;   /* NULL = any */
 	const tix_oid *assignee; /* resource id; NULL = any */
 	const tix_oid *under;    /* only tickets below this one in the WBS; NULL = any */
+	const char *text;        /* id prefix (lowercase hex) or title substring, ASCII
+				    case-insensitive; NULL or "" = any (M6) */
 } tix_ticket_query;
 
 /* Statuses still "open" in the broad sense: open, in-progress, blocked. */

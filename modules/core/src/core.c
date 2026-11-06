@@ -1,6 +1,7 @@
 #include "core_internal.h"
 
 #include <stdio.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -644,6 +645,25 @@ static int cmp_by_name(const void *pa, const void *pb)
 	return c ? c : tix_oid_cmp(&a->id, &b->id);
 }
 
+/* id prefix, or title substring ignoring ASCII case (byte-wise, so UTF-8 safe). */
+static bool text_matches(const char *text, const tix_entity *e)
+{
+	char hex[TIX_OID_MAX_HEX + 1];
+	size_t n = strlen(text);
+	if (!strncmp(tix_oid_hex(&e->id, hex), text, n))
+		return true;
+	const char *title = e->u.ticket.title;
+	for (size_t i = 0; title[i]; i++) {
+		size_t k = 0;
+		while (k < n && title[i + k] &&
+		       tolower((unsigned char)title[i + k]) == tolower((unsigned char)text[k]))
+			k++;
+		if (k == n)
+			return true;
+	}
+	return false;
+}
+
 static bool matches(const tix_ticket_query *q, const tix_entity *e, const tix_entity_list *all)
 {
 	const tix_ticket *t = &e->u.ticket;
@@ -664,6 +684,8 @@ static bool matches(const tix_ticket_query *q, const tix_entity *e, const tix_en
 	if (q->label && !tix_strs_contains(&t->labels, q->label))
 		return false;
 	if (q->author && !tix_oid_eq(q->author, &t->author))
+		return false;
+	if (q->text && *q->text && !text_matches(q->text, e))
 		return false;
 	return true;
 }

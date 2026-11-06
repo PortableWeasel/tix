@@ -29,6 +29,7 @@ static const char *reason(int status)
 {
 	switch (status) {
 	case 200: return "OK";
+	case 204: return "No Content";
 	case 303: return "See Other";
 	case 304: return "Not Modified";
 	case 400: return "Bad Request";
@@ -55,8 +56,11 @@ static void send_response(struct mg_connection *c, const server *sv, const web_r
 		mg_send(c, res->headers.data, res->headers.len);
 	if (sv->o->always_headers)
 		mg_printf(c, "%s", sv->o->always_headers);
-	mg_printf(c, "Content-Length: %lu\r\n\r\n", (unsigned long)res->body.len);
-	if (!head && res->body.len)
+	if (res->status == 204 || res->status == 304) /* no body, and no Content-Length (RFC 9110) */
+		mg_printf(c, "\r\n");
+	else
+		mg_printf(c, "Content-Length: %lu\r\n\r\n", (unsigned long)res->body.len);
+	if (!head && res->body.len && res->status != 204 && res->status != 304)
 		mg_send(c, res->body.data, res->body.len);
 	/* The response is complete. Mongoose's own reply helpers clear this; without it the
 	 * next pipelined request is never parsed and "Connection: close" isn't honoured. */
