@@ -8,8 +8,8 @@
 #define SYNC_ROUNDS 3
 #define PUSH_CHUNK 500 /* refs per push, keeping argv well below ARG_MAX */
 
-static const tix_entity_type sync_types[] = {TIX_ENTITY_IDENTITY, TIX_ENTITY_TICKET};
-#define NTYPES (sizeof(sync_types) / sizeof(sync_types[0]))
+#define sync_types tix_entity_types
+#define NTYPES TIX_ENTITY_NTYPES
 
 void tix_sync_report_free(tix_sync_report *rep)
 {
@@ -150,7 +150,7 @@ tix_status tix_pull(tix_repo *r, const char *remote, tix_sync_report *rep, tix_e
 	if ((st = tix_store_ref_list(r->store, prefix, &refs, err)))
 		return st;
 	size_t plen = strlen(prefix);
-	/* refs are sorted, so identities integrate before tickets */
+	/* order doesn't matter: references between entities are resolved at read time */
 	for (size_t i = 0; i < refs.n && !st; i++) {
 		const char *rest = refs.v[i].name + plen;
 		tix_entity_type t;

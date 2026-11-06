@@ -262,16 +262,11 @@ tix_status tix_entity_load(tix_repo *r, tix_entity_type t, const tix_oid *id, ti
 	return TIX_OK;
 }
 
-static bool is_create(tix_op_kind k)
-{
-	return k == TIX_OP_TICKET_CREATE || k == TIX_OP_IDENTITY_CREATE;
-}
-
 static void summary(tix_entity_type t, const tix_op *ops, size_t n, char *out, size_t cap)
 {
 	size_t used = (size_t)snprintf(out, cap, "tix %s:", tix_entity_type_name(t));
 	for (size_t i = 0; i < n && used < cap; i++)
-		used += (size_t)snprintf(out + used, cap - used, " %s", tix_op_name(ops[i].kind));
+		used += (size_t)snprintf(out + used, cap - used, " %s", tix_op_wire_name(&ops[i]));
 }
 
 tix_status core_write_pack(tix_repo *r, tix_entity_type t, const tix_oid *author, const tix_oid *parents,
@@ -313,22 +308,39 @@ static void fill_nonce(tix_repo *r, char **nonce)
 	*nonce = tix_xstrdup(hex);
 }
 
+static char **create_nonce(tix_op *op)
+{
+	switch (op->kind) {
+	case TIX_OP_TICKET_CREATE: return &op->u.ticket_create.nonce;
+	case TIX_OP_IDENTITY_CREATE: return &op->u.identity_create.nonce;
+	case TIX_OP_RESOURCE_CREATE: return &op->u.resource_create.nonce;
+	case TIX_OP_CALENDAR_CREATE: return &op->u.calendar_create.nonce;
+	default: TIX_REQUIRE(!"not a create op"); return NULL;
+	}
+}
+
+static tix_status precheck(tix_repo *r, tix_entity_type t, const tix_entity *e, const tix_op *ops, size_t n,
+			   tix_error *err);
+
 tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t n, tix_oid *out, tix_error *err)
 {
 	TIX_REQUIRE(ops && n >= 1 && out);
-	tix_op_kind want = t == TIX_ENTITY_TICKET ? TIX_OP_TICKET_CREATE : TIX_OP_IDENTITY_CREATE;
+	tix_op_kind want = tix_create_kind(t);
 	if (ops[0].kind != want)
 		return tix_error_set(err, TIX_ERR_INVALID, "first op must be %s's create", tix_entity_type_name(t));
 	for (size_t i = 1; i < n; i++)
-		if (is_create(ops[i].kind))
+		if (tix_op_is_create(ops[i].kind))
 			return tix_error_set(err, TIX_ERR_INVALID, "only the first op may be a create");
 	const tix_oid *author = NULL;
-	if (t != TIX_ENTITY_IDENTITY) {
+	if (t != TIX_ENTITY_IDENTITY) { /* every other type needs an author */
 		if (tix_oid_is_null(&r->identity))
 			return tix_error_set(err, TIX_ERR_NOT_FOUND, "no identity configured (create one with `tix id new`)");
 		author = &r->identity;
 	}
-	fill_nonce(r, t == TIX_ENTITY_TICKET ? &ops[0].u.ticket_create.nonce : &ops[0].u.identity_create.nonce);
+	tix_status pst = precheck(r, t, NULL, ops + 1, n - 1, err);
+	if (pst)
+		return pst;
+	fill_nonce(r, create_nonce(&ops[0]));
 
 	uint64_t lamport;
 	char ref[128];
@@ -342,14 +354,12 @@ tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t
 	return core_clock_save(r, err);
 }
 
-static tix_status precheck(const tix_repo *r, const tix_entity *e, const tix_op *ops, size_t n, tix_error *err);
-
 tix_status tix_entity_apply(tix_repo *r, tix_entity_type t, const tix_oid *id, const tix_op *ops, size_t n,
 			    tix_error *err)
 {
 	TIX_REQUIRE(id && ops && n >= 1);
 	for (size_t i = 0; i < n; i++)
-		if (is_create(ops[i].kind))
+		if (tix_op_is_create(ops[i].kind))
 			return tix_error_set(err, TIX_ERR_INVALID, "create ops cannot be applied to an existing %s",
 					     tix_entity_type_name(t));
 	if (tix_oid_is_null(&r->identity))
@@ -368,7 +378,7 @@ tix_status tix_entity_apply(tix_repo *r, tix_entity_type t, const tix_oid *id, c
 			return st;
 		if ((st = core_load_at(r, t, &head, &e, err)))
 			return st; /* never build on history that doesn't validate */
-		st = precheck(r, e, ops, n, err);
+		st = precheck(r, t, e, ops, n, err);
 		tix_entity_free(e);
 		if (st)
 			return st;
@@ -383,24 +393,160 @@ tix_status tix_entity_apply(tix_repo *r, tix_entity_type t, const tix_oid *id, c
 	return st;
 }
 
-/* Rules that model would silently ignore get a clear error up front instead. */
-static tix_status precheck(const tix_repo *r, const tix_entity *e, const tix_op *ops, size_t n, tix_error *err)
+/* ---- up-front checks ---------------------------------------------------------- */
+
+static const char *short_hex(const tix_oid *id, char *out)
 {
-	if (e->type != TIX_ENTITY_TICKET)
-		return TIX_OK;
-	for (size_t i = 0; i < n; i++) {
-		if (ops[i].kind != TIX_OP_EDIT_COMMENT)
+	char hex[TIX_OID_MAX_HEX + 1];
+	snprintf(out, TIX_ID_MIN_PREFIX + 1, "%s", tix_oid_hex(id, hex));
+	return out;
+}
+
+static tix_status must_exist(tix_repo *r, tix_entity_type t, const tix_oid *id, tix_error *err)
+{
+	tix_entity *e;
+	char s[16];
+	if (id->algo != r->store->algo || tix_entity_load(r, t, id, &e, NULL))
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no %s %s", tix_entity_type_name(t), short_hex(id, s));
+	tix_entity_free(e);
+	return TIX_OK;
+}
+
+static const tix_entity *find_ticket(const tix_entity_list *all, const tix_oid *id)
+{
+	for (size_t i = 0; i < all->n; i++)
+		if (tix_oid_eq(&all->v[i]->id, id))
+			return all->v[i];
+	return NULL;
+}
+
+/* RETURNS true if `target` is reachable from `from` by following parent links. */
+static bool parent_reaches(const tix_entity_list *all, const tix_oid *from, const tix_oid *target)
+{
+	const tix_oid *cur = from;
+	for (size_t steps = 0; cur && steps <= all->n; steps++) {
+		if (tix_oid_eq(cur, target))
+			return true;
+		const tix_entity *t = find_ticket(all, cur);
+		cur = t && !tix_oid_is_null(&t->u.ticket.plan.parent) ? &t->u.ticket.plan.parent : NULL;
+	}
+	return false;
+}
+
+/* RETURNS true if `target` is reachable from `from` along dependencies (pred links). */
+static bool dep_reaches(const tix_entity_list *all, const tix_oid *from, const tix_oid *target)
+{
+	TIX_VEC(tix_oid) todo = {0};
+	core_oidset seen = {0};
+	bool found = false;
+	TIX_VEC_PUSH(&todo, *from);
+	while (todo.n && !found) {
+		tix_oid o = todo.v[--todo.n];
+		if (!core_oidset_add(&seen, &o))
 			continue;
+		if (tix_oid_eq(&o, target)) {
+			found = true;
+			break;
+		}
+		const tix_entity *t = find_ticket(all, &o);
+		for (size_t k = 0; t && k < t->u.ticket.plan.ndeps; k++)
+			TIX_VEC_PUSH(&todo, t->u.ticket.plan.deps[k].pred);
+	}
+	free(todo.v);
+	core_oidset_free(&seen);
+	return found;
+}
+
+static tix_status list_all(tix_repo *r, tix_entity_type t, tix_entity_list *out, tix_error *err);
+
+/* Ticket ops: references must resolve; no parent or dependency cycles. */
+static tix_status precheck_ticket(tix_repo *r, const tix_entity *e, const tix_op *op, tix_entity_list *all,
+				  tix_error *err)
+{
+	char a[16];
+	const tix_oid *self = e ? &e->id : NULL;
+	tix_status st;
+	switch (op->kind) {
+	case TIX_OP_EDIT_COMMENT: {
 		const tix_comment *found = NULL;
-		for (size_t k = 0; k < e->u.ticket.ncomments; k++)
-			if (!tix_opid_cmp(&e->u.ticket.comments[k].id, &ops[i].u.edit_comment.target))
+		for (size_t k = 0; e && k < e->u.ticket.ncomments; k++)
+			if (!tix_opid_cmp(&e->u.ticket.comments[k].id, &op->u.edit_comment.target))
 				found = &e->u.ticket.comments[k];
 		if (!found)
 			return tix_error_set(err, TIX_ERR_NOT_FOUND, "no such comment on this ticket");
 		if (!tix_oid_eq(&found->author, &r->identity))
 			return tix_error_set(err, TIX_ERR_INVALID, "you can only edit your own comments");
+		return TIX_OK;
 	}
-	return TIX_OK;
+	case TIX_OP_SET_FIELD:
+		if (op->u.set.v.kind != TIX_V_ID)
+			return TIX_OK;
+		if (op->u.set.field == TIX_F_CALENDAR)
+			return must_exist(r, TIX_ENTITY_CALENDAR, &op->u.set.v.id, err);
+		/* TIX_F_PARENT */
+		if ((st = must_exist(r, TIX_ENTITY_TICKET, &op->u.set.v.id, err)))
+			return st;
+		if (self && tix_oid_eq(self, &op->u.set.v.id))
+			return tix_error_set(err, TIX_ERR_INVALID, "a ticket can't be its own parent");
+		if (self && !all->v && (st = list_all(r, TIX_ENTITY_TICKET, all, err)))
+			return st;
+		if (self && parent_reaches(all, &op->u.set.v.id, self))
+			return tix_error_set(err, TIX_ERR_INVALID, "%s is below this ticket; that would make a cycle",
+					     short_hex(&op->u.set.v.id, a));
+		return TIX_OK;
+	case TIX_OP_DEP_ADD:
+		if ((st = must_exist(r, TIX_ENTITY_TICKET, &op->u.dep_add.pred, err)))
+			return st;
+		if (self && tix_oid_eq(self, &op->u.dep_add.pred))
+			return tix_error_set(err, TIX_ERR_INVALID, "a ticket can't depend on itself");
+		if (self && !all->v && (st = list_all(r, TIX_ENTITY_TICKET, all, err)))
+			return st;
+		if (self && dep_reaches(all, &op->u.dep_add.pred, self))
+			return tix_error_set(err, TIX_ERR_INVALID, "%s already depends on this ticket; that would make a cycle",
+					     short_hex(&op->u.dep_add.pred, a));
+		return TIX_OK;
+	case TIX_OP_DEP_REMOVE:
+		for (size_t k = 0; e && k < e->u.ticket.plan.ndeps; k++)
+			if (tix_oid_eq(&e->u.ticket.plan.deps[k].pred, &op->u.unref.target))
+				return TIX_OK;
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no dependency on %s", short_hex(&op->u.unref.target, a));
+	case TIX_OP_ASSIGN:
+		return must_exist(r, TIX_ENTITY_RESOURCE, &op->u.assign.resource, err);
+	case TIX_OP_UNASSIGN:
+		for (size_t k = 0; e && k < e->u.ticket.plan.nassignments; k++)
+			if (tix_oid_eq(&e->u.ticket.plan.assignments[k].resource, &op->u.unref.target))
+				return TIX_OK;
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "%s is not assigned", short_hex(&op->u.unref.target, a));
+	default:
+		return TIX_OK;
+	}
+}
+
+/* Rules that model would silently ignore get a clear error up front instead.
+ * e is the current state (NULL while creating). */
+static tix_status precheck(tix_repo *r, tix_entity_type t, const tix_entity *e, const tix_op *ops, size_t n,
+			   tix_error *err)
+{
+	tix_entity_list all = {0};
+	tix_status st = TIX_OK;
+	for (size_t i = 0; i < n && !st; i++) {
+		const tix_op *op = &ops[i];
+		if (t == TIX_ENTITY_TICKET) {
+			st = precheck_ticket(r, e, op, &all, err);
+		} else if (t == TIX_ENTITY_RESOURCE && op->kind == TIX_OP_SET_FIELD && op->u.set.v.kind == TIX_V_ID) {
+			st = must_exist(r, op->u.set.field == TIX_F_RES_IDENTITY ? TIX_ENTITY_IDENTITY : TIX_ENTITY_CALENDAR,
+					&op->u.set.v.id, err);
+		} else if (t == TIX_ENTITY_CALENDAR && op->kind == TIX_OP_EXCEPTION_REMOVE) {
+			bool found = false;
+			for (size_t k = 0; e && k < e->u.calendar.nexceptions && !found; k++)
+				found = e->u.calendar.exceptions[k].from == op->u.exception_remove.from &&
+					e->u.calendar.exceptions[k].to == op->u.exception_remove.to;
+			if (!found)
+				st = tix_error_set(err, TIX_ERR_NOT_FOUND, "no such exception on this calendar");
+		}
+	}
+	tix_entity_list_free(&all);
+	return st;
 }
 
 /* ---- listing --------------------------------------------------------------- */
@@ -447,18 +593,38 @@ static int cmp_ticket(const void *pa, const void *pb)
 	return tix_oid_cmp(&a->id, &b->id);
 }
 
-static int cmp_identity(const void *pa, const void *pb)
+static const char *entity_name(const tix_entity *e)
+{
+	switch (e->type) {
+	case TIX_ENTITY_IDENTITY: return e->u.identity.name;
+	case TIX_ENTITY_RESOURCE: return e->u.resource.name;
+	case TIX_ENTITY_CALENDAR: return e->u.calendar.name;
+	default: return e->u.ticket.title;
+	}
+}
+
+static int cmp_by_name(const void *pa, const void *pb)
 {
 	const tix_entity *a = *(tix_entity *const *)pa, *b = *(tix_entity *const *)pb;
-	int c = strcmp(a->u.identity.name, b->u.identity.name);
+	int c = strcmp(entity_name(a), entity_name(b));
 	return c ? c : tix_oid_cmp(&a->id, &b->id);
 }
 
-static bool matches(const tix_ticket_query *q, const tix_entity *e)
+static bool matches(const tix_ticket_query *q, const tix_entity *e, const tix_entity_list *all)
 {
 	const tix_ticket *t = &e->u.ticket;
 	if (!q)
 		return true;
+	if (q->assignee) {
+		bool hit = false;
+		for (size_t k = 0; k < t->plan.nassignments && !hit; k++)
+			hit = tix_oid_eq(&t->plan.assignments[k].resource, q->assignee);
+		if (!hit)
+			return false;
+	}
+	if (q->under && (tix_oid_eq(&e->id, q->under) || tix_oid_is_null(&t->plan.parent) ||
+			 !parent_reaches(all, &t->plan.parent, q->under)))
+		return false;
 	if (q->status_mask && !(q->status_mask & (1u << t->status)))
 		return false;
 	if (q->label && !tix_strs_contains(&t->labels, q->label))
@@ -473,25 +639,45 @@ tix_status tix_ticket_list(tix_repo *r, const tix_ticket_query *q, tix_entity_li
 	tix_status st = list_all(r, TIX_ENTITY_TICKET, out, err);
 	if (st)
 		return st;
+	/* decide first (the WBS walk needs every ticket), then drop */
+	bool *keep_it = tix_xcalloc(out->n ? out->n : 1, sizeof(bool));
+	for (size_t i = 0; i < out->n; i++)
+		keep_it[i] = matches(q, out->v[i], out);
 	size_t keep = 0;
 	for (size_t i = 0; i < out->n; i++) {
-		if (matches(q, out->v[i]))
+		if (keep_it[i])
 			out->v[keep++] = out->v[i];
 		else
 			tix_entity_free(out->v[i]);
 	}
+	free(keep_it);
 	out->n = keep;
 	if (out->n)
 		qsort(out->v, out->n, sizeof(*out->v), cmp_ticket);
 	return TIX_OK;
 }
 
+static tix_status list_by_name(tix_repo *r, tix_entity_type t, tix_entity_list *out, tix_error *err)
+{
+	tix_status st = list_all(r, t, out, err);
+	if (!st && out->n)
+		qsort(out->v, out->n, sizeof(*out->v), cmp_by_name);
+	return st;
+}
+
 tix_status tix_identity_list(tix_repo *r, tix_entity_list *out, tix_error *err)
 {
-	tix_status st = list_all(r, TIX_ENTITY_IDENTITY, out, err);
-	if (!st && out->n)
-		qsort(out->v, out->n, sizeof(*out->v), cmp_identity);
-	return st;
+	return list_by_name(r, TIX_ENTITY_IDENTITY, out, err);
+}
+
+tix_status tix_resource_list(tix_repo *r, tix_entity_list *out, tix_error *err)
+{
+	return list_by_name(r, TIX_ENTITY_RESOURCE, out, err);
+}
+
+tix_status tix_calendar_list(tix_repo *r, tix_entity_list *out, tix_error *err)
+{
+	return list_by_name(r, TIX_ENTITY_CALENDAR, out, err);
 }
 
 /* ---- conveniences ------------------------------------------------------------- */
@@ -509,6 +695,22 @@ tix_status tix_ticket_create(tix_repo *r, const char *title, const char *body, c
 {
 	tix_op op = tix_op_ticket_create(NULL, title, body, labels);
 	tix_status st = tix_entity_create(r, TIX_ENTITY_TICKET, &op, 1, out, err);
+	tix_op_free(&op);
+	return st;
+}
+
+tix_status tix_resource_create(tix_repo *r, const char *name, tix_resource_kind kind, tix_oid *out, tix_error *err)
+{
+	tix_op op = tix_op_resource_create(NULL, name, kind);
+	tix_status st = tix_entity_create(r, TIX_ENTITY_RESOURCE, &op, 1, out, err);
+	tix_op_free(&op);
+	return st;
+}
+
+tix_status tix_calendar_create(tix_repo *r, const char *name, tix_oid *out, tix_error *err)
+{
+	tix_op op = tix_op_calendar_create(NULL, name);
+	tix_status st = tix_entity_create(r, TIX_ENTITY_CALENDAR, &op, 1, out, err);
 	tix_op_free(&op);
 	return st;
 }

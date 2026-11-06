@@ -105,7 +105,7 @@ static void print_labels(const tix_strs *l)
 
 int cmd_ls(cli *c, int argc, char **argv)
 {
-	tix_ticket_query q = {TIX_STATUS_MASK_ACTIVE, NULL, NULL};
+	tix_ticket_query q = {.status_mask = TIX_STATUS_MASK_ACTIVE};
 	tix_oid author;
 	bool all = false, explicit_status = false;
 	for (int i = 1; i < argc; i++) {

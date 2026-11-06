@@ -14,6 +14,7 @@
 
 #include "tix/model.h"
 #include "tix/model_replay.h"
+#include "tix/plan.h"
 #include "tix/store.h"
 
 #define TIX_ID_MIN_PREFIX 7
@@ -63,8 +64,9 @@ tix_status tix_entity_load(tix_repo *r, tix_entity_type t, const tix_oid *id, ti
 /*
  * Creates an entity. REQUIRES n >= 1. ops[0] must be the type's create op and no
  * other op may be one (else TIX_ERR_INVALID). A NULL nonce in ops[0] is filled
- * with fresh randomness (ops[0] is modified). Tickets need an identity set
- * (else TIX_ERR_NOT_FOUND); identities are self-authored.
+ * with fresh randomness (ops[0] is modified). Every type but identity needs an
+ * identity set (else TIX_ERR_NOT_FOUND); identities are self-authored. The other
+ * ops get the same up-front checks as tix_entity_apply.
  */
 tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t n, tix_oid *out,
 			     tix_error *err);
@@ -72,9 +74,18 @@ tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t
 /*
  * Appends ops as one op-pack, authored by the current identity, then advances
  * the clock. Retries automatically if another writer moves the ref meanwhile.
- * Identities may only be edited by themselves, and comments only by their
- * author (TIX_ERR_INVALID otherwise; an unknown comment is TIX_ERR_NOT_FOUND).
  * BORROWS ops.
+ *
+ * Up-front checks on local input (remote data is never rejected for these;
+ * references to entities not fetched yet are fine there):
+ *   - identities may only be edited by themselves, comments only by their
+ *     author (TIX_ERR_INVALID; an unknown comment is TIX_ERR_NOT_FOUND);
+ *   - parent, dependency, calendar, resource and identity references must name
+ *     an existing entity of the right type (TIX_ERR_NOT_FOUND);
+ *   - a parent that is the ticket itself or below it, or a dependency that
+ *     would close a dependency cycle, is TIX_ERR_INVALID;
+ *   - removing a dependency, assignment or calendar exception that isn't there
+ *     is TIX_ERR_NOT_FOUND.
  */
 tix_status tix_entity_apply(tix_repo *r, tix_entity_type t, const tix_oid *id, const tix_op *ops, size_t n,
 			    tix_error *err);
@@ -90,9 +101,11 @@ typedef struct tix_entity_list {
 void tix_entity_list_free(tix_entity_list *l);
 
 typedef struct tix_ticket_query {
-	unsigned status_mask;  /* bit (1u << status); 0 = any */
-	const char *label;     /* NULL = any */
-	const tix_oid *author; /* NULL = any */
+	unsigned status_mask;    /* bit (1u << status); 0 = any */
+	const char *label;       /* NULL = any */
+	const tix_oid *author;   /* NULL = any */
+	const tix_oid *assignee; /* resource id; NULL = any */
+	const tix_oid *under;    /* only tickets below this one in the WBS; NULL = any */
 } tix_ticket_query;
 
 /* Statuses still "open" in the broad sense: open, in-progress, blocked. */
@@ -103,6 +116,35 @@ typedef struct tix_ticket_query {
 tix_status tix_ticket_list(tix_repo *r, const tix_ticket_query *q, tix_entity_list *out, tix_error *err);
 /* All identities, ordered by name, then id. */
 tix_status tix_identity_list(tix_repo *r, tix_entity_list *out, tix_error *err);
+/* All resources / calendars, ordered by name, then id. */
+tix_status tix_resource_list(tix_repo *r, tix_entity_list *out, tix_error *err);
+tix_status tix_calendar_list(tix_repo *r, tix_entity_list *out, tix_error *err);
+
+/* ---- planning (architecture §5) --------------------------------------------- */
+
+typedef enum tix_rank_pos { TIX_RANK_FIRST, TIX_RANK_LAST, TIX_RANK_BEFORE, TIX_RANK_AFTER } tix_rank_pos;
+
+/*
+ * Computes a rank that puts `self` at pos among the children of `parent` (NULL =
+ * the top level), relative to `anchor` for BEFORE/AFTER. Siblings are never
+ * rewritten. Unranked siblings sort after ranked ones, so LAST means "after the
+ * last ranked sibling". RETURNS TIX_ERR_INVALID if the anchor isn't a sibling
+ * or has no rank yet, TIX_ERR_CONFLICT if there is no room (see tix_rank_between).
+ */
+tix_status tix_ticket_rank(tix_repo *r, const tix_oid *parent, const tix_oid *self, tix_rank_pos pos,
+			   const tix_oid *anchor, tix_buf *out, tix_error *err);
+
+/* A schedule plus the entities it borrows. Free with tix_plan_result_free. */
+typedef struct tix_plan_result {
+	tix_schedule *schedule;
+	tix_entity_list tickets, resources, calendars;
+} tix_plan_result;
+
+void tix_plan_result_free(tix_plan_result *res);
+
+/* Loads everything and runs the planner for root (NULL = all tickets). `today`
+ * comes from the caller (core never reads the clock). */
+tix_status tix_plan(tix_repo *r, const tix_oid *root, tix_date today, tix_plan_result *out, tix_error *err);
 
 /* ---- sync (architecture §6) ------------------------------------------------- */
 
@@ -150,5 +192,8 @@ tix_status tix_identity_create(tix_repo *r, const char *name, const char *email,
 			       tix_error *err);
 tix_status tix_ticket_create(tix_repo *r, const char *title, const char *body, const tix_strs *labels,
 			     tix_oid *out, tix_error *err);
+tix_status tix_resource_create(tix_repo *r, const char *name, tix_resource_kind kind, tix_oid *out,
+			       tix_error *err);
+tix_status tix_calendar_create(tix_repo *r, const char *name, tix_oid *out, tix_error *err);
 
 #endif

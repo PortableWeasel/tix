@@ -241,11 +241,11 @@ static void test_list_and_validation(void)
 		TK_CHECK(tix_oid_eq(&l.v[0]->id, &c) && tix_oid_eq(&l.v[2]->id, &a));
 	tix_entity_list_free(&l);
 
-	tix_ticket_query q = {TIX_STATUS_MASK_ACTIVE, NULL, NULL};
+	tix_ticket_query q = {.status_mask = TIX_STATUS_MASK_ACTIVE};
 	TK_OK(tix_ticket_list(r, &q, &l, &e), &e);
 	TK_CHECK(l.n == 2);
 	tix_entity_list_free(&l);
-	q = (tix_ticket_query){0, "ui", &me};
+	q = (tix_ticket_query){.label = "ui", .author = &me};
 	TK_OK(tix_ticket_list(r, &q, &l, &e), &e);
 	TK_CHECK(l.n == 1 && tix_oid_eq(&l.v[0]->id, &a));
 	tix_entity_list_free(&l);
@@ -521,6 +521,127 @@ static void test_sync_convergence(void)
 	TK_CHECK(merges > 0); /* the scenario really exercised merging */
 }
 
+static void set1(clone *c, const tix_oid *t, tix_field f, tix_value v, tix_status want)
+{
+	tix_op op = tix_op_set(f, v);
+	TK_STATUS(tix_entity_apply(c->r, TIX_ENTITY_TICKET, t, &op, 1, &e), want, &e);
+	tix_op_free(&op);
+}
+
+static void op1(clone *c, tix_entity_type type, const tix_oid *id, tix_op op, tix_status want)
+{
+	TK_STATUS(tix_entity_apply(c->r, type, id, &op, 1, &e), want, &e);
+	tix_op_free(&op);
+}
+
+static void test_planning(void)
+{
+	tix_store *server = tix_store_mem_new(TIX_HASH_SHA1);
+	clone a, b;
+	tix_oid me, proj, t1, t2, t3, dev, cal, other_id;
+	tix_sync_report rep = {0};
+	clone_open(&a, server, 31);
+	clone_open(&b, server, 32);
+	TK_OK(tix_identity_create(a.r, "Ada", "a@x", &me, &e), &e);
+	TK_OK(tix_repo_set_identity(a.r, &me, &e), &e);
+
+	/* create with planning ops in the same pack */
+	TK_OK(tix_ticket_create(a.r, "Project", "", NULL, &proj, &e), &e);
+	tix_op ops[] = {tix_op_ticket_create(NULL, "Dig", "", NULL), tix_op_set(TIX_F_PARENT, tix_value_id(&proj)),
+			tix_op_set(TIX_F_DURATION, tix_value_int(TIX_V_INT, 3))};
+	TK_OK(tix_entity_create(a.r, TIX_ENTITY_TICKET, ops, 3, &t1, &e), &e);
+	for (int i = 0; i < 3; i++)
+		tix_op_free(&ops[i]);
+	TK_OK(tix_ticket_create(a.r, "Pour", "", NULL, &t2, &e), &e);
+	TK_OK(tix_ticket_create(a.r, "Unrelated", "", NULL, &t3, &e), &e);
+	TK_OK(tix_resource_create(a.r, "Digger", TIX_RES_EQUIPMENT, &dev, &e), &e);
+	TK_OK(tix_calendar_create(a.r, "Site", &cal, &e), &e);
+	tix_oid ghost = t3;
+	ghost.bytes[0] ^= 0x5a;
+
+	/* references must exist and have the right type */
+	set1(&a, &t2, TIX_F_PARENT, tix_value_id(&ghost), TIX_ERR_NOT_FOUND);
+	set1(&a, &t2, TIX_F_PARENT, tix_value_id(&dev), TIX_ERR_NOT_FOUND); /* a resource, not a ticket */
+	set1(&a, &t2, TIX_F_PARENT, tix_value_id(&t2), TIX_ERR_INVALID);
+	set1(&a, &t2, TIX_F_PARENT, tix_value_id(&proj), TIX_OK);
+	set1(&a, &proj, TIX_F_PARENT, tix_value_id(&t2), TIX_ERR_INVALID); /* cycle */
+	set1(&a, &t2, TIX_F_CALENDAR, tix_value_id(&t1), TIX_ERR_NOT_FOUND);
+	set1(&a, &proj, TIX_F_CALENDAR, tix_value_id(&cal), TIX_OK);
+	set1(&a, &t2, TIX_F_PARENT, tix_value_null(), TIX_OK);
+	set1(&a, &t2, TIX_F_PARENT, tix_value_id(&proj), TIX_OK);
+	op1(&a, TIX_ENTITY_TICKET, &t2, tix_op_dep_add(&t1, TIX_DEP_FS, 0), TIX_OK);
+	op1(&a, TIX_ENTITY_TICKET, &t1, tix_op_dep_add(&t2, TIX_DEP_FS, 0), TIX_ERR_INVALID); /* cycle */
+	op1(&a, TIX_ENTITY_TICKET, &t1, tix_op_dep_add(&t1, TIX_DEP_FS, 0), TIX_ERR_INVALID);
+	op1(&a, TIX_ENTITY_TICKET, &t1, tix_op_dep_remove(&t2), TIX_ERR_NOT_FOUND);
+	op1(&a, TIX_ENTITY_TICKET, &t2, tix_op_assign(&cal, 100, -1), TIX_ERR_NOT_FOUND);
+	op1(&a, TIX_ENTITY_TICKET, &t2, tix_op_assign(&dev, 100, -1), TIX_OK);
+	op1(&a, TIX_ENTITY_TICKET, &t2, tix_op_set(TIX_F_DURATION, tix_value_int(TIX_V_INT, 2)), TIX_OK);
+	op1(&a, TIX_ENTITY_TICKET, &t1, tix_op_unassign(&dev), TIX_ERR_NOT_FOUND);
+	op1(&a, TIX_ENTITY_RESOURCE, &dev, tix_op_set(TIX_F_RES_CALENDAR, tix_value_id(&t1)), TIX_ERR_NOT_FOUND);
+	op1(&a, TIX_ENTITY_RESOURCE, &dev, tix_op_set(TIX_F_RES_IDENTITY, tix_value_id(&me)), TIX_OK);
+	op1(&a, TIX_ENTITY_CALENDAR, &cal, tix_op_exception_remove(20400, 20400), TIX_ERR_NOT_FOUND);
+	op1(&a, TIX_ENTITY_CALENDAR, &cal, tix_op_exception_add(20400, 20400, false, "x"), TIX_OK);
+	op1(&a, TIX_ENTITY_CALENDAR, &cal, tix_op_exception_remove(20400, 20400), TIX_OK);
+
+	/* queries */
+	tix_entity_list l;
+	tix_ticket_query q = {.under = &proj};
+	TK_OK(tix_ticket_list(a.r, &q, &l, &e), &e);
+	TK_CHECK(l.n == 2);
+	tix_entity_list_free(&l);
+	q = (tix_ticket_query){.assignee = &dev};
+	TK_OK(tix_ticket_list(a.r, &q, &l, &e), &e);
+	TK_CHECK(l.n == 1 && tix_oid_eq(&l.v[0]->id, &t2));
+	tix_entity_list_free(&l);
+	TK_OK(tix_resource_list(a.r, &l, &e), &e);
+	TK_CHECK(l.n == 1 && !strcmp(l.v[0]->u.resource.name, "Digger") &&
+		 l.v[0]->u.resource.kind == TIX_RES_EQUIPMENT && tix_oid_eq(&l.v[0]->u.resource.identity, &me));
+	tix_entity_list_free(&l);
+
+	/* ranks among Project's children */
+	tix_buf rank = TIX_BUF_INIT;
+	TK_STATUS(tix_ticket_rank(a.r, &proj, &t2, TIX_RANK_AFTER, &t1, &rank, &e), TIX_ERR_INVALID, &e); /* t1 unranked */
+	TK_STATUS(tix_ticket_rank(a.r, &proj, &t2, TIX_RANK_AFTER, &t3, &rank, &e), TIX_ERR_INVALID, &e); /* not a sibling */
+	TK_OK(tix_ticket_rank(a.r, &proj, &t1, TIX_RANK_LAST, NULL, &rank, &e), &e);
+	set1(&a, &t1, TIX_F_RANK, tix_value_str(rank.data), TIX_OK);
+	tix_buf_reset(&rank);
+	TK_OK(tix_ticket_rank(a.r, &proj, &t2, TIX_RANK_BEFORE, &t1, &rank, &e), &e);
+	set1(&a, &t2, TIX_F_RANK, tix_value_str(rank.data), TIX_OK);
+	tix_buf_free(&rank);
+
+	/* the plan: Pour (2d) first by rank, but depends on Dig (3d) */
+	tix_plan_result pr;
+	tix_date today;
+	TIX_REQUIRE(tix_date_parse("2026-11-09", &today));
+	TK_OK(tix_plan(a.r, &proj, today, &pr, &e), &e);
+	if (pr.schedule) {
+		const tix_schedule *s = pr.schedule;
+		TK_CHECK(s->ntasks == 3 && !strcmp(s->tasks[1].wbs, "1.1") && tix_oid_eq(&s->tasks[1].ticket->id, &t2));
+		TK_CHECK(s->tasks[2].start == today && s->tasks[1].start == today + 3 && s->finish == today + 4);
+		TK_CHECK(s->tasks[0].calendar && tix_oid_eq(&s->tasks[0].calendar->id, &cal) && s->nloads == 1);
+	}
+	tix_plan_result_free(&pr);
+	TK_STATUS(tix_plan(a.r, &ghost, today, &pr, &e), TIX_ERR_NOT_FOUND, &e);
+
+	/* resources and calendars sync like everything else */
+	TK_OK(tix_sync(a.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.pushed == 7);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_pull(b.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.created == 7 && rep.skipped == 0);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_calendar_list(b.r, &l, &e), &e);
+	TK_CHECK(l.n == 1 && !strcmp(l.v[0]->u.calendar.name, "Site"));
+	tix_entity_list_free(&l);
+	TK_OK(tix_identity_create(b.r, "Bob", "b@x", &other_id, &e), &e);
+	TK_OK(tix_repo_set_identity(b.r, &other_id, &e), &e);
+	op1(&b, TIX_ENTITY_RESOURCE, &dev, tix_op_set(TIX_F_CAPACITY, tix_value_int(TIX_V_INT, 200)), TIX_OK); /* anyone may edit */
+
+	clone_close(&a);
+	clone_close(&b);
+	tix_store_destroy(server);
+}
+
 int main(void)
 {
 	test_flow();
@@ -530,5 +651,6 @@ int main(void)
 	test_sync_basic();
 	test_sync_hostile();
 	test_sync_convergence();
+	test_planning();
 	return tk_finish();
 }
