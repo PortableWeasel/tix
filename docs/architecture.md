@@ -521,7 +521,10 @@ Also installed as `git-tix`, so `git tix …` works.
 5. ✅ **M4 planning** (done 2026-11-06): WBS/scheduling/assignment fields, resource and calendar
    entities, `plan`, `tix wbs/plan/assign/res/cal`, `export`.
 6. ✅ **M5 index** (done 2026-11-06): SQLite cache of replayed entities, `tix index`.
-7. Later: signature enforcement, baselines, TUI, Forgejo issue bridge, MS Project XML export.
+7. **M6 web UI, no JavaScript** (§13): `input` module, Mongoose adapter, pages, forms, SVG Gantt, `tix web`.
+8. **M7 web UI enhancements** (§13.4): search as you type, Gantt editing, live refresh.
+9. Later: signature enforcement, baselines, TUI, Forgejo issue bridge, MS Project XML export,
+   hosted web mode (§13.8).
 
 ## 12. Resolved decisions (2026-11-06)
 
@@ -537,3 +540,206 @@ Also installed as `git-tix`, so `git tix …` works.
 | 8 | Effort → duration | Simple formula (§5.3) |
 | 9 | Time granularity | Whole working days; hours for effort only |
 | 10 | Edit control on resources/calendars | None in v1 |
+| 11 | Web UI server library | Cesanta Mongoose 7.23, vendored, single-threaded loop (§13.1) |
+| 12 | Web UI deployment | Local per repo first; hosted behind SSO later (§13.8) |
+| 13 | Web UI first milestone | Read + edit without JavaScript (M6); JS enhancements next (M7) |
+
+## 13. Web UI (M6–M7, design 2026-11-06)
+
+A spartan, server-rendered web UI: `tix web` serves the repository it runs in. **Every
+function works without JavaScript.** Plain HTML forms, links and a server-drawn SVG Gantt
+cover reading and editing. A small script, when it runs, makes the same things quicker
+(search as you type, dragging Gantt bars) through the same endpoints. Local first. A hosted
+mode is kept possible but not built (§13.8).
+
+### 13.1 Library: Cesanta Mongoose 7.23
+
+| Considered | Outcome |
+|---|---|
+| **Mongoose 7.23** (2026-08-12) | ✅ `GPL-2.0-only or commercial`, the same as tix. One `mg_mgr_poll` event loop, so every handler runs on our thread, which `libgit.a` needs. Two files. Has form/multipart/cookie helpers and chunked responses (SSE) |
+| libmicrohttpd 1.0.10 | Fallback: an external-select mode that is also single-threaded, LGPL. Debian 13's 1.0.1 has unpatched CVEs, so it would be vendored too |
+| facil.io 0.7 / 0.8 (cstl) | 0.7 is stale with an unpatched JSON CVE. 0.8 is very new and churning (5 releases in 3 weeks, High advisories 2026-11-03), and handlers may run on several threads |
+| libevent evhttp, CivetWeb, h2o, Kore, lwan, libsoup, onion, own server on llhttp | No multipart/cookies (evhttp); a thread pool and no release since 2023 (CivetWeb); too large, a framework, Linux-only, GLib, unmaintained; or 1.5–3k lines of our own security-sensitive parsing |
+
+- **Vendored** as the submodule `third_party/mongoose` at tag `7.23`
+  (`02bdbb9ed6f0a8f7c42228c6e7cb35d748b60551`), built by CMake as a plain static library.
+  It is checked to compile warning-free under C17 with tix's full warning set and
+  ASan/UBSan. Bumped deliberately, after reading the advisories
+  (github.com/cesanta/mongoose/security).
+- **Configuration** (compile definitions, no `mongoose_config.h`): `MG_ARCH=MG_ARCH_UNIX`,
+  `MG_TLS=MG_TLS_NONE`, `MG_ENABLE_TCPIP=0` (OS sockets, not Mongoose's own TCP/IP stack),
+  `MG_ENABLE_POLL=1`, `MG_ENABLE_IPV6=1`, `MG_ENABLE_LOG=0`, `MG_ENABLE_DIRLIST=0`,
+  `MG_ENABLE_SSI=0`. Most of Mongoose's 2025–26 CVEs are in its built-in TLS, TCP/IP,
+  DNS and mDNS code. None of that is compiled in or called. We never call
+  `mg_http_serve_dir` (no file serving), WebSockets, MQTT or the client APIs.
+- **Quarantine**, like git.git: `mongoose.h` may only be included by
+  `apps/web/src/http_mongoose.c`. Everything else sees `web_http.h`: a parsed request
+  (method, path, decoded query and form fields, cookies, selected headers, peer address)
+  and a response builder. Handlers are therefore plain functions from request to
+  response, testable without sockets, and the library can be swapped behind one file.
+
+### 13.2 Process and layering
+
+```
+tix web [--listen 127.0.0.1:7480] [--read-only] [--no-open]
+  └─ execs tix-web (apps/web, same install dir, argv only)
+       http_mongoose.c ─► router ─► handlers (pages, forms) ─► core, plan, export
+                                         └─► html.c (escaping writer), svg_gantt.c, assets (embedded)
+```
+
+- `apps/web` builds a separate binary, `tix-web`, so the CLI never links HTTP code.
+  `tix web` finds it next to its own executable and `execv`s it.
+- **New module `input`** (base, model, core): the text grammar for planning values is
+  moved out of `apps/cli/src/planopts.c` (dates incl. `today`/`tomorrow`, `3d`, `16h`,
+  `40%`, `+ID:FS+2d`, ranks, `none`) and shared by CLI and web. It turns field strings
+  into `tix_op` lists, so both frontends accept and reject exactly the same input. There
+  is no business logic in either app.
+- **One thread.** All core calls happen inside `mg_mgr_poll` on the main thread.
+  `tix sync` from the browser blocks the loop while the child `git` runs. That is
+  acceptable locally, and the page says so.
+- **Staying fresh in a long-running process.** Other processes (the CLI, `git gc`)
+  change refs and packs behind libgit's back. A new store operation `refresh` drops
+  libgit's ref store and re-prepares packs (the existing `forget_caches`). The web app
+  calls it at the start of every request. The index cache stays correct because hits
+  require the current head.
+- **Long life.** libgit leaks are bounded per request and checked by an ASan soak test
+  (thousands of requests). Any libgit path that can `die()` would kill the server, just
+  as it ends a CLI command today. Such paths are bugs to be fixed in `store_libgit`.
+
+### 13.3 Pages and endpoints (M6, no JavaScript)
+
+| Method + path | Purpose |
+|---|---|
+| `GET /` | Redirect to `/tickets` |
+| `GET /tickets?q&status&label&assignee&under` | List with a filter form. `q` matches an id prefix or a title substring |
+| `GET /t/ID` | Ticket: fields, planning, dependencies, assignments, comments. Forms: comment, status |
+| `GET /new`, `POST /new` | Create (title, body, labels, all planning fields) |
+| `GET /t/ID/edit`, `POST /t/ID` | Edit; only the fields that changed are written (§13.5) |
+| `POST /t/ID/comment`, `POST /t/ID/comment/CID` | Add or edit a comment |
+| `POST /t/ID/dep`, `POST /t/ID/assign` | Add or remove a dependency or an assignment |
+| `GET /wbs?root` | WBS tree with codes, dates and rollups |
+| `GET /plan?root&critical&today` | Plan table plus an inline SVG Gantt (bars link to tickets, critical path marked, dependency arrows) and diagnostics |
+| `GET /load?root` | Resource load table, over-allocation highlighted |
+| `GET /res`, `/res/ID`, `/cal`, `/cal/ID` (+ `new`/`edit` and `POST`) | Resources and calendars |
+| `GET /export?root&format=mermaid\|csv\|json` | Download (`Content-Disposition: attachment`) |
+| `GET /sync`, `POST /sync` | Pull + push with the report shown |
+| `GET /id` | Identities; which one this server writes as |
+| `GET /assets/<hash>.css`, `.js` | Embedded in the binary, immutable cache |
+
+- **Post/Redirect/Get**: a successful POST redirects (303) to the entity. A rejected one
+  re-renders the form with the user's values and the error messages (422). Errors come
+  from `input` and core, with the same wording as the CLI.
+- **HTML**: semantic, with tables, `<label>` and native date inputs. It is usable in
+  w3m/lynx (checked in tests with `w3m -dump` where available). One small CSS file and
+  system fonts. Short ids are shown, with full ids in `title` and the URL.
+
+### 13.4 JavaScript enhancements (M7)
+
+One hand-written `app.js` (no framework, no build step, no third-party code) that each
+page loads with `defer`:
+
+- **Search as you type**: `GET /api/tickets?q=` returns JSON (id, title, status) for
+  the id/title box and for ticket pickers (parent, dependency). Without JS these are
+  the normal search form and a text field taking an id prefix.
+- **Gantt editing**: drag a bar to move it (sets `start`; manual tasks also `finish`),
+  drag its end to resize (`duration`), drag between bars to add an FS dependency. It
+  submits the same form fields to `POST /t/ID` with `fetch` and re-renders the SVG from
+  the response. Arrow keys work on a focused bar.
+- **Inline status change, keyboard shortcuts**, and **live refresh** through SSE
+  (`/events`, a ref-change poll on the server once a second) when the CLI or a sync
+  changes something.
+- Progressive enhancement only: every request JS makes is one a form can also make.
+
+### 13.5 Concurrent edits from the browser
+
+Edit forms carry the original value of every field (hidden `o.<field>`). On POST, a field
+is written only when its submitted value differs from its original value. A stale tab
+therefore never overwrites a field someone else changed meanwhile. If the entity's head
+moved since the form was rendered (hidden `head`), and a field the user changed was
+also changed by someone else, the form is re-shown with both values instead of
+applying. Otherwise ops merge as usual (op-based CRDT).
+
+### 13.6 Security
+
+The server is on a multi-user machine, and its pages show data fetched from remotes.
+Loopback alone doesn't keep other local users or web pages out.
+
+- **Binding**: `127.0.0.1` (or `[::1]`) only in M6. `--listen` refuses other addresses
+  until the hosted mode exists. The default port is 7480. If it is taken, the next free
+  one is used and printed.
+- **Session token**: on start, 32 random bytes from the core RNG. tix prints a URL
+  `http://127.0.0.1:7480/login?t=…` and runs `xdg-open` on it if a desktop session exists (never with `--no-open`). From another
+  machine, use `ssh -L 7480:127.0.0.1:7480 host`; the `Host` header then still matches.
+  - `GET /login?t=…` checks the token, sets the cookie `tix_session` (HttpOnly;
+    SameSite=Strict; Path=/) and answers 303 to `/`, so the token leaves the address bar
+    at once. This works without JS. A URL fragment wouldn't, because only a script can
+    read it.
+  - The server never logs URLs, and `Referrer-Policy: no-referrer` keeps the token out
+    of outgoing requests. It stays only in the user's own browser history. A `/login`
+    form for pasting the token covers a browser on another machine.
+  - Every other request without a valid cookie gets 401, with a page explaining how to
+    get the URL again (`tix web` prints it).
+  - The token is compared in constant time, and the token file is
+    `$GIT_DIR/tix/web.token`, mode 0600.
+- **CSRF**: every POST needs a form field `csrf` = HMAC(session, path), plus an
+  `Origin` (or `Referer`) header matching the server. SameSite=Strict is the third layer.
+- **DNS rebinding**: the `Host` header must be exactly the listening `host:port`
+  (`127.0.0.1`, `[::1]` or `localhost`). Anything else gets 421.
+- **Response headers on every response**:
+  - `Content-Security-Policy: default-src 'none'; style-src 'self'; script-src 'self';
+    img-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none';
+    base-uri 'none'`
+  - `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+    `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`
+  - `Cache-Control: no-store` on pages
+- **Output escaping by construction**: `html.c` has `h_text`, `h_attr` and `h_url`
+  writers. Handlers have no way to write raw strings except string literals (enforced
+  with a macro that only accepts literals). SVG text goes through the same writer. Export
+  downloads keep their own escaping (the CSV formula guard). JSON uses the canonical
+  writer, served as `application/json` with `nosniff`.
+- **Input limits**: request line 8 KiB, at most 30 headers (Mongoose's limit), body 256
+  KiB (`MG_MAX_RECV_SIZE` lowered), form fields ≤ 200. Fields must be valid UTF-8, as in
+  the CLI. Idle connections close after 30 s, with at most 64 connections.
+- **`--read-only`**: no POST routes are registered and forms are not rendered.
+- **No file system serving**: assets are compiled in and looked up by exact name.
+
+### 13.7 Testing
+
+- **Handler tests** (no sockets): fake `web_http` requests against core on `store_mem`.
+  They cover golden HTML fragments, PRG redirects, 422 re-rendering, changed-fields-only
+  writes and the stale-head conflict.
+- **Security tests**:
+  - 401 without a session; 403 on a bad or missing CSRF token or a foreign `Origin`;
+    421 on a foreign `Host`; the CSP and the other headers on every route;
+  - hostile titles, bodies, labels and comments (`<script>`, quotes, `javascript:` URLs,
+    RTL overrides) escaped in every page and in the SVG;
+  - a fuzz target for the form/query decoder.
+- **Socket smoke test**: start `tix-web` on port 0 against a throwaway repo, then log in,
+  create, edit and comment over real HTTP. Plus an ASan soak test of a few thousand
+  requests to catch leaks across requests.
+- **No-JS check**: every M7 interaction has a test proving its form fallback works.
+
+### 13.8 Hosted mode later (not built in M6–M7)
+
+- **Trusted-proxy auth**: `--trust-proxy` lets the server bind beyond loopback, and only
+  then. It requires TLS at the reverse proxy and takes the user from a configured
+  header (e.g. Authentik's `X-authentik-username`).
+- **Identity mapping**: logins map to tix identities through a mapping file, and writes
+  use the requesting user's identity instead of `tix.identity`. Edits are then
+  attributable per user.
+- **Multiple repos**: one server serving several repositories under `/r/<name>/`.
+
+Everything in M6–M7 stays compatible with this. Handlers receive the identity and the repo
+from the request context rather than from globals. The auth check is one function.
+
+### 13.9 Milestones
+
+- **M6 web (no JS)**:
+  - the `input` module extracted from the CLI (no behaviour change, CLI tests unchanged);
+  - store `refresh`;
+  - `third_party/mongoose` and `apps/web` with the adapter, router, html writer, auth, CSRF
+    and headers;
+  - every page and form in §13.3 and the SVG Gantt;
+  - `tix web`, the tests in §13.7, and docs.
+- **M7 web JS**: `app.js`, `/api/tickets`, Gantt drag/resize/link, inline status,
+  shortcuts and SSE live refresh.
