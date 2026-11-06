@@ -390,8 +390,16 @@ static int64_t leaf_duration(plan *p, size_t task)
 	if (pl->duration >= 0)
 		return pl->duration;
 	int64_t effort = leaf_effort(pl);
-	if (effort < 0)
-		return -1;
+	if (effort < 0) {
+		/* No duration or effort, but both ends fixed (actuals, or manual dates): the span. */
+		bool manual = pl->mode == TIX_MODE_MANUAL;
+		tix_date s = pl->actual_start != TIX_DATE_NONE ? pl->actual_start : manual ? pl->start : TIX_DATE_NONE;
+		tix_date f = pl->actual_finish != TIX_DATE_NONE ? pl->actual_finish : manual ? pl->finish : TIX_DATE_NONE;
+		if (s == TIX_DATE_NONE || f == TIX_DATE_NONE || f < s)
+			return -1;
+		int32_t d = workdays(t->calendar, s, clamp((int64_t)f + 1));
+		return d < 1 ? 1 : d;
+	}
 	if (effort == 0)
 		return 0;
 	int64_t denom = 0; /* sum of units% x capacity% x hours/day, in 1/10000 hour per day */

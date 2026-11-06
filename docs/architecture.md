@@ -270,8 +270,9 @@ per-resource daily load, diagnostics).
    order. Every clone drops the same edge, and a diagnostic is reported. Dependency cycles
    are broken the same way and also reported.
 3. **Duration** ✅. Use `duration` if set. Otherwise `effort / Σ(assignment units × capacity ×
-   calendar hours/day)`, rounded up to whole working days. Otherwise the task is
-   *unscheduled* (listed but not drawn). Milestones are 0.
+   calendar hours/day)`, rounded up to whole working days. Otherwise, if both ends are
+   fixed (actual start and finish, or a manual task's start and finish), the working days
+   between them. Otherwise the task is *unscheduled* (listed but not drawn). Milestones are 0.
 4. **CPM forward/backward pass** on working-day calendars (✅ whole working days in v1; hours only for effort) (the task's inherited calendar)
    gives early/late start and finish, total float and the critical path. Inputs are
    FS/SS/FF/SF dependencies with lag, `start` (start-no-earlier-than) and the parent's start.
@@ -291,7 +292,8 @@ Conventions as implemented (`tix/plan.h` has the full contract):
   the caller passes in.
 - Dependencies on or of a summary apply to every leaf below it.
 - Explicit actual dates fix a task. Derived actuals are only reported.
-- Unscheduled tasks (no duration, no usable effort/assignments) are listed but not drawn.
+- Unscheduled tasks (no duration, no usable effort/assignments, no fixed start and finish)
+  are listed but not drawn.
   Dependencies touching them are ignored, with a diagnostic.
 - Resource load is in percent of capacity per day. More than 100 % on a working day, or
   any load on the resource's day off, is an over-allocation. The load view covers at

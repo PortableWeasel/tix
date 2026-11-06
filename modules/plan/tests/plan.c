@@ -358,6 +358,32 @@ static void test_manual_actuals_deadline(void)
 	world_free(&w);
 }
 
+/* No duration or effort, but both ends fixed: scheduled on them (found dogfooding). */
+static void test_fixed_span_without_duration(void)
+{
+	world w = {0};
+	tix_entity *hist = add(&w, task(1, "History", -1)), *next = add(&w, task(2, "After history", -1));
+	tix_entity *man = add(&w, task(3, "Manual span", -1)), *open = add(&w, task(4, "Start only", -1));
+	hist->u.ticket.plan.actual_start = D("2026-11-02");
+	hist->u.ticket.plan.actual_finish = D("2026-11-04");
+	next->u.ticket.plan.actual_start = next->u.ticket.plan.actual_finish = D("2026-11-05");
+	dep(next, hist, TIX_DEP_FS, 0);
+	man->u.ticket.plan.mode = TIX_MODE_MANUAL;
+	man->u.ticket.plan.start = D("2026-11-05");
+	man->u.ticket.plan.finish = D("2026-11-06");
+	open->u.ticket.plan.actual_start = D("2026-11-02");
+	tix_schedule *s = run(&w, NULL, "2026-11-09");
+	char buf[64];
+	TK_STR_EQ(line(s, hist, buf), "2026-11-02..2026-11-04 f1");
+	TK_CHECK(get(s, hist)->duration == 3 && !get(s, hist)->milestone);
+	TK_STR_EQ(line(s, next, buf), "2026-11-05..2026-11-05 f1");
+	TK_CHECK(get(s, next)->duration == 1 && !has_diag(s, "unscheduled; ignored"));
+	TK_STR_EQ(line(s, man, buf), "2026-11-05..2026-11-06 f0*");
+	TK_CHECK(!get(s, open)->scheduled); /* one fixed end is not enough */
+	tix_schedule_free(s);
+	world_free(&w);
+}
+
 static void test_effort_and_load(void)
 {
 	world w = {0};
@@ -445,6 +471,7 @@ int main(void)
 	test_wbs_and_rollups();
 	test_cycles();
 	test_manual_actuals_deadline();
+	test_fixed_span_without_duration();
 	test_effort_and_load();
 	test_determinism();
 	return tk_finish();
