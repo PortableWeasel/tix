@@ -24,6 +24,8 @@ add_subdirectory(modules/store_contract)  # test support only
 add_subdirectory(modules/store_mem)
 add_subdirectory(modules/model)
 add_subdirectory(modules/sim)        # test support only
+add_subdirectory(modules/plan)
+add_subdirectory(modules/export)
 add_subdirectory(modules/core)
 add_subdirectory(modules/store_libgit)
 
