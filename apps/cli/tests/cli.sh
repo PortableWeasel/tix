@@ -157,6 +157,89 @@ expect 0 "$TIX" push; has "mirror: pushed 6"
 [ "$(git --git-dir="$T/mirror.git" for-each-ref refs/tix | wc -l)" = 6 ] || fail "mirror ref count"
 git config --unset tix.remote
 
+# ---- planning: resources, calendars, WBS, CPM, export --------------------------
+git init -q "$T/plan" && cd "$T/plan"
+export TIX_TODAY=2026-11-09   # a Monday
+mk() { sed -n 's/^Created [a-z]* //p' <<<"$out"; }
+expect 0 "$TIX" id new --name Ada --email ada@example.org
+expect 0 "$TIX" cal new "Site crew" --weekdays mon-sat --off 2026-11-11=Holiday; cal=$(mk)
+expect 2 "$TIX" cal new Bad --weekdays mon-xyz; has "--weekdays"
+expect 0 "$TIX" cal show "$cal"; has "weekdays: mon tue wed thu fri sat"; has "off:      2026-11-11  Holiday"
+expect 0 "$TIX" res new Ada --identity me --rate "95.50 eur"; ada=$(mk)
+expect 0 "$TIX" res new Crew --kind role --capacity 300% --calendar "$cal"; crew=$(mk)
+expect 2 "$TIX" res new X --capacity 0%; has "--capacity"
+expect 0 "$TIX" res show "$ada"; has "rate:     95.50 EUR/h"; has "identity: Ada"
+expect 0 "$TIX" res ls; has "$crew  role        300%  Crew"
+expect 0 "$TIX" new -t House --calendar "$cal" --deadline 2026-11-20; house=$(mk)
+expect 0 "$TIX" new -t "Dig foundations" --parent "$house" --rank last --effort 48h; dig=$(mk)
+expect 0 "$TIX" assign "$dig" "$crew"
+expect 0 "$TIX" new -t "Pour slab" --parent "$house" --rank "after:$dig" --duration 2d --dep "+$dig"; pour=$(mk)
+expect 0 "$TIX" assign "$pour" "$ada:50%" --effort 8h
+expect 0 "$TIX" new -t Walls --parent "$house" --rank last --duration 4d --dep "+$pour:FS+1d"; walls=$(mk)
+expect 0 "$TIX" new -t Handover --parent "$house" --rank last --kind milestone --dep "+$walls"; hand=$(mk)
+expect 0 "$TIX" new -t Paperwork --parent "$house" --rank first --duration 2d; paper=$(mk)
+expect 0 "$TIX" assign "$walls" "$ada"
+expect 0 "$TIX" show "$pour"; has "parent:   $house House"; has "after:    $dig Dig foundations (FS+0d)"
+has "assigned: $ada Ada 50%, 8h"; has "duration: 2d"
+
+# local edits that would break the plan are refused up front
+expect 1 "$TIX" edit "$house" --parent "$walls"; has "would make a cycle"
+expect 1 "$TIX" edit "$dig" --dep "+$walls"; has "would make a cycle"
+expect 1 "$TIX" edit "$dig" --dep "-$walls"; has "no dependency on"
+expect 1 "$TIX" unassign "$dig" "$ada"; has "is not assigned"
+expect 1 "$TIX" edit "$dig" --rank "after:$cal"; has "no ticket matches"
+expect 2 "$TIX" edit "$dig" --duration 3x; has "should look like 3d"
+expect 2 "$TIX" edit "$dig" --dep "+$walls:XX"; has "kind must be"
+expect 2 "$TIX" edit "$dig" --start 2026-02-30; has "not a date"
+expect 2 "$TIX" assign "$dig" "$ada:abc"; has "units must look like"
+
+expect 0 "$TIX" wbs
+has "1          $house  House"; has "1.1        $paper    Paperwork"; has "1.2        $dig    Dig foundations"
+has "1.3        $pour    Pour slab"; has "1.5        $hand    Handover"
+expect 0 "$TIX" plan "$house"
+has "1.2        $dig    Dig foundations               2026-11-09  2026-11-10      2      0  critical"
+has "1.3        $pour    Pour slab                     2026-11-12  2026-11-13      2      0  critical"  # skips the holiday
+has "1.4        $walls    Walls                         2026-11-16  2026-11-19      4      0  critical"  # Sat lag day
+has "1.5        $hand    Handover                      2026-11-19  2026-11-19      0      0  critical  milestone"
+has "1.1        $paper    Paperwork                     2026-11-09  2026-11-10      2      7"
+has "plan: 2026-11-09..2026-11-19"; hasnt "LATE"
+expect 0 "$TIX" plan "$house" --critical; hasnt "Paperwork"; has "Walls"
+expect 0 "$TIX" plan "$house" --gantt; has "|2026-11-09"; has "Walls                       |       ####"
+expect 0 "$TIX" plan "$house" --load; has "Ada"; has "Crew"; hasnt "OVER-ALLOCATED"
+expect 0 "$TIX" edit "$walls" --duration 6d
+expect 0 "$TIX" plan "$house"; has "LATE"; has "after its deadline 2026-11-20"
+expect 0 "$TIX" assign "$paper" "$ada"
+expect 0 "$TIX" plan "$house" --load; has "OVER-ALLOCATED"; has "over-allocated"
+expect 0 "$TIX" ls --under "$house" --assignee "$ada"; has "Walls"; has "Pour slab"; hasnt "Dig foundations"
+expect 0 "$TIX" ls --under "$pour"; [ -z "$out" ] || fail "nothing is under Pour slab: $out"
+
+expect 0 "$TIX" export "$house" --format mermaid
+has "gantt"; has "title House"; has "1.3 Pour slab :crit, t$pour, 2026-11-12, 2026-11-14"
+has "1.5 Handover :crit, milestone, t$hand"
+expect 0 "$TIX" export "$house" --format csv; has "1.3,$pour"; has "Ada:50%"
+expect 0 "$TIX" export --format json; has '"tasks":[{"wbs":"1"'; has '"diagnostics":['
+expect 2 "$TIX" export "$house"; has "--format mermaid|csv|json is required"
+expect 2 "$TIX" plan --frobnicate; has "unexpected"
+
+# a concurrent re-parent that forms a cycle on merge is broken the same way everywhere
+git init -q --bare "$T/plan.git" && git remote add origin "$T/plan.git"
+expect 0 "$TIX" sync
+git clone -q "$T/plan.git" "$T/plan2" 2>/dev/null
+(cd "$T/plan2" && "$TIX" pull >/dev/null && "$TIX" id use "$(git -C "$T/plan" config tix.identity)" >/dev/null &&
+  "$TIX" edit "$walls" --parent "$pour" && "$TIX" sync >/dev/null) || fail "clone 2 edit"
+expect 0 "$TIX" edit "$pour" --parent "$walls"   # concurrently, the other way round
+expect 0 "$TIX" sync; has "1 updated"   # different tickets: no merge, yet a cycle
+expect 0 "$TIX" wbs; has "WBS cycle: dropped the parent link"
+a_wbs=$out
+(cd "$T/plan2" && "$TIX" pull >/dev/null && "$TIX" wbs >"$T/wbs2" 2>&1) || fail "clone 2 wbs"
+[ "$a_wbs" = "$(cat "$T/wbs2")" ] || fail "clones plan differently: $(diff <(echo "$a_wbs") "$T/wbs2")"
+expect 0 "$TIX" res edit "$crew" --capacity 200% --name "Small crew"
+expect 0 "$TIX" cal edit "$cal" --clear 2026-11-11 --on 2026-11-15
+expect 0 "$TIX" cal show "$cal"; has "on:       2026-11-15"; hasnt "Holiday"
+expect 1 "$TIX" cal edit "$cal" --clear 2026-12-01; has "no such exception"
+git fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || fail "plan repo fsck"
+unset TIX_TODAY
+
 # SHA-256 + reftable repository
 git init -q --object-format=sha256 --ref-format=reftable "$T/s" && cd "$T/s"
 expect 0 "$TIX" id new --name S --email s@example.org

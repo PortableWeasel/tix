@@ -20,8 +20,8 @@ change and say why. Never let the code and the doc drift apart silently.
 | M1: `base`, `model` (entity framework, identity, ticket tracking), `store` port, `store_mem`, convergence tests | ✅ done |
 | M2: `store_libgit`, `core`, CLI basics | ✅ done |
 | M3: pull/merge/push | ✅ done |
-| M4: planning (WBS, scheduling, resources, calendars, `plan`, `export`) | next |
-| M5: SQLite `index` | |
+| M4: planning (WBS, scheduling, resources, calendars, `plan`, `export`) | ✅ done |
+| M5: SQLite `index` | next |
 
 Work on the current milestone unless asked otherwise. Don't build ahead into later
 milestones "while you're there".
@@ -34,7 +34,8 @@ CMakePresets.json       dev (Debug, -Werror, ASan+UBSan) / release
 cmake/GitLib.cmake      builds git.git's libgit.a, xdiff, reftable → tix::gitlib
 cmake/TixModule.cmake   tix_module() + configure-time include-boundary enforcement
 modules/<name>/         libraries: include/tix/<name>*.h, src/, tests/
-                        base, store, store_mem, model, core, store_libgit;
+                        base, store, store_mem, model, plan, export, core,
+                        store_libgit;
                         testkit, sim, store_contract are test-only
 apps/cli/               the `tix` / `git-tix` frontend; tests/cli.sh is the end-to-end test
 spikes/                 throwaway proofs, deleted once the real module exists (none now)
@@ -151,6 +152,9 @@ cmake --preset release && cmake --build --preset release
   New port behaviour gets a contract case first.
 - store_libgit tests run one process per repository (libgit has global state). See
   `modules/store_libgit/tests/run-contract.sh`, which covers SHA-1/files and SHA-256/reftable.
+- `plan` tests build entities directly (plain data) and assert golden dates. A change to
+  scheduling semantics needs a golden case and the doc's §5 conventions updated. Keep
+  `test_determinism` (shuffled input) passing.
 - CLI behaviour is covered by `apps/cli/tests/cli.sh` (real repos, editor flow, clone
   round trip, a corrupt ref). Extend it with every new command or flag.
 - **Convergence tests**: for any op set, every merge order and DAG shape must produce a

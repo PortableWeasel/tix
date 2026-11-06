@@ -116,7 +116,7 @@ header; every following line is one operation.
 {"tix":1,"type":"ticket","author":"3f9c1e…","lamport":42,"time":1762430000}
 {"op":"create","nonce":"9f86d081884c7d659a2feaa0c55ad015","title":"Pour foundations","body":"…","labels":["site"]}
 {"op":"set-parent","parent":"a71d0b…"}
-{"op":"dep-add","pred":"c02e9f…","kind":"FS","lag":"2d"}
+{"op":"dep-add","pred":"c02e9f…","kind":"FS","lag":2}
 ```
 
 - `author` is an **identity id** ✅. `lamport` is per pack. `time` (unix) is informational and
@@ -139,6 +139,13 @@ header; every following line is one operation.
   `\n`/`\t`. Labels are 1–64 bytes with no spaces or commas, at most 64 per op. Names ≤ 256.
   A pack is ≤ 1 MiB and ≤ 1000 ops. An entity is ≤ 20 000 commits. All text is strict UTF-8
   with no NUL and no other control characters.
+
+- **Planning scalars (M4 ✅)** share one table-driven op shape, `{"op":"set-<field>","<key>":<value>}`
+  (`set-start`, `set-duration`, `set-capacity`, …; `model/src/fields.c`). Each field has a
+  value kind (date `"YYYY-MM-DD"`, integer, bool, enum string, id, string), a range, and
+  whether `null` (unset) is allowed. Numbers are integers: durations and lags in working
+  days, effort in hours, units and capacity in percent (100 = one full-time unit), rates in
+  minor currency units per hour. Older readers see these as unknown ops and skip them.
 
 ### 3.4 Merge primitives (CRDT building blocks in `model`)
 
@@ -164,7 +171,7 @@ header; every following line is one operation.
 - ❓ Signature verification of op-pack commits against `keys` is planned but not enforced in v1.
   Until it is, the author-must-match rule is advisory: anyone with push access can forge it.
 
-### 4.2 Ticket — `refs/tix/tickets/<id>`
+### 4.2 Ticket — `refs/tix/tickets/<id>` (planning fields: M4 ✅)
 
 Tickets are both tracker items and plan nodes. A ticket with no parent is a **WBS root**
 (a project).
@@ -203,15 +210,20 @@ can't leave codes out of date.
 | deadline | date \| null | LWW | never moves the task; violations are reported |
 | progress | 0–100 | LWW | rolled up for summaries |
 | actual_start / actual_finish | date \| null | LWW | if unset, derived from the first `in-progress` / last `done` op time |
-| deps | key `pred id` → `{kind: FS\|SS\|FF\|SF, lag: ±Nd}` | OR-map | stored on the successor |
+| deps | key `pred id` → `{kind: FS\|SS\|FF\|SF, lag: ±N working days}` | OR-map | stored on the successor; ops `dep-add` / `dep-remove` |
 
 **Resource assignments**
 
 | Field | Type | Merge |
 |---|---|---|
-| assignments | key `resource id` → `{units: % of capacity, effort: hours\|null}` | OR-map |
+| assignments | key `resource id` → `{units: % of capacity, effort: hours\|null}` | OR-map (`assign` / `unassign`) |
 
-### 4.3 Resource — `refs/tix/resources/<id>`
+`rank` is a fractional index over `[0-9a-z]` that never ends in `0`
+(`tix_rank_between`), at most 64 characters. "Started" and "done" times are derived from
+the first `set-status in-progress` and the `set-status done` that made the ticket done.
+They are reported as actuals when `actual_start` / `actual_finish` are unset.
+
+### 4.3 Resource — `refs/tix/resources/<id>` (M4 ✅)
 
 | Field | Type | Merge | Notes |
 |---|---|---|---|
@@ -220,19 +232,22 @@ can't leave codes out of date.
 | capacity | units (1.0 = one full-time unit) | LWW | a role can be 3.0 |
 | calendar | calendar id \| null | LWW | own working time / leave |
 | identity | identity id \| null | LWW | links a person resource to a user ("assigned to me") |
-| rate | `{amount, currency, per: hour}` \| null | LWW | optional cost estimate |
+| rate, currency | minor units per hour \| null; ISO-style 3 letters \| null | LWW | optional cost estimate (two fields) |
 | active | bool | LWW | archive without deleting |
 
 ✅ v1 has no edit control on resources or calendars (same as tickets): any author may edit.
 
-### 4.4 Calendar — `refs/tix/calendars/<id>`
+### 4.4 Calendar — `refs/tix/calendars/<id>` (M4 ✅)
 
 | Field | Type | Merge |
 |---|---|---|
 | name | string | LWW |
 | weekdays | working-day mask (Mon–Sun) | LWW |
 | hours_per_day | number | LWW |
-| exceptions | `{from, to, working: bool, note}` (holidays, leave, extra days) | OR-set |
+| exceptions | `{from, to, working: bool, note}` (holidays, leave, extra days) | OR-map keyed by the `from..to` range; where ranges overlap, the later add wins |
+
+A calendar with no working weekdays is unusable. `plan` falls back to the inherited calendar
+and reports it.
 
 ### 4.5 Cross-entity references
 
@@ -241,7 +256,7 @@ entity that hasn't been fetched yet is kept and shown as *unresolved*; it is nev
 at write or merge time. Integrity problems (cycles, dangling refs) are handled at **read time**
 in `plan`, deterministically (§5.2).
 
-## 5. Planning engine (`plan`, pure)
+## 5. Planning engine (`plan`, pure; M4 ✅)
 
 Input: snapshots of tickets, resources and calendars for one WBS root, plus "today".
 Output: `tix_schedule` (per-ticket computed dates, float, critical flag, WBS code, rollups,
@@ -264,6 +279,24 @@ per-resource daily load, diagnostics).
 5. **Resource load.** Per resource per working day, Σ units assigned compared to capacity,
    giving an over-allocation report. No automatic levelling in v1.
 6. **Variance.** Deadline misses, plus actual vs. planned dates.
+
+Conventions as implemented (`tix/plan.h` has the full contract):
+
+- A task of D ≥ 1 working days starting on working day S covers D working days of its
+  calendar. `finish` is the last of them, inclusive. Milestones have start = finish: the
+  finish day of what they wait for, or the next working day when nothing drives them.
+- Lags are working days of the successor's calendar.
+- Project start is the earliest `start` or `actual_start` in the plan, else "today", which
+  the caller passes in.
+- Dependencies on or of a summary apply to every leaf below it.
+- Explicit actual dates fix a task. Derived actuals are only reported.
+- Unscheduled tasks (no duration, no usable effort/assignments) are listed but not drawn.
+  Dependencies touching them are ignored, with a diagnostic.
+- Resource load is in percent of capacity per day. More than 100 % on a working day, or
+  any load on the resource's day off, is an over-allocation. The load view covers at
+  most 3660 days.
+- Summary progress is weighted by effort (or by duration × 8 h when effort is unknown).
+- Results are independent of input order. That is tested by shuffling.
 
 ❓ Baselines (named snapshots of planned dates for planned-vs-actual Gantt bars) come later.
 They can be stored as a `baseline` op-pack on the root ticket.
@@ -378,6 +411,14 @@ tix_status tix_sync(tix_repo *, const char *remote, tix_sync_report *rep, tix_er
 unpushable refs and carries one problem line per rejected or unpushable ref. A rejected
 ref is not an error status: the rest of the sync still happens.
 
+M4 ✅ adds `tix_resource_list`, `tix_calendar_list`, `tix_resource_create`,
+`tix_calendar_create` and `tix_ticket_rank` (first / last / before / after, never
+rewriting siblings), plus `tix_plan(r, root, today, &result)`. The ticket query gains
+`assignee` and `under`. Up-front checks on local edits: references must resolve to an
+entity of the right type, and parent or dependency cycles are refused. Removing an absent
+dependency, assignment or exception is NOT_FOUND. Remote data is never rejected for
+these: concurrent edits can still form cycles, which `plan` breaks deterministically.
+
 - **Inputs from outside**: the clock (`now`), randomness (create-op nonces) and the chosen
   identity all come in through `tix_repo_config`. Core never reads env, time or config itself.
 - **Local state** goes through the store port (`local_get`/`local_set`). The Lamport clock is
@@ -397,8 +438,12 @@ ref is not an error status: the rest of the sync still happens.
 
 M2 ✅ implements `id`, `new`, `ls`, `show`, `comment` (incl. `--edit COMMENT-ID`) and `edit`.
 M3 ✅ adds `pull`, `push` and `sync` (default remote: git config
-`tix.remote`, else `origin`; any rejected or unpushable ref is a warning and exit 1). The
-rest arrives with M4 (planning). `$EDITOR` resolution: `TIX_EDITOR`, then
+`tix.remote`, else `origin`; any rejected or unpushable ref is a warning and exit 1).
+M4 ✅ adds the planning options below, `assign`/`unassign`, `res`, `cal`, `wbs`, `plan`
+and `export`. Dates accept `YYYY-MM-DD`, `today` and `tomorrow`; `none` clears a value.
+`$TIX_TODAY` (or `--today`) fixes "today" for scripts. Plan diagnostics go to stderr as
+`tix: note: …`. `tix plan --gantt` draws one column per day (per week beyond 120 days),
+and `--load` draws per-resource daily load. `$EDITOR` resolution: `TIX_EDITOR`, then
 `core.editor`, then `VISUAL`, then `EDITOR`, then `vi`. Lines starting with `#` are dropped. Exit codes: 0 ok, 1 error, 2 usage.
 
 ```
@@ -407,12 +452,15 @@ tix new   [-t title] [-l label]... [--parent P] [--kind milestone]
 tix ls    [--status s] [--label l] [--assignee r] [--under P]
 tix show  <id>
 tix comment <id> [-m msg]
-tix edit  <id> [--title] [--status] [+label|-label] [--parent P] [--rank after:X]
+tix edit  <id> [--title] [--status] [+label|-label] [--parent P] [--rank first|last|before:X|after:X]
+               [--kind task|milestone] [--calendar C] [--mode auto|manual]
                [--start D] [--finish D] [--duration 3d] [--effort 16h] [--deadline D]
-               [--progress 40] [--mode auto|manual] [--dep +P:FS+2d | -P]
+               [--progress 40] [--actual-start D] [--actual-finish D] [--dep +P:FS+2d | -P]
 tix assign <id> <resource>[:50%] [--effort 8h]     tix unassign <id> <resource>
-tix res   new | ls | show | edit   (name, kind, capacity, calendar, identity, rate)
-tix cal   new | ls | show | edit   (weekdays, hours, +exception/-exception)
+tix res   new NAME | ls | show | edit   (--kind, --capacity 300%, --calendar, --identity ID|me,
+                                         --rate "95.50 EUR", --name, --active yes|no)
+tix cal   new NAME | ls | show | edit   (--weekdays mon-fri, --hours 8, --off D[..D][=NOTE],
+                                         --on D[..D], --clear D[..D], --name)
 tix wbs   [root]                       tree with WBS codes and rollups
 tix plan  [root] [--gantt] [--critical] [--load]   ASCII Gantt / resource load
 tix export [root] --format mermaid|csv|json
@@ -443,8 +491,8 @@ Also installed as `git-tix`, so `git tix …` works.
    `store_mem`, convergence tests.
 3. ✅ **M2 core + CLI** (done 2026-11-06): `store_libgit`, `core`, `tix id/new/ls/show/comment/edit`.
 4. ✅ **M3 sync** (done 2026-11-06): pull/merge/push against Forgejo; M0 spike removed.
-5. **M4 planning**: WBS/scheduling/assignment fields, resource and calendar entities, `plan`,
-   `tix wbs/plan/assign/res/cal`, `export`.
+5. ✅ **M4 planning** (done 2026-11-06): WBS/scheduling/assignment fields, resource and calendar
+   entities, `plan`, `tix wbs/plan/assign/res/cal`, `export`.
 6. **M5 index**: SQLite cache and queries.
 7. Later: signature enforcement, baselines, TUI, Forgejo issue bridge, MS Project XML export.
 

@@ -16,11 +16,30 @@ static const char usage_text[] =
 	"  id edit [--name N] [--email E] [--add-key KIND FPR PUBKEY] [--remove-key FPR]\n"
 	"\n"
 	"tickets\n"
-	"  new [-t TITLE] [-m BODY] [-l LABEL]...   create (opens $EDITOR without -t)\n"
-	"  ls [--all] [--status S]... [--label L] [--author ID]\n"
+	"  new [-t TITLE] [-m BODY] [-l LABEL]... [PLANNING]   create (opens $EDITOR without -t)\n"
+	"  ls [--all] [--status S]... [--label L] [--author ID] [--assignee RES] [--under ID]\n"
 	"  show ID\n"
 	"  comment ID [-m TEXT] [--edit COMMENT-ID]\n"
-	"  edit ID [--title T] [--body B] [--status S] [+LABEL]... [-LABEL]...\n"
+	"  edit ID [--title T] [--body B] [--status S] [+LABEL]... [-LABEL]... [PLANNING]\n"
+	"\n"
+	"planning options (new, edit; 'none' clears a value)\n"
+	"  --parent ID   --rank first|last|before:ID|after:ID   --kind task|milestone\n"
+	"  --calendar CAL   --mode auto|manual   --duration 3d   --effort 16h   --progress 40\n"
+	"  --start D  --finish D  --deadline D  --actual-start D  --actual-finish D\n"
+	"  --dep +ID[:FS|SS|FF|SF[+2d|-1d]]   --dep -ID          (D: YYYY-MM-DD, today, tomorrow)\n"
+	"  assign ID RES[:50%] [--effort 8h]      unassign ID RES\n"
+	"\n"
+	"resources and calendars\n"
+	"  res new NAME [--kind person|role|equipment] [--capacity 300%] [--calendar CAL]\n"
+	"              [--identity ID|me] [--rate \"95.50 EUR\"]\n"
+	"  res ls | res show RES | res edit RES [same options] [--name N] [--active yes|no]\n"
+	"  cal new NAME [--weekdays mon-fri] [--hours 8] [--off D[..D][=NOTE]] [--on D[..D]]\n"
+	"  cal ls | cal show CAL | cal edit CAL [same options] [--name N] [--clear D[..D]]\n"
+	"\n"
+	"plans (ROOT: a ticket; default every ticket; --today D overrides today)\n"
+	"  wbs [ROOT]                            tree with WBS codes, dates and rollups\n"
+	"  plan [ROOT] [--gantt] [--critical] [--load]\n"
+	"  export [ROOT] --format mermaid|csv|json\n"
 	"\n"
 	"sync (REMOTE defaults to git config tix.remote, else origin)\n"
 	"  pull [REMOTE]    fetch, validate and merge the remote's tickets and identities\n"
@@ -127,7 +146,9 @@ int main(int argc, char **argv)
 	} cmds[] = {
 		{"id", cmd_id}, {"new", cmd_new}, {"ls", cmd_ls}, {"show", cmd_show},
 		{"comment", cmd_comment}, {"edit", cmd_edit}, {"pull", cmd_pull},
-		{"push", cmd_push}, {"sync", cmd_sync},
+		{"push", cmd_push}, {"sync", cmd_sync}, {"assign", cmd_assign},
+		{"unassign", cmd_unassign}, {"res", cmd_res}, {"cal", cmd_cal},
+		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"export", cmd_export},
 	};
 	int (*fn)(cli *, int, char **) = NULL;
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(*cmds); i++)

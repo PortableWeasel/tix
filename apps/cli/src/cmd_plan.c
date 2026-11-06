@@ -1,0 +1,335 @@
+/* tix assign | unassign | wbs | plan | export */
+#include "cli.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+static int need_value(int i, int argc, const char *opt)
+{
+	if (i + 1 >= argc) {
+		cli_usage("%s needs a value", opt);
+		return 0;
+	}
+	return 1;
+}
+
+/* ---- assign / unassign ------------------------------------------------------- */
+
+int cmd_assign(cli *c, int argc, char **argv)
+{
+	const char *ticket = NULL, *res = NULL;
+	int64_t effort = -1, units = 100;
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--effort") && need_value(i, argc, argv[i])) {
+			if (!cli_parse_count(argv[++i], "h", TIX_EFFORT_MAX, &effort))
+				return cli_usage("--effort: hours, like 16h");
+		} else if (argv[i][0] == '-') {
+			return cli_usage("assign: unexpected '%s'", argv[i]);
+		} else if (!ticket) {
+			ticket = argv[i];
+		} else if (!res) {
+			res = argv[i];
+		} else {
+			return cli_usage("assign: unexpected '%s'", argv[i]);
+		}
+	}
+	if (!ticket || !res)
+		return cli_usage("usage: tix assign TICKET RESOURCE[:50%%] [--effort 8h]");
+	char rbuf[128];
+	const char *colon = strchr(res, ':');
+	size_t rlen = colon ? (size_t)(colon - res) : strlen(res);
+	if (rlen >= sizeof(rbuf))
+		return cli_usage("assign: resource id too long");
+	memcpy(rbuf, res, rlen);
+	rbuf[rlen] = '\0';
+	if (colon && !cli_parse_count(colon + 1, "%", TIX_UNITS_MAX, &units))
+		return cli_usage("assign: units must look like 50%%");
+	if (units < 1)
+		return cli_usage("assign: units must be at least 1%%");
+	tix_oid t, r;
+	int rc = cli_resolve(c, TIX_ENTITY_TICKET, ticket, &t);
+	if (!rc)
+		rc = cli_resolve(c, TIX_ENTITY_RESOURCE, rbuf, &r);
+	if (rc)
+		return rc;
+	tix_op op = tix_op_assign(&r, (int32_t)units, effort);
+	tix_status st = tix_entity_apply(c->repo, TIX_ENTITY_TICKET, &t, &op, 1, &c->err);
+	tix_op_free(&op);
+	return st ? cli_fail(c, st) : EXIT_OK;
+}
+
+int cmd_unassign(cli *c, int argc, char **argv)
+{
+	if (argc != 3)
+		return cli_usage("usage: tix unassign TICKET RESOURCE");
+	tix_oid t, r;
+	int rc = cli_resolve(c, TIX_ENTITY_TICKET, argv[1], &t);
+	if (!rc)
+		rc = cli_resolve(c, TIX_ENTITY_RESOURCE, argv[2], &r);
+	if (rc)
+		return rc;
+	tix_op op = tix_op_unassign(&r);
+	tix_status st = tix_entity_apply(c->repo, TIX_ENTITY_TICKET, &t, &op, 1, &c->err);
+	tix_op_free(&op);
+	return st ? cli_fail(c, st) : EXIT_OK;
+}
+
+/* ---- shared: [ROOT] [--today D] ------------------------------------------------- */
+
+typedef struct plan_args {
+	const char *root;
+	tix_date today;
+	bool gantt, critical, load;
+	const char *format;
+} plan_args;
+
+static int parse_plan_args(int argc, char **argv, plan_args *a, bool allow_views, bool want_format)
+{
+	memset(a, 0, sizeof(*a));
+	a->today = cli_today();
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--today") && need_value(i, argc, argv[i])) {
+			if (!cli_parse_date(argv[++i], &a->today))
+				return cli_usage("--today: not a date");
+		} else if (allow_views && !strcmp(argv[i], "--gantt")) {
+			a->gantt = true;
+		} else if (allow_views && !strcmp(argv[i], "--critical")) {
+			a->critical = true;
+		} else if (allow_views && !strcmp(argv[i], "--load")) {
+			a->load = true;
+		} else if (want_format && !strcmp(argv[i], "--format") && need_value(i, argc, argv[i])) {
+			a->format = argv[++i];
+		} else if (argv[i][0] != '-' && !a->root) {
+			a->root = argv[i];
+		} else {
+			return cli_usage("%s: unexpected '%s'", argv[0], argv[i]);
+		}
+	}
+	return EXIT_OK;
+}
+
+static int run_plan(cli *c, const plan_args *a, tix_plan_result *out)
+{
+	tix_oid root;
+	if (a->root) {
+		int rc = cli_resolve(c, TIX_ENTITY_TICKET, a->root, &root);
+		if (rc)
+			return rc;
+	}
+	tix_status st = tix_plan(c->repo, a->root ? &root : NULL, a->today, out, &c->err);
+	return st ? cli_fail(c, st) : EXIT_OK;
+}
+
+static void print_diags(const tix_schedule *s)
+{
+	for (size_t i = 0; i < s->ndiags; i++)
+		fprintf(stderr, "tix: note: %s\n", s->diags[i].msg);
+}
+
+static const char *date_or_dash(tix_date d, char *buf)
+{
+	if (d == TIX_DATE_NONE)
+		return "-";
+	return tix_date_str(d, buf);
+}
+
+/* Title column: indented by depth, cut to width (UTF-8 safe). */
+static void print_title(const tix_plan_task *t, int width, bool indent)
+{
+	char buf[512];
+	int depth = indent ? (int)(t->depth > 12 ? 12 : t->depth) * 2 : 0;
+	snprintf(buf, sizeof(buf), "%*s%s", depth, "", t->ticket->u.ticket.title);
+	int cols = 0;
+	size_t i = 0;
+	for (; buf[i] && cols < width; i++) {
+		if (((unsigned char)buf[i] & 0xc0) != 0x80)
+			cols++;
+		if (cols == width && buf[i + 1]) /* truncate with a marker */
+			break;
+	}
+	while (buf[i] && ((unsigned char)buf[i] & 0xc0) == 0x80)
+		i++;
+	fwrite(buf, 1, i, stdout);
+	if (buf[i]) {
+		fputs("~", stdout);
+		cols++;
+	}
+	for (; cols < width; cols++)
+		putchar(' ');
+}
+
+/* ---- wbs ---------------------------------------------------------------------------- */
+
+int cmd_wbs(cli *c, int argc, char **argv)
+{
+	plan_args a;
+	tix_plan_result pr;
+	int rc = parse_plan_args(argc, argv, &a, false, false);
+	if (rc || (rc = run_plan(c, &a, &pr)))
+		return rc;
+	const tix_schedule *s = pr.schedule;
+	char id[16], d1[TIX_DATE_STR], d2[TIX_DATE_STR];
+	for (size_t i = 0; i < s->ntasks; i++) {
+		const tix_plan_task *t = &s->tasks[i];
+		printf("%-10s %s  ", t->wbs, cli_short(&t->ticket->id, id));
+		print_title(t, 36, true);
+		printf("  %-11s", tix_ticket_status_name(t->ticket->u.ticket.status));
+		if (t->scheduled)
+			printf("  %s..%s", date_or_dash(t->start, d1), date_or_dash(t->finish, d2));
+		else
+			printf("  %-22s", "(unscheduled)");
+		printf("  %3d%%", t->progress);
+		if (t->effort >= 0)
+			printf("  %lldh", (long long)t->effort);
+		putchar('\n');
+	}
+	print_diags(s);
+	tix_plan_result_free(&pr);
+	return EXIT_OK;
+}
+
+/* ---- plan ----------------------------------------------------------------------------- */
+
+static void plan_table(const tix_schedule *s, bool critical_only)
+{
+	char id[16], d1[TIX_DATE_STR], d2[TIX_DATE_STR];
+	printf("%-10s %-7s  %-30s  %-10s  %-10s  %5s  %5s\n", "WBS", "ID", "TITLE", "START", "FINISH", "DAYS", "FLOAT");
+	for (size_t i = 0; i < s->ntasks; i++) {
+		const tix_plan_task *t = &s->tasks[i];
+		if (critical_only && (!t->critical || t->summary))
+			continue;
+		printf("%-10s %s  ", t->wbs, cli_short(&t->ticket->id, id));
+		print_title(t, 30, !critical_only);
+		if (!t->scheduled) {
+			printf("  (unscheduled)\n");
+			continue;
+		}
+		printf("  %s  %s  %5lld  %5d%s%s%s\n", date_or_dash(t->start, d1), date_or_dash(t->finish, d2),
+		       (long long)t->duration, (int)t->total_float, t->critical ? "  critical" : "",
+		       t->milestone ? "  milestone" : "", t->late ? "  LATE" : "");
+	}
+	if (s->start != TIX_DATE_NONE)
+		printf("\nplan: %s..%s\n", tix_date_str(s->start, d1), tix_date_str(s->finish, d2));
+}
+
+/* One column per day (or per week for long plans). */
+static void gantt(const tix_schedule *s)
+{
+	if (s->start == TIX_DATE_NONE) {
+		printf("nothing scheduled\n");
+		return;
+	}
+	int64_t span = (int64_t)s->finish - s->start + 1;
+	int step = span > 120 ? 7 : 1;
+	int64_t cols = (span + step - 1) / step;
+	if (cols > 160)
+		cols = 160;
+	char d1[TIX_DATE_STR];
+	printf("%-10s %-30s |", "", step == 1 ? "(one column per day)" : "(one column per week)");
+	for (int64_t k = 0; k < cols; k++) { /* mark Mondays / month starts */
+		tix_date d = s->start + (tix_date)(k * step);
+		int day;
+		tix_date_ymd(d, NULL, NULL, &day);
+		putchar(step == 1 ? (tix_date_weekday(d) == 0 ? '|' : ' ') : (day <= 7 ? '|' : ' '));
+	}
+	printf("\n%-10s %-30s |%s\n", "", "", tix_date_str(s->start, d1));
+	for (size_t i = 0; i < s->ntasks; i++) {
+		const tix_plan_task *t = &s->tasks[i];
+		printf("%-10s ", t->wbs);
+		print_title(t, 30, true);
+		putchar('|');
+		for (int64_t k = 0; k < cols && t->scheduled; k++) {
+			tix_date lo = s->start + (tix_date)(k * step), hi = lo + step - 1;
+			char ch = ' ';
+			if (t->milestone && t->start >= lo && t->start <= hi)
+				ch = '*';
+			else if (!t->milestone && t->start <= hi && t->finish >= lo) {
+				if (t->summary)
+					ch = '-';
+				else if (step == 1 && !tix_plan_is_working(t->calendar, lo))
+					ch = '.';
+				else
+					ch = t->critical ? '#' : '=';
+			}
+			putchar(ch);
+		}
+		putchar('\n');
+	}
+	printf("\n# critical  = other  - summary  * milestone  . non-working day\n");
+}
+
+static void load_view(const tix_schedule *s)
+{
+	char d1[TIX_DATE_STR], id[16];
+	if (!s->nloads) {
+		printf("no assigned resources in this plan\n");
+		return;
+	}
+	size_t cols = s->ndays > 160 ? 160 : s->ndays;
+	printf("resource load from %s, one column per day (%% of capacity):\n", tix_date_str(s->start, d1));
+	for (size_t i = 0; i < s->nloads; i++) {
+		const tix_plan_load *l = &s->loads[i];
+		printf("%s  %-20.20s |", cli_short(&l->resource->id, id), l->resource->u.resource.name);
+		for (size_t d = 0; d < cols; d++) {
+			int32_t u = l->units[d];
+			char ch = u == 0 ? (l->working[d] ? ' ' : '.') : u > (l->working[d] ? 100 : 0) ? '!' : u >= 100 ? '#'
+												   : u >= 50 ? '+'
+													     : ':';
+			putchar(ch);
+		}
+		printf("|  peak %d%%%s\n", (int)l->peak, l->over_days ? "  OVER-ALLOCATED" : "");
+	}
+	printf("\n! over  # full  + half or more  : less  . non-working\n");
+}
+
+int cmd_plan(cli *c, int argc, char **argv)
+{
+	plan_args a;
+	tix_plan_result pr;
+	int rc = parse_plan_args(argc, argv, &a, true, false);
+	if (rc || (rc = run_plan(c, &a, &pr)))
+		return rc;
+	const tix_schedule *s = pr.schedule;
+	if (a.gantt)
+		gantt(s);
+	if (a.load) {
+		if (a.gantt)
+			putchar('\n');
+		load_view(s);
+	}
+	if (!a.gantt && !a.load)
+		plan_table(s, a.critical);
+	else if (a.critical) {
+		putchar('\n');
+		plan_table(s, true);
+	}
+	print_diags(s);
+	tix_plan_result_free(&pr);
+	return EXIT_OK;
+}
+
+/* ---- export ---------------------------------------------------------------------------- */
+
+int cmd_export(cli *c, int argc, char **argv)
+{
+	plan_args a;
+	tix_plan_result pr;
+	tix_export_format f;
+	int rc = parse_plan_args(argc, argv, &a, false, true);
+	if (rc)
+		return rc;
+	if (!a.format || !tix_export_format_parse(a.format, &f))
+		return cli_usage("export: --format mermaid|csv|json is required");
+	if ((rc = run_plan(c, &a, &pr)))
+		return rc;
+	tix_buf out = TIX_BUF_INIT;
+	const char *title = NULL;
+	if (a.root && pr.schedule->ntasks)
+		title = pr.schedule->tasks[0].ticket->u.ticket.title;
+	tix_export(pr.schedule, f, title, &out);
+	fwrite(out.data ? out.data : "", 1, out.len, stdout);
+	print_diags(pr.schedule);
+	tix_buf_free(&out);
+	tix_plan_result_free(&pr);
+	return EXIT_OK;
+}

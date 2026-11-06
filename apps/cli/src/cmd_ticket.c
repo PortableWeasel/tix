@@ -43,10 +43,14 @@ int cmd_new(cli *c, int argc, char **argv)
 {
 	tix_buf title = TIX_BUF_INIT, body = TIX_BUF_INIT, text = TIX_BUF_INIT;
 	tix_strs labels = {0};
+	cli_plan pl = {0};
 	bool have_title = false, have_body = false;
 	int rc = EXIT_OK;
 	for (int i = 1; i < argc && rc == EXIT_OK; i++) {
-		if (!strcmp(argv[i], "-t") && need_value(i, argc, argv[i])) {
+		int prc = cli_plan_opt(c, argc, argv, &i, &pl);
+		if (prc != CLI_NOT_MINE) {
+			rc = prc;
+		} else if (!strcmp(argv[i], "-t") && need_value(i, argc, argv[i])) {
 			tix_buf_adds(&title, argv[++i]);
 			have_title = true;
 		} else if (!strcmp(argv[i], "-m") && need_value(i, argc, argv[i])) {
@@ -79,13 +83,22 @@ int cmd_new(cli *c, int argc, char **argv)
 	}
 	tix_oid id;
 	char s[16];
+	if (rc == EXIT_OK)
+		rc = cli_plan_finish(c, &pl, NULL, NULL);
 	if (rc == EXIT_OK) {
-		tix_status st = tix_ticket_create(c->repo, tix_buf_cstr(&title), tix_buf_cstr(&body), &labels, &id, &c->err);
+		TIX_VEC(tix_op) ops = {0};
+		TIX_VEC_PUSH(&ops, tix_op_ticket_create(NULL, tix_buf_cstr(&title), tix_buf_cstr(&body), &labels));
+		for (size_t k = 0; k < pl.ops.n; k++)
+			TIX_VEC_PUSH(&ops, pl.ops.v[k]); /* borrowed: freed with pl */
+		tix_status st = tix_entity_create(c->repo, TIX_ENTITY_TICKET, ops.v, ops.n, &id, &c->err);
+		tix_op_free(&ops.v[0]);
+		free(ops.v);
 		if (st)
 			rc = cli_fail(c, st);
 		else
 			printf("Created ticket %s\n", cli_short(&id, s));
 	}
+	cli_plan_free(&pl);
 	tix_buf_free(&title);
 	tix_buf_free(&body);
 	tix_buf_free(&text);
@@ -106,7 +119,7 @@ static void print_labels(const tix_strs *l)
 int cmd_ls(cli *c, int argc, char **argv)
 {
 	tix_ticket_query q = {.status_mask = TIX_STATUS_MASK_ACTIVE};
-	tix_oid author;
+	tix_oid author, assignee, under;
 	bool all = false, explicit_status = false;
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--all")) {
@@ -124,6 +137,16 @@ int cmd_ls(cli *c, int argc, char **argv)
 			if (rc)
 				return rc;
 			q.author = &author;
+		} else if (!strcmp(argv[i], "--assignee") && need_value(i, argc, argv[i])) {
+			int rc = cli_resolve(c, TIX_ENTITY_RESOURCE, argv[++i], &assignee);
+			if (rc)
+				return rc;
+			q.assignee = &assignee;
+		} else if (!strcmp(argv[i], "--under") && need_value(i, argc, argv[i])) {
+			int rc = cli_resolve(c, TIX_ENTITY_TICKET, argv[++i], &under);
+			if (rc)
+				return rc;
+			q.under = &under;
 		} else {
 			return cli_usage("ls: unexpected '%s'", argv[i]);
 		}
@@ -174,6 +197,66 @@ static int load_ticket_arg(cli *c, const char *arg, tix_entity **out)
 	return st ? cli_fail(c, st) : EXIT_OK;
 }
 
+static const char *name_of(cli *c, tix_entity_type type, const tix_oid *id, char *out, size_t n)
+{
+	tix_entity *e;
+	char s[16];
+	if (tix_entity_load(c->repo, type, id, &e, NULL)) {
+		snprintf(out, n, "%s (not here)", cli_short(id, s));
+		return out;
+	}
+	const char *name = type == TIX_ENTITY_TICKET     ? e->u.ticket.title
+			   : type == TIX_ENTITY_RESOURCE ? e->u.resource.name
+							 : e->u.calendar.name;
+	snprintf(out, n, "%s %s", cli_short(id, s), name);
+	tix_entity_free(e);
+	return out;
+}
+
+static void show_date(const char *label, tix_date d)
+{
+	char s[TIX_DATE_STR];
+	if (d != TIX_DATE_NONE)
+		printf("%-10s%s\n", label, tix_date_str(d, s));
+}
+
+static void show_plan(cli *c, const tix_ticket *t)
+{
+	const tix_ticket_plan *p = &t->plan;
+	char buf[400];
+	if (!tix_oid_is_null(&p->parent))
+		printf("parent:   %s\n", name_of(c, TIX_ENTITY_TICKET, &p->parent, buf, sizeof(buf)));
+	if (p->kind == TIX_KIND_MILESTONE)
+		printf("kind:     milestone\n");
+	if (p->mode == TIX_MODE_MANUAL)
+		printf("mode:     manual\n");
+	if (!tix_oid_is_null(&p->calendar))
+		printf("calendar: %s\n", name_of(c, TIX_ENTITY_CALENDAR, &p->calendar, buf, sizeof(buf)));
+	show_date("start:", p->start);
+	show_date("finish:", p->finish);
+	if (p->duration >= 0)
+		printf("duration: %lldd\n", (long long)p->duration);
+	if (p->effort >= 0)
+		printf("effort:   %lldh\n", (long long)p->effort);
+	show_date("deadline:", p->deadline);
+	if (p->progress)
+		printf("progress: %d%%\n", p->progress);
+	show_date("actual:", p->actual_start);
+	show_date("done on:", p->actual_finish);
+	for (size_t i = 0; i < p->ndeps; i++) {
+		const tix_dep *d = &p->deps[i];
+		printf("after:    %s (%s%+dd)\n", name_of(c, TIX_ENTITY_TICKET, &d->pred, buf, sizeof(buf)),
+		       tix_dep_kind_name(d->kind), (int)d->lag);
+	}
+	for (size_t i = 0; i < p->nassignments; i++) {
+		const tix_assignment *a = &p->assignments[i];
+		printf("assigned: %s %d%%", name_of(c, TIX_ENTITY_RESOURCE, &a->resource, buf, sizeof(buf)), (int)a->units);
+		if (a->effort >= 0)
+			printf(", %lldh", (long long)a->effort);
+		putchar('\n');
+	}
+}
+
 int cmd_show(cli *c, int argc, char **argv)
 {
 	if (argc != 2)
@@ -196,6 +279,7 @@ int cmd_show(cli *c, int argc, char **argv)
 			printf("%s%s", i ? ", " : "", t->labels.v[i]);
 		putchar('\n');
 	}
+	show_plan(c, t);
 	if (t->body[0]) {
 		putchar('\n');
 		indent(t->body);
@@ -288,11 +372,15 @@ int cmd_edit(cli *c, int argc, char **argv)
 {
 	TIX_VEC(tix_op) ops = {0};
 	tix_strs add = {0}, rm = {0};
+	cli_plan pl = {0};
 	const char *ticket = NULL;
 	int rc = EXIT_OK;
 	for (int i = 1; i < argc && rc == EXIT_OK; i++) {
 		const char *a = argv[i];
-		if (!strcmp(a, "--title") && need_value(i, argc, a)) {
+		int prc = cli_plan_opt(c, argc, argv, &i, &pl);
+		if (prc != CLI_NOT_MINE) {
+			rc = prc;
+		} else if (!strcmp(a, "--title") && need_value(i, argc, a)) {
 			TIX_VEC_PUSH(&ops, tix_op_text(TIX_OP_SET_TITLE, argv[++i]));
 		} else if (!strcmp(a, "--body") && need_value(i, argc, a)) {
 			TIX_VEC_PUSH(&ops, tix_op_text(TIX_OP_SET_BODY, argv[++i]));
@@ -316,10 +404,24 @@ int cmd_edit(cli *c, int argc, char **argv)
 		TIX_VEC_PUSH(&ops, tix_op_label(&add, &rm));
 	if (rc == EXIT_OK && !ticket)
 		rc = cli_usage("edit: expected a ticket ID");
-	if (rc == EXIT_OK && !ops.n)
+	if (rc == EXIT_OK && !ops.n && !pl.ops.n && !pl.rank_set)
 		rc = cli_usage("edit: nothing to change");
 	tix_oid id;
-	if (rc == EXIT_OK && !(rc = cli_resolve(c, TIX_ENTITY_TICKET, ticket, &id))) {
+	if (rc == EXIT_OK && !(rc = cli_resolve(c, TIX_ENTITY_TICKET, ticket, &id)) && pl.rank_set) {
+		tix_entity *cur;
+		tix_status st = tix_entity_load(c->repo, TIX_ENTITY_TICKET, &id, &cur, &c->err);
+		if (st) {
+			rc = cli_fail(c, st);
+		} else {
+			rc = cli_plan_finish(c, &pl, &id, &cur->u.ticket.plan.parent);
+			tix_entity_free(cur);
+		}
+	}
+	for (size_t k = 0; rc == EXIT_OK && k < pl.ops.n; k++) {
+		TIX_VEC_PUSH(&ops, pl.ops.v[k]); /* moved */
+		memset(&pl.ops.v[k], 0, sizeof(tix_op));
+	}
+	if (rc == EXIT_OK) {
 		tix_status st = tix_entity_apply(c->repo, TIX_ENTITY_TICKET, &id, ops.v, ops.n, &c->err);
 		if (st)
 			rc = cli_fail(c, st);
@@ -327,6 +429,7 @@ int cmd_edit(cli *c, int argc, char **argv)
 	for (size_t i = 0; i < ops.n; i++)
 		tix_op_free(&ops.v[i]);
 	free(ops.v);
+	cli_plan_free(&pl);
 	tix_strs_free(&add);
 	tix_strs_free(&rm);
 	return rc;

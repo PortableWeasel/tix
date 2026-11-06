@@ -19,7 +19,11 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
 - **M3 done**: `tix pull` / `push` / `sync`: fetch through a child `git`, validate every
   fetched entity, then create, fast-forward or merge; pushes are never forced. Verified
   against Forgejo with concurrent edits on two clones.
-- Next: **M4**: planning (WBS, scheduling, resources, calendars, `plan`, `export`).
+- **M4 done**: project planning. WBS trees with fractional sibling ranks, FS/SS/FF/SF
+  dependencies with lags, durations from effort and assignments, working-day calendars with
+  holidays, resources with capacity, CPM scheduling with float and critical path, rollups,
+  resource load, and `export` to Mermaid gantt, CSV and JSON.
+- Next: **M5**: SQLite index (fast listing and queries on large repositories).
 
 ## Usage
 
@@ -31,6 +35,17 @@ tix show 7a3fe37
 tix comment 7a3fe37 -m "looking into it"
 tix edit 7a3fe37 --status in-progress +p1 -ui
 tix sync                                  # pull + merge + push (origin, or git config tix.remote)
+
+# planning
+tix cal new "Site crew" --weekdays mon-sat --off 2026-12-24..2026-12-26=Holidays
+tix res new Crew --kind role --capacity 300% --calendar <cal>
+tix new -t House --calendar <cal> --deadline 2027-03-01
+tix new -t "Dig foundations" --parent <house> --rank last --effort 48h
+tix new -t "Pour slab" --parent <house> --rank last --duration 2d --dep +<dig>:FS+1d
+tix assign <dig> <crew>
+tix wbs <house>                           # tree with WBS codes and rollups
+tix plan <house> --gantt --load           # ASCII Gantt and resource load (also --critical)
+tix export <house> --format mermaid       # or csv, json
 ```
 
 Also available as `git tix …`. A plain `git clone` doesn't copy tickets: run `tix pull`
