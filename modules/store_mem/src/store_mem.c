@@ -19,6 +19,8 @@ typedef struct mem_store {
 	TIX_VEC(tix_ref) refs;       /* sorted by name */
 	TIX_VEC(tix_ref) local;      /* name -> value (oid unused; value in a parallel vec) */
 	TIX_VEC(tix_buf) local_val;
+	TIX_VEC(tix_ref) remotes;    /* name -> peer (oid unused; peer in a parallel vec) */
+	TIX_VEC(tix_store *) peers;  /* BORROWED */
 } mem_store;
 
 static const tix_store_vt mem_vt;
@@ -228,9 +230,88 @@ static tix_status mem_local_set(tix_store *s, const char *name, const char *data
 	return TIX_OK;
 }
 
+static tix_store *find_peer(mem_store *m, const char *remote)
+{
+	for (size_t i = 0; i < m->remotes.n; i++)
+		if (!strcmp(m->remotes.v[i].name, remote))
+			return m->peers.v[i];
+	return NULL;
+}
+
+static tix_status mem_remote_fetch(tix_store *s, const char *remote, tix_error *err)
+{
+	tix_store *peer = find_peer(as_mem(s), remote);
+	if (!peer)
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no remote named '%s'", remote);
+	tix_store_mem_fetch(s, peer, remote);
+	return TIX_OK;
+}
+
+/* RETURNS true if `a` is `b` or one of its ancestors. */
+static bool mem_is_ancestor(mem_store *m, const tix_oid *a, const tix_oid *b)
+{
+	TIX_VEC(tix_oid) todo = {0};
+	TIX_VEC(tix_oid) seen = {0};
+	bool found = false;
+	TIX_VEC_PUSH(&todo, *b);
+	while (todo.n && !found) {
+		tix_oid o = todo.v[--todo.n];
+		bool dup = false;
+		for (size_t i = 0; i < seen.n && !dup; i++)
+			dup = tix_oid_eq(&seen.v[i], &o);
+		if (dup)
+			continue;
+		TIX_VEC_PUSH(&seen, o);
+		if (tix_oid_eq(&o, a))
+			found = true;
+		mem_commit *c = find_commit(m, &o, NULL);
+		for (size_t k = 0; c && k < c->nparents; k++)
+			TIX_VEC_PUSH(&todo, c->parents[k]);
+	}
+	free(todo.v);
+	free(seen.v);
+	return found;
+}
+
+static void copy_commits(mem_store *dst, const mem_store *src)
+{
+	for (size_t i = 0; i < src->commits.n; i++) {
+		const mem_commit *c = &src->commits.v[i];
+		insert_commit(dst, &c->oid, c->parents, c->nparents, c->pack, c->pack_len, c->message);
+	}
+}
+
+static tix_status mem_remote_push(tix_store *s, const char *remote, const char *const *refs, size_t n,
+				  tix_error *err)
+{
+	mem_store *m = as_mem(s);
+	tix_store *peer_s = find_peer(m, remote);
+	if (!peer_s)
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no remote named '%s'", remote);
+	mem_store *peer = as_mem(peer_s);
+	size_t rejected = 0;
+	copy_commits(peer, m); /* like a pack upload: objects first, then refs */
+	for (size_t i = 0; i < n; i++) {
+		tix_ref *mine = find_ref(m, refs[i], NULL);
+		TIX_REQUIRE(mine);
+		tix_ref *theirs = find_ref(peer, refs[i], NULL);
+		if (!theirs || mem_is_ancestor(peer, &theirs->oid, &mine->oid))
+			set_ref(peer, refs[i], &mine->oid);
+		else
+			rejected++;
+	}
+	if (rejected)
+		return tix_error_set(err, TIX_ERR_CONFLICT, "%zu ref(s) rejected (non-fast-forward)", rejected);
+	return TIX_OK;
+}
+
 static void mem_destroy(tix_store *s)
 {
 	mem_store *m = as_mem(s);
+	for (size_t i = 0; i < m->remotes.n; i++)
+		free(m->remotes.v[i].name);
+	free(m->remotes.v);
+	free(m->peers.v);
 	for (size_t i = 0; i < m->local.n; i++) {
 		free(m->local.v[i].name);
 		tix_buf_free(&m->local_val.v[i]);
@@ -257,6 +338,8 @@ static const tix_store_vt mem_vt = {
 	.ref_cas = mem_ref_cas,
 	.local_get = mem_local_get,
 	.local_set = mem_local_set,
+	.remote_fetch = mem_remote_fetch,
+	.remote_push = mem_remote_push,
 	.destroy = mem_destroy,
 };
 
@@ -277,6 +360,17 @@ void tix_store_mem_fetch(tix_store *dst, tix_store *src, const char *remote)
 		mem_commit *c = &s->commits.v[i];
 		insert_commit(d, &c->oid, c->parents, c->nparents, c->pack, c->pack_len, c->message);
 	}
+	tix_buf prefix = TIX_BUF_INIT;
+	tix_buf_addf(&prefix, "refs/remotes/%s/tix/", remote);
+	size_t keep = 0;
+	for (size_t i = 0; i < d->refs.n; i++) { /* prune: the namespace is a mirror */
+		if (!strncmp(d->refs.v[i].name, prefix.data, prefix.len))
+			free(d->refs.v[i].name);
+		else
+			d->refs.v[keep++] = d->refs.v[i];
+	}
+	d->refs.n = keep;
+	tix_buf_free(&prefix);
 	for (size_t i = 0; i < s->refs.n; i++) {
 		const char *name = s->refs.v[i].name;
 		if (strncmp(name, "refs/tix/", 9))
@@ -287,6 +381,16 @@ void tix_store_mem_fetch(tix_store *dst, tix_store *src, const char *remote)
 		set_ref(d, rn.data, &s->refs.v[i].oid);
 		tix_buf_free(&rn);
 	}
+}
+
+void tix_store_mem_add_remote(tix_store *s, const char *name, tix_store *peer)
+{
+	mem_store *m = as_mem(s);
+	TIX_REQUIRE(tix_remote_name_valid(name) && peer != s && as_mem(peer)->base.algo == s->algo &&
+		    !find_peer(m, name));
+	tix_ref r = {tix_xstrdup(name), {0}};
+	TIX_VEC_PUSH(&m->remotes, r);
+	TIX_VEC_PUSH(&m->peers, peer);
 }
 
 size_t tix_store_mem_count(tix_store *s)

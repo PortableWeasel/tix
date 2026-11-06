@@ -28,4 +28,3 @@ add_subdirectory(modules/core)
 add_subdirectory(modules/store_libgit)
 
 add_subdirectory(apps/cli)
-add_subdirectory(spikes)

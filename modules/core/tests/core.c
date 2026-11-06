@@ -49,8 +49,10 @@ static tix_status f_cas(tix_store *s, const char *n, const tix_oid *old, const t
 	}
 	return tix_store_ref_cas(f->inner, n, old, new_oid, er);
 }
+static tix_status f_rf(tix_store *s, const char *r, tix_error *er) { return tix_store_remote_fetch(inner(s), r, er); }
+static tix_status f_rp(tix_store *s, const char *r, const char *const *refs, size_t n, tix_error *er) { return tix_store_remote_push(inner(s), r, refs, n, er); }
 static void f_destroy(tix_store *s) { (void)s; }
-static const tix_store_vt flaky_vt = {f_cw, f_cr, f_rr, f_rl, f_cas, f_lg, f_ls, f_destroy};
+static const tix_store_vt flaky_vt = {f_cw, f_cr, f_rr, f_rl, f_cas, f_lg, f_ls, f_rf, f_rp, f_destroy};
 
 static tix_repo *open_repo(tix_store *s, fake_env *env, const tix_oid *identity)
 {
@@ -271,11 +273,262 @@ static void test_list_and_validation(void)
 	tix_store_destroy(s);
 }
 
+/* ---- sync --------------------------------------------------------------- */
+
+typedef struct clone {
+	fake_env env;
+	tix_store *s;
+	tix_repo *r;
+} clone;
+
+static void clone_open(clone *c, tix_store *server, uint64_t seed)
+{
+	c->env = (fake_env){1700000000, seed};
+	c->s = tix_store_mem_new(server->algo);
+	tix_store_mem_add_remote(c->s, "origin", server);
+	c->r = open_repo(c->s, &c->env, NULL);
+}
+
+static void clone_close(clone *c)
+{
+	tix_repo_close(c->r);
+	tix_store_destroy(c->s);
+}
+
+static void snapshot(clone *c, const tix_oid *t, tix_buf *out)
+{
+	tix_entity *ent = load_ticket(c->r, t);
+	tix_buf_reset(out);
+	if (ent)
+		tix_entity_snapshot(ent, out);
+	tix_entity_free(ent);
+}
+
+static void apply1(clone *c, const tix_oid *t, tix_op op)
+{
+	TK_OK(tix_entity_apply(c->r, TIX_ENTITY_TICKET, t, &op, 1, &e), &e);
+	tix_op_free(&op);
+}
+
+static void test_sync_basic(void)
+{
+	tix_store *server = tix_store_mem_new(TIX_HASH_SHA1);
+	clone a, b;
+	tix_oid ada, bob, t;
+	tix_sync_report rep = {0};
+	tix_buf sa = TIX_BUF_INIT, sb = TIX_BUF_INIT;
+	clone_open(&a, server, 11);
+	clone_open(&b, server, 12);
+
+	TK_OK(tix_identity_create(a.r, "Ada", "a@x", &ada, &e), &e);
+	TK_OK(tix_repo_set_identity(a.r, &ada, &e), &e);
+	TK_OK(tix_ticket_create(a.r, "Shared", "", NULL, &t, &e), &e);
+	TK_OK(tix_push(a.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.pushed == 2);
+	TK_OK(tix_push(a.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.pushed == 0); /* nothing new since */
+	tix_sync_report_free(&rep);
+
+	TK_OK(tix_pull(b.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.created == 2 && rep.rejected == 0 && rep.merged == 0);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_identity_create(b.r, "Bob", "b@x", &bob, &e), &e);
+	TK_OK(tix_repo_set_identity(b.r, &bob, &e), &e);
+
+	/* concurrent edits on both clones */
+	apply1(&a, &t, tix_op_text(TIX_OP_SET_TITLE, "Shared, renamed"));
+	tix_strs l = {0};
+	tix_strs_add(&l, "bug");
+	apply1(&b, &t, tix_op_label(&l, NULL));
+	tix_strs_free(&l);
+	TK_OK(tix_sync(a.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+
+	/* b's push is refused (the server moved), sync pulls, merges, pushes */
+	TK_STATUS(tix_push(b.r, "origin", &rep, &e), TIX_ERR_CONFLICT, &e);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_sync(b.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.merged == 1 && rep.pushed >= 1 && rep.problems.n == 0);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_pull(a.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.forwarded >= 1 && rep.merged == 0);
+	tix_sync_report_free(&rep);
+
+	snapshot(&a, &t, &sa);
+	snapshot(&b, &t, &sb);
+	TK_STR_EQ(tix_buf_cstr(&sa), tix_buf_cstr(&sb));
+	tix_entity *ent = load_ticket(a.r, &t);
+	TK_CHECK(ent && !strcmp(ent->u.ticket.title, "Shared, renamed") &&
+		 tix_strs_contains(&ent->u.ticket.labels, "bug"));
+	/* the clock moved past everything adopted: a new edit sorts last */
+	uint64_t before = ent ? ent->max_lamport : 0;
+	tix_entity_free(ent);
+	apply1(&b, &t, tix_op_set_status(TIX_TICKET_DONE));
+	ent = load_ticket(b.r, &t);
+	TK_CHECK(ent && ent->max_lamport > before && ent->u.ticket.status == TIX_TICKET_DONE);
+	tix_entity_free(ent);
+
+	tix_buf_free(&sa);
+	tix_buf_free(&sb);
+	clone_close(&a);
+	clone_close(&b);
+	tix_store_destroy(server);
+}
+
+/* What a hostile or broken remote can send, and what pull does with it. */
+static void test_sync_hostile(void)
+{
+	tix_store *server = tix_store_mem_new(TIX_HASH_SHA1);
+	clone a, b;
+	tix_oid ada, t, junk, got;
+	tix_sync_report rep = {0};
+	char ref[160], hex[TIX_OID_MAX_HEX + 1];
+	clone_open(&a, server, 21);
+	clone_open(&b, server, 22);
+	TK_OK(tix_identity_create(a.r, "Ada", "a@x", &ada, &e), &e);
+	TK_OK(tix_repo_set_identity(a.r, &ada, &e), &e);
+	TK_OK(tix_ticket_create(a.r, "Fine", "", NULL, &t, &e), &e);
+	TK_OK(tix_sync(a.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_pull(b.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+
+	/* 1: a malformed pack under a fresh ticket name */
+	const char *bad = "{\"tix\":1,\"type\":\"ticket\",\"author\":null,\"lamport\":1,\"time\":0}\n{\"op\":\"create\"}\n";
+	TK_OK(tix_store_commit_write(server, NULL, 0, bad, strlen(bad), "junk", &junk, &e), &e);
+	snprintf(ref, sizeof(ref), "refs/tix/tickets/%s", tix_oid_hex(&junk, hex));
+	TK_OK(tix_store_ref_cas(server, ref, NULL, &junk, &e), &e);
+	/* 2: valid history filed under someone else's id */
+	tix_oid fake = t;
+	fake.bytes[0] ^= 0x55;
+	snprintf(ref, sizeof(ref), "refs/tix/tickets/%s", tix_oid_hex(&fake, hex));
+	TK_OK(tix_store_ref_cas(server, ref, NULL, &t, &e), &e);
+	/* 3: an identity's history under the ticket namespace */
+	snprintf(ref, sizeof(ref), "refs/tix/tickets/%s", tix_oid_hex(&ada, hex));
+	TK_OK(tix_store_ref_cas(server, ref, NULL, &ada, &e), &e);
+	/* 4: a namespace this version doesn't know, and a non-id name */
+	TK_OK(tix_store_ref_cas(server, "refs/tix/widgets/x", NULL, &t, &e), &e);
+	TK_OK(tix_store_ref_cas(server, "refs/tix/tickets/not-an-id", NULL, &t, &e), &e);
+	/* 5: an existing ticket rewound to junk (a forced push by someone else) */
+	snprintf(ref, sizeof(ref), "refs/tix/tickets/%s", tix_oid_hex(&t, hex));
+	tix_oid head;
+	TK_OK(tix_store_ref_read(server, ref, &head, &e), &e);
+	TK_OK(tix_store_ref_cas(server, ref, &head, &junk, &e), &e);
+
+	TK_OK(tix_pull(b.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.rejected == 4 && rep.skipped == 2 && rep.created == 0 && rep.problems.n == 4);
+	tix_sync_report_free(&rep);
+	tix_entity_list l;
+	TK_OK(tix_ticket_list(b.r, NULL, &l, &e), &e);
+	TK_CHECK(l.n == 1 && l.nbroken == 0); /* nothing hostile was adopted */
+	tix_entity_list_free(&l);
+	TK_OK(tix_store_ref_read(b.s, ref, &got, &e), &e);
+	TK_CHECK(tix_oid_eq(&got, &head)); /* the good local history is untouched */
+
+	/* a's next sync completes: the rewound ref is reported, not retried forever */
+	apply1(&a, &t, tix_op_text(TIX_OP_COMMENT, "still here"));
+	TK_OK(tix_sync(a.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.rejected == 4 && rep.unpushable == 1 && rep.problems.n == 5);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_store_ref_read(server, ref, &got, &e), &e);
+	TK_CHECK(tix_oid_eq(&got, &junk)); /* never forced over */
+
+	TK_STATUS(tix_pull(b.r, "nowhere", &rep, &e), TIX_ERR_NOT_FOUND, &e);
+	TK_STATUS(tix_push(b.r, "--all", &rep, &e), TIX_ERR_INVALID, &e);
+	tix_sync_report_free(&rep);
+	clone_close(&a);
+	clone_close(&b);
+	tix_store_destroy(server);
+}
+
+/* Random edits on several clones, syncing through one server in random order:
+ * once everyone has synced twice, every clone has byte-identical tickets. */
+static void test_sync_convergence(void)
+{
+	enum { CLONES = 3, STEPS = 120, SEEDS = 12 };
+	size_t merges = 0;
+	for (uint64_t seed = 1; seed <= SEEDS; seed++) {
+		tix_store *server = tix_store_mem_new(seed % 3 ? TIX_HASH_SHA1 : TIX_HASH_SHA256);
+		clone c[CLONES];
+		tix_oid me[CLONES];
+		TIX_VEC(tix_oid) tickets = {0};
+		uint64_t rng = seed * 7919;
+		tix_sync_report rep = {0};
+		char name[16];
+		for (int i = 0; i < CLONES; i++) {
+			clone_open(&c[i], server, seed * 100 + (uint64_t)i);
+			snprintf(name, sizeof(name), "user%d", i);
+			TK_OK(tix_identity_create(c[i].r, name, "u@x", &me[i], &e), &e);
+			TK_OK(tix_repo_set_identity(c[i].r, &me[i], &e), &e);
+		}
+		for (int step = 0; step < STEPS; step++) {
+			clone *k = &c[tk_rand_below(&rng, CLONES)];
+			uint64_t what = tk_rand_below(&rng, 10);
+			tix_entity_list l;
+			TK_OK(tix_ticket_list(k->r, NULL, &l, &e), &e);
+			if (what == 0 || l.n == 0) {
+				tix_oid t;
+				TK_OK(tix_ticket_create(k->r, "new", "", NULL, &t, &e), &e);
+			} else if (what <= 6) {
+				const tix_oid *t = &l.v[tk_rand_below(&rng, l.n)]->id;
+				tix_strs lab = {0};
+				snprintf(name, sizeof(name), "l%d", (int)tk_rand_below(&rng, 4));
+				tix_strs_add(&lab, name);
+				switch (tk_rand_below(&rng, 5)) {
+				case 0: apply1(k, t, tix_op_text(TIX_OP_SET_TITLE, name)); break;
+				case 1: apply1(k, t, tix_op_set_status((tix_ticket_status)tk_rand_below(&rng, 5))); break;
+				case 2: apply1(k, t, tix_op_label(&lab, NULL)); break;
+				case 3: apply1(k, t, tix_op_label(NULL, &lab)); break;
+				default: apply1(k, t, tix_op_text(TIX_OP_COMMENT, name)); break;
+				}
+				tix_strs_free(&lab);
+			} else if (what <= 7) {
+				TK_OK(tix_pull(k->r, "origin", &rep, &e), &e);
+			} else {
+				TK_OK(tix_sync(k->r, "origin", &rep, &e), &e);
+			}
+			tix_entity_list_free(&l);
+		}
+		for (int round = 0; round < 2; round++)
+			for (int i = 0; i < CLONES; i++)
+				TK_OK(tix_sync(c[i].r, "origin", &rep, &e), &e);
+		TK_CHECK(rep.rejected == 0 && rep.problems.n == 0);
+		merges += rep.merged;
+		tix_sync_report_free(&rep);
+
+		tix_entity_list ref;
+		TK_OK(tix_ticket_list(c[0].r, NULL, &ref, &e), &e);
+		for (int i = 1; i < CLONES; i++) {
+			tix_entity_list l;
+			TK_OK(tix_ticket_list(c[i].r, NULL, &l, &e), &e);
+			TK_CHECK(l.n == ref.n);
+			for (size_t j = 0; j < l.n && j < ref.n; j++) {
+				tix_buf x = TIX_BUF_INIT, y = TIX_BUF_INIT;
+				tix_entity_snapshot(ref.v[j], &x);
+				tix_entity_snapshot(l.v[j], &y);
+				TK_STR_EQ(tix_buf_cstr(&x), tix_buf_cstr(&y));
+				tix_buf_free(&x);
+				tix_buf_free(&y);
+			}
+			tix_entity_list_free(&l);
+		}
+		tix_entity_list_free(&ref);
+		free(tickets.v);
+		for (int i = 0; i < CLONES; i++)
+			clone_close(&c[i]);
+		tix_store_destroy(server);
+	}
+	TK_CHECK(merges > 0); /* the scenario really exercised merging */
+}
+
 int main(void)
 {
 	test_flow();
 	test_resolve();
 	test_retry();
 	test_list_and_validation();
+	test_sync_basic();
+	test_sync_hostile();
+	test_sync_convergence();
 	return tk_finish();
 }

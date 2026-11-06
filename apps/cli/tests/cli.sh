@@ -101,15 +101,61 @@ git fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || fail "git fsck"
 # git-tix alias
 expect 0 env PATH="$(dirname "$TIX"):$PATH" git tix ls; has "$t1"
 
-# data travels with plain git (sync proper is M3)
-git push -q origin 'refs/tix/*:refs/tix/*' || fail "push"
+# ---- sync: push, clone, pull, concurrent edits, merge -----------------------
+expect 2 "$TIX" pull --force; has "unknown option"
+expect 2 "$TIX" pull origin extra; has "usage: tix pull"
+expect 1 "$TIX" pull nosuch; has "no remote named 'nosuch'"
+expect 1 "$TIX" pull 'https://example.invalid/x'; has "bad remote name"
+git remote add dead "$T/does-not-exist"
+expect 1 "$TIX" pull dead; has "git fetch failed"
+expect 0 "$TIX" push; has "origin: pushed 5"   # 2 identities + 3 tickets
+expect 0 "$TIX" push; has "origin: pushed 0"
+expect 0 "$TIX" pull; has "origin: nothing new"
+[ ! -e .git/FETCH_HEAD ] || fail "tix fetch wrote FETCH_HEAD"
+[ -z "$(git for-each-ref refs/remotes/origin/ --format='%(refname)' | grep -v '/tix/')" ] || fail "fetched non-tix refs"
+
 git clone -q "$T/remote.git" "$T/b" 2>/dev/null && cd "$T/b"
-git fetch -q origin 'refs/tix/*:refs/tix/*' || fail "fetch"
+expect 0 "$TIX" ls --all; hasnt "Crash"   # a plain clone has no tix refs
+expect 0 "$TIX" pull; has "origin: 5 new, 0 updated, 0 merged"
 expect 0 "$TIX" ls --all; has "Crash when saving"; has "Second ticket"
 expect 0 "$TIX" show "$t1"; has "author:   Ada Lovelace"; has "Robert"
 expect 1 "$TIX" comment "$t1" -m "no identity here"; has "tix id new"
-expect 0 "$TIX" id use "${ada:0:7}"
-expect 0 "$TIX" comment "$t1" -m "from clone b"
+expect 0 "$TIX" id new --name Carol --email carol@example.org
+expect 0 "$TIX" edit "$t1" --status blocked +from-b
+(cd "$T/a" && expect 0 "$TIX" edit "$t1" --title "Crash when saving twice" -p1 && expect 0 "$TIX" sync && has "pushed 1") ||
+  fail "edit+sync in a"
+expect 1 "$TIX" push; has "has changes you don't have"
+expect 0 "$TIX" sync; has "0 new, 0 updated, 1 merged"; has "pushed 1"   # the merge; the refused push already sent Carol (not atomic)
+cd "$T/a"
+expect 0 "$TIX" pull; has "1 new, 1 updated, 0 merged"
+expect 0 "$TIX" show "$t1"; a_show=$out
+has "Crash when saving twice"; has "status:   blocked"; has "labels:   bug, from-b"
+cd "$T/b"
+expect 0 "$TIX" show "$t1"
+[ "$out" = "$a_show" ] || fail "clones disagree after sync: $(diff <(echo "$a_show") <(echo "$out"))"
+[ "$(git rev-parse "refs/tix/tickets/$(git -C "$T/a" for-each-ref --format='%(refname:lstrip=3)' "refs/tix/tickets/$t1*")")" = \
+  "$(git -C "$T/a" rev-parse "refs/tix/tickets/$(git -C "$T/a" for-each-ref --format='%(refname:lstrip=3)' "refs/tix/tickets/$t1*")")" ] ||
+  fail "clones have different heads"
+expect 0 "$TIX" sync; has "nothing new"; has "pushed 0"
+
+# a hostile remote ref is rejected and never adopted; sync still completes
+git -C "$T/a" update-ref "refs/tix/tickets/$(git -C "$T/a" rev-parse HEAD)" HEAD
+git -C "$T/a" push -q origin "refs/tix/tickets/$(git -C "$T/a" rev-parse HEAD)"
+git -C "$T/a" update-ref -d "refs/tix/tickets/$(git -C "$T/a" rev-parse HEAD)"
+git --git-dir="$T/remote.git" update-ref refs/tix/widgets/x "$(git -C "$T/a" rev-parse HEAD)"
+expect 1 "$TIX" pull; has "warning: rejected refs/remotes/origin/tix/tickets/"; has "not an op-pack commit"
+has "1 ref(s) of an unknown kind ignored"
+expect 0 "$TIX" ls --all; hasnt "skipped"; [ -z "$(git for-each-ref refs/tix/widgets)" ] || fail "adopted unknown ref"
+expect 1 "$TIX" sync; has "pushed 0"
+git --git-dir="$T/remote.git" fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || fail "remote fsck"
+git fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || fail "clone b fsck"
+
+# tix.remote picks the default remote
+git init -q --bare "$T/mirror.git" && git remote add mirror "$T/mirror.git"
+git config tix.remote mirror
+expect 0 "$TIX" push; has "mirror: pushed 6"
+[ "$(git --git-dir="$T/mirror.git" for-each-ref refs/tix | wc -l)" = 6 ] || fail "mirror ref count"
+git config --unset tix.remote
 
 # SHA-256 + reftable repository
 git init -q --object-format=sha256 --ref-format=reftable "$T/s" && cd "$T/s"
@@ -119,6 +165,11 @@ t=$(sed -n 's/^Created ticket //p' <<<"$out")
 expect 0 "$TIX" show "$t"; has "sha256 ticket"
 [ "$(sed -n 's/^id: *//p' <<<"$out" | tr -d '\n' | wc -c)" = 64 ] || fail "sha256 id length"
 git fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || fail "git fsck sha256"
+git init -q --bare --object-format=sha256 "$T/s.git" && git remote add origin "$T/s.git"
+expect 0 "$TIX" push; has "pushed 2"
+git clone -q "$T/s.git" "$T/s2" 2>/dev/null && cd "$T/s2"
+expect 0 "$TIX" pull; has "2 new"
+expect 0 "$TIX" show "$t"; has "sha256 ticket"
 
 if [ $fails -gt 0 ]; then echo "$fails failure(s)"; exit 1; fi
 echo "cli end-to-end OK"

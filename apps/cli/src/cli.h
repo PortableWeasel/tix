@@ -42,5 +42,8 @@ int cmd_ls(cli *c, int argc, char **argv);
 int cmd_show(cli *c, int argc, char **argv);
 int cmd_comment(cli *c, int argc, char **argv);
 int cmd_edit(cli *c, int argc, char **argv);
+int cmd_pull(cli *c, int argc, char **argv);
+int cmd_push(cli *c, int argc, char **argv);
+int cmd_sync(cli *c, int argc, char **argv);
 
 #endif

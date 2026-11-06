@@ -11,7 +11,9 @@ case $FMT in
   sha1-files) git init -q "$T/r" ;;
   sha256-reftable) git init -q --object-format=sha256 --ref-format=reftable "$T/r" ;;
 esac
+git init -q --bare $( [ "$FMT" = sha256-reftable ] && echo --object-format=sha256 ) "$T/peer.git"
 cd "$T/r"
+git remote add peer "$T/peer.git"
 mkdir sub && echo a > a && echo b > sub/b && git add a sub && git commit -qm normal
 blob=$(git rev-parse HEAD:a)
 cd sub   # discovery from a subdirectory
@@ -22,4 +24,7 @@ git fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || { echo "FAIL: f
 [ "$(git cat-file -p refs/tix/contract/x:ops.ndjson)" = b ] || { echo "FAIL: blob content"; exit 1; }
 [ "$(cat "$(git rev-parse --git-dir)/tix/contract-v")" = 7 ] || { echo "FAIL: local state file"; exit 1; }
 [ "$(git config --local tix.contract)" = yes ] || { echo "FAIL: config"; exit 1; }
+[ "$(git --git-dir="$T/peer.git" cat-file -p refs/tix/contract-sync/x:ops.ndjson)" = "sync b" ] ||
+  { echo "FAIL: pushed ref on the remote"; exit 1; }
+git --git-dir="$T/peer.git" fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || { echo "FAIL: remote fsck"; exit 1; }
 echo "store_libgit contract OK ($FMT)"

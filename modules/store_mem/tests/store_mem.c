@@ -30,18 +30,26 @@ static void test_fetch(void)
 	TK_OK(tix_store_commit_read(b, &c1, &c, &e), &e);
 	tix_commit_free(&c);
 	TK_STATUS(tix_store_ref_read(b, "refs/tix/tickets/t", &got, &e), TIX_ERR_NOT_FOUND, &e);
+	/* the mirror is pruned: a ref gone from the source disappears */
+	tix_store *empty = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_store_mem_fetch(b, empty, "origin");
+	TK_STATUS(tix_store_ref_read(b, "refs/remotes/origin/tix/tickets/t", &got, &e), TIX_ERR_NOT_FOUND, &e);
+	tix_store_destroy(empty);
 	tix_store_destroy(a);
 	tix_store_destroy(b);
 }
 
 int main(void)
 {
-	tix_store *s = tix_store_mem_new(TIX_HASH_SHA1);
-	tix_store_contract_run(s);
-	tix_store_destroy(s);
-	s = tix_store_mem_new(TIX_HASH_SHA256);
-	tix_store_contract_run(s);
-	tix_store_destroy(s);
+	for (int i = 0; i < 2; i++) {
+		tix_hash_algo algo = i ? TIX_HASH_SHA256 : TIX_HASH_SHA1;
+		tix_store *s = tix_store_mem_new(algo), *peer = tix_store_mem_new(algo);
+		tix_store_mem_add_remote(s, "peer", peer);
+		tix_store_contract_run(s);
+		tix_store_contract_run_remote(s, "peer");
+		tix_store_destroy(s);
+		tix_store_destroy(peer);
+	}
 	test_content_addressed();
 	test_fetch();
 	return tk_finish();

@@ -63,3 +63,11 @@ bool tix_local_name_valid(const char *name)
 			return false;
 	return true;
 }
+
+bool tix_remote_name_valid(const char *name)
+{
+	size_t n = strlen(name);
+	if (n < 1 || n > 64 || name[0] == '-' || !component_ok(name, n))
+		return false;
+	return true;
+}

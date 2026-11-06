@@ -1,6 +1,8 @@
 #include "tix/store_contract.h"
 #include "tix/testkit.h"
 
+#include <stdio.h>
+
 static tix_error e = TIX_ERROR_INIT;
 
 static void commits(tix_store *s)
@@ -107,4 +109,63 @@ void tix_store_contract_run(tix_store *s)
 	commits(s);
 	refs(s);
 	local(s);
+}
+
+static bool tracking(tix_store *s, const char *remote, tix_oid *out)
+{
+	char name[160];
+	snprintf(name, sizeof(name), "refs/remotes/%s/tix/contract-sync/x", remote);
+	return tix_store_ref_read(s, name, out, NULL) == TIX_OK;
+}
+
+void tix_store_contract_run_remote(tix_store *s, const char *remote)
+{
+	const char *x = "refs/tix/contract-sync/x";
+	const char *refs[] = {x};
+	tix_oid a, b, c, got;
+	char prefix[160];
+	tix_refs r;
+
+	TK_CHECK(tix_remote_name_valid("origin") && tix_remote_name_valid("my.remote_2"));
+	TK_CHECK(!tix_remote_name_valid("-x") && !tix_remote_name_valid(".x") && !tix_remote_name_valid("a/b") &&
+		 !tix_remote_name_valid("a..b") && !tix_remote_name_valid("") &&
+		 !tix_remote_name_valid("https://h/x") && !tix_remote_name_valid("x.lock"));
+	TK_STATUS(tix_store_remote_fetch(s, "--upload-pack=x", &e), TIX_ERR_INVALID, &e);
+	TK_STATUS(tix_store_remote_push(s, "-f", refs, 1, &e), TIX_ERR_INVALID, &e);
+	TK_STATUS(tix_store_remote_fetch(s, "contract-no-such-remote", &e), TIX_ERR_NOT_FOUND, &e);
+	TK_STATUS(tix_store_remote_push(s, "contract-no-such-remote", refs, 1, &e), TIX_ERR_NOT_FOUND, &e);
+
+	/* an empty remote fetches fine and mirrors nothing */
+	TK_OK(tix_store_remote_fetch(s, remote, &e), &e);
+	snprintf(prefix, sizeof(prefix), "refs/remotes/%s/tix/contract-sync/", remote);
+	TK_OK(tix_store_ref_list(s, prefix, &r, &e), &e);
+	TK_CHECK(r.n == 0);
+	tix_refs_free(&r);
+	TK_OK(tix_store_remote_push(s, remote, refs, 0, &e), &e); /* nothing to push */
+
+	/* create, then fast-forward */
+	TK_OK(tix_store_commit_write(s, NULL, 0, "sync a\n", 7, "contract sync a", &a, &e), &e);
+	TK_OK(tix_store_ref_cas(s, x, NULL, &a, &e), &e);
+	TK_OK(tix_store_remote_push(s, remote, refs, 1, &e), &e);
+	TK_OK(tix_store_remote_push(s, remote, refs, 1, &e), &e); /* up to date is fine */
+	TK_OK(tix_store_remote_fetch(s, remote, &e), &e);
+	TK_CHECK(tracking(s, remote, &got) && tix_oid_eq(&got, &a));
+	TK_OK(tix_store_commit_write(s, &a, 1, "sync b\n", 7, "contract sync b", &b, &e), &e);
+	TK_OK(tix_store_ref_cas(s, x, &a, &b, &e), &e);
+	TK_OK(tix_store_remote_push(s, remote, refs, 1, &e), &e);
+	TK_OK(tix_store_remote_fetch(s, remote, &e), &e);
+	TK_CHECK(tracking(s, remote, &got) && tix_oid_eq(&got, &b));
+	TK_OK(tix_store_ref_read(s, x, &got, &e), &e);
+	TK_CHECK(tix_oid_eq(&got, &b)); /* fetch never touches refs/tix */
+
+	/* a non-fast-forward is rejected, never forced */
+	TK_OK(tix_store_commit_write(s, NULL, 0, "sync c\n", 7, "contract sync c", &c, &e), &e);
+	TK_OK(tix_store_ref_cas(s, x, &b, &c, &e), &e);
+	TK_STATUS(tix_store_remote_push(s, remote, refs, 1, &e), TIX_ERR_CONFLICT, &e);
+	TK_OK(tix_store_remote_fetch(s, remote, &e), &e);
+	TK_CHECK(tracking(s, remote, &got) && tix_oid_eq(&got, &b));
+	/* going back to an ancestor is not a fast-forward either */
+	TK_OK(tix_store_ref_cas(s, x, &c, &a, &e), &e);
+	TK_STATUS(tix_store_remote_push(s, remote, refs, 1, &e), TIX_ERR_CONFLICT, &e);
+	TK_OK(tix_store_ref_cas(s, x, &a, &b, &e), &e);
 }

@@ -20,6 +20,7 @@ int main(int argc, char **argv)
 	if (!s)
 		return tk_finish();
 	tix_store_contract_run(s);
+	tix_store_contract_run_remote(s, "peer");
 
 	/* an ordinary commit (tree with other files) is not an op-pack commit */
 	TK_CHECK(tix_oid_from_hex(&foreign, argv[1], strlen(argv[1])));

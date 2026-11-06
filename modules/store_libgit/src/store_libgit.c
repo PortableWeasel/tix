@@ -12,10 +12,14 @@
 #include "ident.h"
 #include "lockfile.h"
 #include "object-store-ll.h"
+#include "packfile.h"
 #include "refs.h"
+#include "remote.h"
 #include "repository.h"
+#include "run-command.h"
 #include "setup.h"
 #include "strbuf.h"
+#include "strvec.h"
 #include "tree-walk.h"
 
 #include "tix/store_libgit.h"
@@ -290,6 +294,126 @@ static tix_status git_local_set(tix_store *s, const char *name, const char *data
 	return st;
 }
 
+/* ---- network: always a child `git` (AGENTS.md) ---------------------------- */
+
+static tix_status check_remote(const char *remote, tix_error *err)
+{
+	struct remote *rm = remote_get(remote);
+	if (!rm || !remote_is_configured(rm, 1))
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no remote named '%s'", remote);
+	return TIX_OK;
+}
+
+/* Copies the most useful line of a child's stderr into err, made printable:
+ * the first "fatal:"/"error:" line, else the last non-empty one. Remote
+ * servers control part of this text, so control characters are replaced. */
+static tix_status child_error(tix_error *err, tix_status code, const char *what, const struct strbuf *e)
+{
+	const char *best = NULL, *last = NULL;
+	size_t best_len = 0, last_len = 0;
+	for (const char *p = e->buf; p < e->buf + e->len;) {
+		const char *nl = memchr(p, '\n', e->buf + e->len - p);
+		size_t n = nl ? (size_t)(nl - p) : strlen(p);
+		if (n && !best && (starts_with(p, "fatal:") || starts_with(p, "error:"))) {
+			best = p;
+			best_len = n;
+		}
+		if (n) {
+			last = p;
+			last_len = n;
+		}
+		p += n + 1;
+	}
+	if (!best) {
+		best = last;
+		best_len = last_len;
+	}
+	struct strbuf clean = STRBUF_INIT;
+	for (size_t i = 0; best && i < best_len && i < 200; i++)
+		strbuf_addch(&clean, (unsigned char)best[i] < 0x20 || best[i] == 0x7f ? '?' : best[i]);
+	tix_status st = tix_error_set(err, code, "git %s failed%s%s", what, clean.len ? ": " : "",
+				      clean.len ? clean.buf : "");
+	strbuf_release(&clean);
+	return st;
+}
+
+/* A child changed refs and objects behind libgit's back: drop its caches. */
+static void forget_caches(void)
+{
+	struct ref_store *refs = the_repository->refs_private;
+	if (refs) {
+		ref_store_release(refs);
+		free(refs);
+		the_repository->refs_private = NULL;
+	}
+	reprepare_packed_git(the_repository);
+}
+
+static tix_status git_remote_fetch(tix_store *s, const char *remote, tix_error *err)
+{
+	struct child_process cp = CHILD_PROCESS_INIT;
+	struct strbuf out = STRBUF_INIT, e = STRBUF_INIT;
+	tix_status st = check_remote(remote, err);
+	if (st)
+		return st;
+	cp.git_cmd = 1; /* the system `git`, same version as libgit.a */
+	cp.no_stdin = 1;
+	/* "--" ends options; the remote name was validated anyway. */
+	strvec_pushl(&cp.args, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
+		     "--no-recurse-submodules", "--prune", "--", remote, NULL);
+	strvec_pushf(&cp.args, "+refs/tix/*:refs/remotes/%s/tix/*", remote);
+	if (pipe_command(&cp, NULL, 0, &out, 0, &e, 0))
+		st = child_error(err, TIX_ERR_IO, "fetch", &e);
+	forget_caches();
+	strbuf_release(&out);
+	strbuf_release(&e);
+	return st;
+}
+
+static tix_status git_remote_push(tix_store *s, const char *remote, const char *const *refs, size_t n,
+				  tix_error *err)
+{
+	struct child_process cp = CHILD_PROCESS_INIT;
+	struct strbuf out = STRBUF_INIT, e = STRBUF_INIT;
+	tix_status st = check_remote(remote, err);
+	if (st)
+		return st;
+	cp.git_cmd = 1;
+	cp.no_stdin = 1;
+	strvec_pushl(&cp.args, "push", "--porcelain", "--no-verify", "--no-recurse-submodules", "--", remote,
+		     NULL);
+	for (size_t i = 0; i < n; i++)
+		strvec_pushf(&cp.args, "%s:%s", refs[i], refs[i]); /* no '+': never forced */
+	int rc = pipe_command(&cp, NULL, 0, &out, 0, &e, 0);
+	/* Porcelain: "<flag>\t<src>:<dst>\t<summary>"; '!' = rejected. A plain
+	 * "[rejected]" means not a fast-forward; "[remote rejected]" is a hook or
+	 * policy refusal, which pulling won't fix. */
+	size_t nonff = 0, refused = 0;
+	for (const char *p = out.buf; p < out.buf + out.len;) {
+		const char *nl = memchr(p, '\n', out.buf + out.len - p);
+		size_t len = nl ? (size_t)(nl - p) : strlen(p);
+		if (len > 2 && p[0] == '!' && p[1] == '\t') {
+			const char *tab = memchr(p + 2, '\t', len - 2);
+			if (tab && starts_with(tab + 1, "[rejected]"))
+				nonff++;
+			else
+				refused++;
+		}
+		p += len + 1;
+	}
+	if (refused)
+		st = child_error(err, TIX_ERR_IO, "push", &e);
+	else if (nonff)
+		st = tix_error_set(err, TIX_ERR_CONFLICT, "%zu ref(s) rejected by %s (not a fast-forward)", nonff,
+				   remote);
+	else if (rc)
+		st = child_error(err, TIX_ERR_IO, "push", &e);
+	forget_caches();
+	strbuf_release(&out);
+	strbuf_release(&e);
+	return st;
+}
+
 static void git_destroy(tix_store *s)
 {
 	free(s);
@@ -303,6 +427,8 @@ static const tix_store_vt git_vt = {
 	.ref_cas = git_ref_cas,
 	.local_get = git_local_get,
 	.local_set = git_local_set,
+	.remote_fetch = git_remote_fetch,
+	.remote_push = git_remote_push,
 	.destroy = git_destroy,
 };
 

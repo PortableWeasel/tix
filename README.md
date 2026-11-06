@@ -2,7 +2,7 @@
 
 A distributed, git-native ticket tracker and project planner (in the spirit of git-bug).
 Tickets, identities, resources and calendars live inside the git repository itself, in
-`refs/tix/*`, and sync with ordinary `git push`/`git fetch`. Planning fields support a
+`refs/tix/*`, and sync through any ordinary git remote (`tix sync`). Planning fields support a
 work breakdown structure, Gantt scheduling and resource assignment.
 
 Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules: [`AGENTS.md`](AGENTS.md).
@@ -16,7 +16,10 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
   identities and tickets), with a randomised multi-clone convergence test.
 - **M2 done**: `store_libgit` (real repos via libgit.a, passing the shared store contract),
   `core` (clock, identity, validated writes with CAS retry, queries) and the `tix` CLI.
-- Next: **M3**: `tix pull` / `push` / `sync` with automatic merges.
+- **M3 done**: `tix pull` / `push` / `sync`: fetch through a child `git`, validate every
+  fetched entity, then create, fast-forward or merge; pushes are never forced. Verified
+  against Forgejo with concurrent edits on two clones.
+- Next: **M4**: planning (WBS, scheduling, resources, calendars, `plan`, `export`).
 
 ## Usage
 
@@ -27,12 +30,12 @@ tix ls                                    # active tickets (--all, --status, --l
 tix show 7a3fe37
 tix comment 7a3fe37 -m "looking into it"
 tix edit 7a3fe37 --status in-progress +p1 -ui
+tix sync                                  # pull + merge + push (origin, or git config tix.remote)
 ```
 
-Also available as `git tix …`. Until M3 adds `tix pull`/`push`, tickets can be moved
-with plain git: `git push origin 'refs/tix/*:refs/tix/*'` and
-`git fetch origin 'refs/tix/*:refs/tix/*'`. This works only while nothing has diverged,
-because plain git can't merge ticket histories.
+Also available as `git tix …`. A plain `git clone` doesn't copy tickets: run `tix pull`
+once. Use `tix pull`/`push`/`sync` rather than raw `git push 'refs/tix/*'`: tix validates
+what it fetches and merges diverged ticket histories, which plain git can't.
 
 ## Build
 

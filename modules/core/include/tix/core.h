@@ -104,6 +104,46 @@ tix_status tix_ticket_list(tix_repo *r, const tix_ticket_query *q, tix_entity_li
 /* All identities, ordered by name, then id. */
 tix_status tix_identity_list(tix_repo *r, tix_entity_list *out, tix_error *err);
 
+/* ---- sync (architecture §6) ------------------------------------------------- */
+
+typedef struct tix_sync_report {
+	size_t created;   /* entities new to this clone */
+	size_t forwarded; /* local ref fast-forwarded to the remote's */
+	size_t merged;    /* diverged histories joined by a merge commit */
+	size_t rejected;  /* remote refs that failed validation (never adopted) */
+	size_t skipped;   /* refs of a type this version doesn't know */
+	size_t pushed;    /* refs sent by the last push */
+	size_t unpushable; /* local refs that failed validation (never pushed) */
+	tix_strs problems; /* one line per rejected/unpushable ref, sorted */
+} tix_sync_report;
+
+void tix_sync_report_free(tix_sync_report *rep);
+
+/*
+ * Fetches `remote` into refs/remotes/<remote>/tix/, validates every fetched
+ * entity, and integrates each valid one into refs/tix/: create, fast-forward,
+ * or a merge commit (header-only pack, authored by the identity if one is set).
+ * Never adopts history that fails validation; never rewrites local history.
+ * The clock is advanced past everything adopted.
+ * REQUIRES rep zero-initialised (counts accumulate across calls).
+ * RETURNS transport errors from the store; a rejected ref is not an error (it is
+ * counted in rep).
+ */
+tix_status tix_pull(tix_repo *r, const char *remote, tix_sync_report *rep, tix_error *err);
+
+/*
+ * Pushes every valid local entity ref that differs from the last-known remote
+ * value (refs/remotes/<remote>/tix/), never forced, then records the pushed
+ * values there. A ref whose last-known remote value is not in its history is
+ * not pushed (reported in rep: pull first; after a pull it means the remote's
+ * history was rejected). RETURNS TIX_ERR_CONFLICT when the remote moved since
+ * the last fetch (pull, then push again).
+ */
+tix_status tix_push(tix_repo *r, const char *remote, tix_sync_report *rep, tix_error *err);
+
+/* pull, then push; on TIX_ERR_CONFLICT pull and push again (up to 3 rounds). */
+tix_status tix_sync(tix_repo *r, const char *remote, tix_sync_report *rep, tix_error *err);
+
 /* ---- conveniences ----------------------------------------------------------- */
 
 tix_status tix_identity_create(tix_repo *r, const char *name, const char *email, tix_oid *out,

@@ -16,11 +16,11 @@ change and say why. Never let the code and the doc drift apart silently.
 
 | Milestone | State |
 |---|---|
-| M0: link `libgit.a`, CAS refs, child-git sync | ✅ done (`spikes/m0/`) |
+| M0: link `libgit.a`, CAS refs, child-git sync | ✅ done (spike removed in M3) |
 | M1: `base`, `model` (entity framework, identity, ticket tracking), `store` port, `store_mem`, convergence tests | ✅ done |
 | M2: `store_libgit`, `core`, CLI basics | ✅ done |
-| M3: pull/merge/push | next |
-| M4: planning (WBS, scheduling, resources, calendars, `plan`, `export`) | |
+| M3: pull/merge/push | ✅ done |
+| M4: planning (WBS, scheduling, resources, calendars, `plan`, `export`) | next |
 | M5: SQLite `index` | |
 
 Work on the current milestone unless asked otherwise. Don't build ahead into later
@@ -37,7 +37,7 @@ modules/<name>/         libraries: include/tix/<name>*.h, src/, tests/
                         base, store, store_mem, model, core, store_libgit;
                         testkit, sim, store_contract are test-only
 apps/cli/               the `tix` / `git-tix` frontend; tests/cli.sh is the end-to-end test
-spikes/                 throwaway proofs; deleted once the real module exists
+spikes/                 throwaway proofs, deleted once the real module exists (none now)
 third_party/git/        git.git submodule, pinned at v2.47.3 (do not edit)
 docs/architecture.md    the design
 ```
@@ -107,11 +107,16 @@ cmake --preset release && cmake --build --preset release
   `strbuf`/`xsnprintf`.
 - A program linking libgit must provide `common_exit()` and initialise with
   `sanitize_stdfds(); initialize_repository(the_repository); setup_git_directory();
-  git_config(git_default_config, NULL);` (see `spikes/m0/m0.c`).
+  git_config(git_default_config, NULL);` (see `tix_store_libgit_open`).
+- After a child `git` has changed refs or objects, drop libgit's caches (the adapter's
+  `forget_caches()`: release the main ref store, `reprepare_packed_git`). The files
+  backend caches loose refs for iteration and would otherwise list stale values.
 - Ref updates go through `ref_store_transaction_*` with an explicit old oid (CAS). A null
   old oid means "must not exist". Never update `refs/tix/*` without CAS.
 - **Network is always a child `git` process** (`child_process` with `git_cmd = 1`), with
-  argv only, never a shell. Capture stderr into `tix_error`.
+  argv only, never a shell, `--` before the remote, and only *configured* remote names
+  (`tix_remote_name_valid`, then `remote_is_configured`), never URLs or paths. Capture
+  stderr into `tix_error` with control characters replaced (servers write part of it).
 - git's library calls `die()` freely, which exits the process. Keep such calls on paths
   where exiting is acceptable, and prefer the `*_gently` / error-returning variants where
   they exist.
@@ -128,8 +133,10 @@ cmake --preset release && cmake --build --preset release
   existing op's fields is a format change (new op name or header `tix` version).
 - NDJSON: UTF-8, LF, final newline, header line first, keys in schema order.
 - **Everything fetched from a remote is hostile until `model` has validated it**: size
-  limits, strict schema, author rules. A malformed pack rejects the whole incoming ref
-  update and never crashes.
+  limits, strict schema, author rules, root = id in the ref name. A malformed pack rejects
+  the whole incoming ref update and never crashes. Fetches land only in
+  `refs/remotes/<remote>/tix/`; `refs/tix/` changes only by create, fast-forward or merge
+  (core `tix_pull`). Local refs that don't validate are never pushed.
 - Unknown op types are preserved and ignored, for forward compatibility.
 - WBS codes and summary rollups are derived, never stored.
 
@@ -148,6 +155,10 @@ cmake --preset release && cmake --build --preset release
   round trip, a corrupt ref). Extend it with every new command or flag.
 - **Convergence tests**: for any op set, every merge order and DAG shape must produce a
   byte-identical snapshot. New merge semantics need a convergence case.
+- Sync is tested three ways: `core` tests on store_mem clones sharing a store_mem
+  "server" (incl. hostile refs and a randomised convergence run), the store contract's
+  network half (`tix_store_contract_run_remote`, against an empty bare peer), and
+  `cli.sh` with real bare remotes.
 - `store_libgit` tests use throwaway repos in `mktemp -d` with `GIT_CONFIG_GLOBAL=/dev/null`
   and `GIT_CONFIG_NOSYSTEM=1`. Never touch this repository's own refs from a test.
 - Test names: `tests/<name>.c` in a module becomes CTest `<module>.<name>`.

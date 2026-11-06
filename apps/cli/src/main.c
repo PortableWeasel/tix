@@ -22,6 +22,11 @@ static const char usage_text[] =
 	"  comment ID [-m TEXT] [--edit COMMENT-ID]\n"
 	"  edit ID [--title T] [--body B] [--status S] [+LABEL]... [-LABEL]...\n"
 	"\n"
+	"sync (REMOTE defaults to git config tix.remote, else origin)\n"
+	"  pull [REMOTE]    fetch, validate and merge the remote's tickets and identities\n"
+	"  push [REMOTE]    send yours (never forced)\n"
+	"  sync [REMOTE]    pull, then push; repeats if the remote moved meanwhile\n"
+	"\n"
 	"statuses: open, in-progress, blocked, done, cancelled\n";
 
 int cli_fail(cli *c, tix_status st)
@@ -121,7 +126,8 @@ int main(int argc, char **argv)
 		int (*fn)(cli *, int, char **);
 	} cmds[] = {
 		{"id", cmd_id}, {"new", cmd_new}, {"ls", cmd_ls}, {"show", cmd_show},
-		{"comment", cmd_comment}, {"edit", cmd_edit},
+		{"comment", cmd_comment}, {"edit", cmd_edit}, {"pull", cmd_pull},
+		{"push", cmd_push}, {"sync", cmd_sync},
 	};
 	int (*fn)(cli *, int, char **) = NULL;
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(*cmds); i++)

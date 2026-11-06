@@ -11,4 +11,11 @@
 /* Runs every contract case on s, reporting through testkit. */
 void tix_store_contract_run(tix_store *s);
 
+/*
+ * The network half of the contract: fetch and push against `remote`, which the
+ * harness has configured on s and which must start with no refs/tix/contract-sync/
+ * refs (an empty bare repository is ideal). Uses refs/tix/contract-sync/x.
+ */
+void tix_store_contract_run_remote(tix_store *s, const char *remote);
+
 #endif

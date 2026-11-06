@@ -50,7 +50,7 @@ processes or a terminal is an adapter behind a vtable interface.
 | `base` | — | `tix_status`/`tix_error`, `TIX_REQUIRE`, `tix_x*` allocators, `TIX_VEC`, sorted string sets, `tix_buf`, `tix_oid` (opaque bytes + algo), canonical JSON writer, strict UTF-8 check. `tix_date` and durations arrive with M4 |
 | `model` | base (+ cJSON, private) | Generic **entity framework** (DAG of op-packs, Lamport ordering, replay) plus the entity types: identity, ticket (M1), resource, calendar (M4). Op schemas, canonical codec, validation, merge rules. cJSON is used only to *parse*, inside `src/` |
 | `plan` | base, model | Pure scheduling: WBS tree, rollups, working-day calendars, CPM (critical path method), critical path, resource load / over-allocation |
-| `store` | base | `tix_store` vtable: op-pack commit write/read (the adapter owns the one-blob tree layout), ref read / list-by-prefix / compare-and-swap (CAS) update. Fetch/push are added in M3 |
+| `store` | base | `tix_store` vtable: op-pack commit write/read (the adapter owns the one-blob tree layout), ref read / list-by-prefix / compare-and-swap (CAS) update, per-clone local state, and (M3) `remote_fetch` / `remote_push` to a configured remote |
 | `index` | base, model | `tix_index` vtable: snapshot cache keyed by (entity id, head oid), queries |
 | `core` | base, model, plan, store, index | The public API frontends use |
 | `export` | base, model, plan | Render a computed plan to Mermaid gantt, CSV, JSON. No I/O: writes into a `tix_buf` |
@@ -268,27 +268,55 @@ per-resource daily load, diagnostics).
 ❓ Baselines (named snapshots of planned dates for planned-vs-actual Gantt bars) come later.
 They can be stored as a `baseline` op-pack on the root ticket.
 
-## 6. Sync ✅ via `git` subprocess
+## 6. Sync ✅ via `git` subprocess (M3 ✅)
 
 ```
-pull:  git fetch <remote> +refs/tix/*:refs/remotes/<remote>/tix/*
-       for each entity ref fetched:
-         validate every new op-pack (schema, sizes, author rules)
-         local missing     → create local ref
-         remote ⊆ local    → nothing
-         local ⊆ remote    → fast-forward (CAS)
-         diverged          → merge commit with both parents (header-only pack)
-       advance the Lamport clock
-push:  git push <remote> refs/tix/*:refs/tix/*     (never forced)
-       rejected → pull, retry
+pull:  git fetch --prune -- <remote> +refs/tix/*:refs/remotes/<remote>/tix/*
+       for each fetched ref of a known type (identities first, then tickets):
+         replay the remote history: schema, sizes, author rules, root == id in name
+           invalid           → rejected: reported, never adopted
+         local missing       → create local ref (CAS, old = none)
+         remote ⊆ local      → nothing (we are ahead)
+         local ⊆ remote      → fast-forward (CAS)
+         diverged            → merge commit, parents (local, remote), header-only pack,
+                               authored by the identity (or null); the union is replayed
+                               again before the CAS (limits apply to the merged entity)
+       advance and save the Lamport clock
+push:  every valid local entity ref that differs from refs/remotes/<remote>/tix/…
+       git push --porcelain -- <remote> <ref>:<ref>…     (never '+', never forced)
+       then record the pushed values in refs/remotes/<remote>/tix/…
+       "[rejected]" → CONFLICT (pull, retry); "[remote rejected]" (hook/policy) → error
+sync:  pull, push; on CONFLICT pull + push again (3 rounds at most)
 ```
 
 - Object and ref access run in-process through libgit.a. Network goes through a child `git`
   process (the same binary version as the pinned library). Credential helpers, ssh config and
   remote helpers then behave exactly as the user expects, and a transport `die()` can't take
   down tix.
-- The child is spawned with argv directly, never through a shell. Its stderr is captured into
-  `tix_error`.
+- The child is spawned with argv directly, never through a shell, with `--` before the
+  remote. Only **configured remote names** are accepted (`[A-Za-z0-9._-]`, not starting
+  with `-` or `.`); URLs and paths are refused. Its stderr is captured into `tix_error`,
+  with control characters replaced because the server writes part of it.
+- Fetch also passes `--no-tags --no-write-fetch-head --no-recurse-submodules`: it touches
+  nothing but the tix mirror namespace. Push passes `--no-verify`.
+- After the child returns, store_libgit drops libgit's ref store and re-scans packs, since
+  the files backend caches loose refs for iteration.
+- Pushes are **not atomic**: refs that fast-forward land even when others are rejected.
+  That is safe (each ref is independent) and means progress under contention.
+- A local ref whose last-known remote value isn't in its history is not pushed. Right after a
+  pull that only happens when the remote's history was rejected, so `sync` reports it
+  instead of looping. Local refs that don't validate are never pushed either.
+- A remote ref of an unknown type (`refs/tix/<newer kind>/…`) is counted and ignored. That's
+  forward compatibility, the same as unknown ops.
+- Merge commits differ per clone (time, author, Lamport value), so two clones that merge the
+  same pair produce two merges that a later sync joins with a third. That is harmless: merge
+  packs carry no ops, and snapshots are identical.
+- Known limit: a remote branch literally named `tix` would make git's own default refspec
+  map it to `refs/remotes/<remote>/tix`, which collides with the mirror namespace (a
+  directory/file conflict). git then refuses one of the two fetches; tix reports git's error.
+- Verified on 2026-11-06 against Forgejo (a private throwaway repo over ssh): two clones,
+  concurrent edits, push refused, `sync` merged, both clones show identical tickets, and
+  `fsck --strict` is clean. Forgejo stores and serves `refs/tix/*` unmodified.
 
 ## 7. Linking git.git (`libgit.a`, v2.47.3)
 
@@ -317,8 +345,9 @@ git.git ships no supported library. Its Makefile builds `libgit.a`, `xdiff/lib.a
   `ref_store_transaction_begin` / `ref_transaction_update(old_oid)` / `_commit` for CAS
   (null old oid = must not exist), `get_tree_entry`, `repo_read_object_file`,
   `run_command` with `git_cmd = 1` for fetch/push.
-- Verified by `spikes/m0/roundtrip.sh`: CAS refusal, `fsck --strict` clean, two-clone round
-  trip through a bare remote, and a **SHA-256 + reftable** repo.
+- Verified by the M0 spike (removed in M3, once `store_libgit` and `tix sync` covered the
+  same ground): CAS refusal, `fsck --strict` clean, two-clone round trip through a bare
+  remote, and a **SHA-256 + reftable** repo.
 
 ## 8. Core API (`tix/core.h`, M2 ✅)
 
@@ -338,7 +367,16 @@ tix_status tix_entity_apply  (tix_repo *, tix_entity_type, const tix_oid *id, co
 
 tix_status tix_ticket_list  (tix_repo *, const tix_ticket_query *q, tix_entity_list *out, tix_error *);
 tix_status tix_identity_list(tix_repo *, tix_entity_list *out, tix_error *);
+
+/* M3 */
+tix_status tix_pull(tix_repo *, const char *remote, tix_sync_report *rep, tix_error *);
+tix_status tix_push(tix_repo *, const char *remote, tix_sync_report *rep, tix_error *);
+tix_status tix_sync(tix_repo *, const char *remote, tix_sync_report *rep, tix_error *);
 ```
+
+`tix_sync_report` counts created / forwarded / merged / rejected / skipped / pushed /
+unpushable refs and carries one problem line per rejected or unpushable ref. A rejected
+ref is not an error status: the rest of the sync still happens.
 
 - **Inputs from outside**: the clock (`now`), randomness (create-op nonces) and the chosen
   identity all come in through `tix_repo_config`. Core never reads env, time or config itself.
@@ -358,7 +396,9 @@ tix_status tix_identity_list(tix_repo *, tix_entity_list *out, tix_error *);
 ## 9. CLI v1
 
 M2 ✅ implements `id`, `new`, `ls`, `show`, `comment` (incl. `--edit COMMENT-ID`) and `edit`.
-The rest arrives with M3 (sync) and M4 (planning). `$EDITOR` resolution: `TIX_EDITOR`, then
+M3 ✅ adds `pull`, `push` and `sync` (default remote: git config
+`tix.remote`, else `origin`; any rejected or unpushable ref is a warning and exit 1). The
+rest arrives with M4 (planning). `$EDITOR` resolution: `TIX_EDITOR`, then
 `core.editor`, then `VISUAL`, then `EDITOR`, then `vi`. Lines starting with `#` are dropped. Exit codes: 0 ok, 1 error, 2 usage.
 
 ```
@@ -402,7 +442,7 @@ Also installed as `git-tix`, so `git tix …` works.
 2. ✅ **M1 domain** (done 2026-11-06): `base`, `model` entity framework + identity/ticket (tracking fields),
    `store_mem`, convergence tests.
 3. ✅ **M2 core + CLI** (done 2026-11-06): `store_libgit`, `core`, `tix id/new/ls/show/comment/edit`.
-4. **M3 sync**: pull/merge/push against Forgejo.
+4. ✅ **M3 sync** (done 2026-11-06): pull/merge/push against Forgejo; M0 spike removed.
 5. **M4 planning**: WBS/scheduling/assignment fields, resource and calendar entities, `plan`,
    `tix wbs/plan/assign/res/cal`, `export`.
 6. **M5 index**: SQLite cache and queries.

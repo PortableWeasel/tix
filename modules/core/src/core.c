@@ -1,17 +1,8 @@
-#include "tix/core.h"
+#include "core_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define CAS_ATTEMPTS 5
-
-struct tix_repo {
-	tix_store *store;
-	tix_env env;
-	tix_oid identity;
-	uint64_t clock;
-};
 
 /* ---- clock --------------------------------------------------------------- */
 
@@ -38,26 +29,20 @@ static tix_status clock_load(tix_repo *r, tix_error *err)
 	return st;
 }
 
-static tix_status clock_save(tix_repo *r, tix_error *err)
+tix_status core_clock_save(tix_repo *r, tix_error *err)
 {
 	char s[32];
 	int n = snprintf(s, sizeof(s), "%llu\n", (unsigned long long)r->clock);
 	return tix_store_local_set(r->store, "clock", s, (size_t)n, err);
 }
 
-static void clock_see(tix_repo *r, uint64_t lamport)
+void core_clock_see(tix_repo *r, uint64_t lamport)
 {
 	if (lamport > r->clock)
 		r->clock = lamport;
 }
 
 /* ---- DAG loading ----------------------------------------------------------- */
-
-typedef struct oidset {
-	tix_oid *slots;
-	bool *used;
-	size_t cap, n;
-} oidset;
 
 static size_t oid_hash(const tix_oid *o, size_t cap)
 {
@@ -66,16 +51,16 @@ static size_t oid_hash(const tix_oid *o, size_t cap)
 	return (size_t)(h & (cap - 1));
 }
 
-static bool oidset_add(oidset *s, const tix_oid *o) /* RETURNS false if present */
+bool core_oidset_add(core_oidset *s, const tix_oid *o)
 {
 	if ((s->n + 1) * 2 > s->cap) {
-		oidset bigger = {0};
+		core_oidset bigger = {0};
 		bigger.cap = s->cap ? s->cap * 2 : 64;
 		bigger.slots = tix_xcalloc(bigger.cap, sizeof(tix_oid));
 		bigger.used = tix_xcalloc(bigger.cap, sizeof(bool));
 		for (size_t i = 0; i < s->cap; i++)
 			if (s->used[i])
-				oidset_add(&bigger, &s->slots[i]);
+				core_oidset_add(&bigger, &s->slots[i]);
 		free(s->slots);
 		free(s->used);
 		*s = bigger;
@@ -92,33 +77,40 @@ static bool oidset_add(oidset *s, const tix_oid *o) /* RETURNS false if present 
 	}
 }
 
-static void oidset_free(oidset *s)
+void core_oidset_free(core_oidset *s)
 {
 	free(s->slots);
 	free(s->used);
+	memset(s, 0, sizeof(*s));
 }
 
-typedef struct dag {
-	TIX_VEC(tix_commit) commits;
-} dag;
+bool core_oidset_has(const core_oidset *s, const tix_oid *o)
+{
+	if (!s->cap)
+		return false;
+	for (size_t i = oid_hash(o, s->cap); s->used[i]; i = (i + 1) & (s->cap - 1))
+		if (tix_oid_eq(&s->slots[i], o))
+			return true;
+	return false;
+}
 
-static void dag_free(dag *d)
+void core_dag_free(core_dag *d)
 {
 	for (size_t i = 0; i < d->commits.n; i++)
 		tix_commit_free(&d->commits.v[i]);
 	free(d->commits.v);
 }
 
-static tix_status dag_load(tix_repo *r, const tix_oid *head, dag *d, tix_error *err)
+tix_status core_dag_load(tix_repo *r, const tix_oid *head, core_dag *d, tix_error *err)
 {
 	TIX_VEC(tix_oid) todo = {0};
-	oidset seen = {0};
+	core_oidset seen = {0};
 	tix_status st = TIX_OK;
 	memset(d, 0, sizeof(*d));
 	TIX_VEC_PUSH(&todo, *head);
 	while (todo.n && !st) {
 		tix_oid o = todo.v[--todo.n];
-		if (!oidset_add(&seen, &o))
+		if (!core_oidset_add(&seen, &o))
 			continue;
 		if (seen.n > TIX_ENTITY_MAX_COMMITS) {
 			st = tix_error_set(err, TIX_ERR_INVALID, "entity exceeds %d commits", TIX_ENTITY_MAX_COMMITS);
@@ -135,16 +127,16 @@ static tix_status dag_load(tix_repo *r, const tix_oid *head, dag *d, tix_error *
 		TIX_VEC_PUSH(&d->commits, c);
 	}
 	free(todo.v);
-	oidset_free(&seen);
+	core_oidset_free(&seen);
 	if (st)
-		dag_free(d);
+		core_dag_free(d);
 	return st;
 }
 
-static tix_status load_at(tix_repo *r, tix_entity_type t, const tix_oid *head, tix_entity **out, tix_error *err)
+tix_status core_load_at(tix_repo *r, tix_entity_type t, const tix_oid *head, tix_entity **out, tix_error *err)
 {
-	dag d;
-	tix_status st = dag_load(r, head, &d, err);
+	core_dag d;
+	tix_status st = core_dag_load(r, head, &d, err);
 	if (st)
 		return st;
 	tix_dag_node *nodes = tix_xcalloc(d.commits.n, sizeof(*nodes));
@@ -154,13 +146,13 @@ static tix_status load_at(tix_repo *r, tix_entity_type t, const tix_oid *head, t
 	}
 	st = tix_replay(t, nodes, d.commits.n, out, err);
 	free(nodes);
-	dag_free(&d);
+	core_dag_free(&d);
 	if (!st)
-		clock_see(r, (*out)->max_lamport);
+		core_clock_see(r, (*out)->max_lamport);
 	return st;
 }
 
-static void ref_of(tix_entity_type t, const tix_oid *id, char *out, size_t n)
+void core_ref_of(tix_entity_type t, const tix_oid *id, char *out, size_t n)
 {
 	char hex[TIX_OID_MAX_HEX + 1];
 	snprintf(out, n, "%s%s", tix_entity_ref_prefix(t), tix_oid_hex(id, hex));
@@ -256,11 +248,11 @@ tix_status tix_entity_load(tix_repo *r, tix_entity_type t, const tix_oid *id, ti
 	char ref[128];
 	tix_oid head;
 	*out = NULL;
-	ref_of(t, id, ref, sizeof(ref));
+	core_ref_of(t, id, ref, sizeof(ref));
 	tix_status st = tix_store_ref_read(r->store, ref, &head, err);
 	if (st)
 		return st;
-	if ((st = load_at(r, t, &head, out, err)))
+	if ((st = core_load_at(r, t, &head, out, err)))
 		return st;
 	if (!tix_oid_eq(&(*out)->id, id)) { /* ref name must match its root */
 		tix_entity_free(*out);
@@ -282,9 +274,9 @@ static void summary(tix_entity_type t, const tix_op *ops, size_t n, char *out, s
 		used += (size_t)snprintf(out + used, cap - used, " %s", tix_op_name(ops[i].kind));
 }
 
-/* Encodes and commits one pack. ENSURES on TIX_OK: clock advanced to lamport. */
-static tix_status write_pack(tix_repo *r, tix_entity_type t, const tix_oid *author, const tix_oid *parent,
-			     const tix_op *ops, size_t n, tix_oid *out, uint64_t *lamport, tix_error *err)
+tix_status core_write_pack(tix_repo *r, tix_entity_type t, const tix_oid *author, const tix_oid *parents,
+			   size_t nparents, const tix_op *ops, size_t n, tix_oid *out, uint64_t *lamport,
+			   tix_error *err)
 {
 	tix_pack p = {t, {0}, r->clock + 1, r->env.now(r->env.ctx), (tix_op *)ops, n};
 	char msg[256];
@@ -293,10 +285,13 @@ static tix_status write_pack(tix_repo *r, tix_entity_type t, const tix_oid *auth
 		p.author = *author;
 	if (p.time < 0)
 		p.time = 0;
-	summary(t, ops, n, msg, sizeof(msg));
+	if (n)
+		summary(t, ops, n, msg, sizeof(msg));
+	else
+		snprintf(msg, sizeof(msg), "tix %s: merge", tix_entity_type_name(t));
 	tix_status st = tix_pack_encode(&p, &b, err);
 	if (!st)
-		st = tix_store_commit_write(r->store, parent, parent ? 1 : 0, b.data, b.len, msg, out, err);
+		st = tix_store_commit_write(r->store, parents, nparents, b.data, b.len, msg, out, err);
 	tix_buf_free(&b);
 	*lamport = p.lamport;
 	return st;
@@ -337,14 +332,14 @@ tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t
 
 	uint64_t lamport;
 	char ref[128];
-	tix_status st = write_pack(r, t, author, NULL, ops, n, out, &lamport, err);
+	tix_status st = core_write_pack(r, t, author, NULL, 0, ops, n, out, &lamport, err);
 	if (st)
 		return st;
-	ref_of(t, out, ref, sizeof(ref));
+	core_ref_of(t, out, ref, sizeof(ref));
 	if ((st = tix_store_ref_cas(r->store, ref, NULL, out, err)))
 		return st;
-	clock_see(r, lamport);
-	return clock_save(r, err);
+	core_clock_see(r, lamport);
+	return core_clock_save(r, err);
 }
 
 static tix_status precheck(const tix_repo *r, const tix_entity *e, const tix_op *ops, size_t n, tix_error *err);
@@ -363,26 +358,26 @@ tix_status tix_entity_apply(tix_repo *r, tix_entity_type t, const tix_oid *id, c
 		return tix_error_set(err, TIX_ERR_INVALID, "you can only edit your own identity");
 
 	char ref[128];
-	ref_of(t, id, ref, sizeof(ref));
+	core_ref_of(t, id, ref, sizeof(ref));
 	tix_status st = TIX_ERR_CONFLICT;
-	for (int attempt = 0; attempt < CAS_ATTEMPTS && st == TIX_ERR_CONFLICT; attempt++) {
+	for (int attempt = 0; attempt < CORE_CAS_ATTEMPTS && st == TIX_ERR_CONFLICT; attempt++) {
 		tix_oid head, commit;
 		tix_entity *e;
 		uint64_t lamport;
 		if ((st = tix_store_ref_read(r->store, ref, &head, err)))
 			return st;
-		if ((st = load_at(r, t, &head, &e, err)))
+		if ((st = core_load_at(r, t, &head, &e, err)))
 			return st; /* never build on history that doesn't validate */
 		st = precheck(r, e, ops, n, err);
 		tix_entity_free(e);
 		if (st)
 			return st;
-		if ((st = write_pack(r, t, &r->identity, &head, ops, n, &commit, &lamport, err)))
+		if ((st = core_write_pack(r, t, &r->identity, &head, 1, ops, n, &commit, &lamport, err)))
 			return st;
 		st = tix_store_ref_cas(r->store, ref, &head, &commit, err);
 		if (!st) {
-			clock_see(r, lamport);
-			return clock_save(r, err);
+			core_clock_see(r, lamport);
+			return core_clock_save(r, err);
 		}
 	}
 	return st;

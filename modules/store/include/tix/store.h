@@ -56,6 +56,9 @@ typedef struct tix_store_vt {
 	tix_status (*local_get)(tix_store *s, const char *name, tix_buf *out, tix_error *err);
 	tix_status (*local_set)(tix_store *s, const char *name, const char *data, size_t len,
 				tix_error *err);
+	tix_status (*remote_fetch)(tix_store *s, const char *remote, tix_error *err);
+	tix_status (*remote_push)(tix_store *s, const char *remote, const char *const *refs, size_t n,
+				  tix_error *err);
 	void (*destroy)(tix_store *s);
 } tix_store_vt;
 
@@ -70,6 +73,10 @@ struct tix_store {
 
 /* RETURNS true for local-state names: 1-32 chars of [a-z0-9-]. */
 bool tix_local_name_valid(const char *name);
+
+/* RETURNS true for remote names tix accepts: 1-64 chars of [A-Za-z0-9._-], not
+ * starting with '-' or '.', no "..", not ending in ".lock". Never a URL or path. */
+bool tix_remote_name_valid(const char *name);
 
 /* RETURNS true for "refs/..." names made of [A-Za-z0-9._-] components, no "..",
  * no component starting with '.', none ending in ".lock", total length <= 255. */
@@ -148,6 +155,44 @@ static inline tix_status tix_store_local_set(tix_store *s, const char *name, con
 {
 	TIX_REQUIRE(s && name && (data || !len) && tix_local_name_valid(name));
 	return s->vt->local_set(s, name, data, len, err);
+}
+
+/*
+ * Network (architecture §6). Both talk to a *configured* remote by name.
+ *
+ * remote_fetch mirrors the remote's refs/tix/(all) into refs/remotes/<remote>/tix/(all)
+ * (forced: that namespace is a mirror, never written by tix otherwise; refs gone
+ * from the remote are pruned). It never touches refs/tix/(all). Fetched data is
+ * untrusted: the caller validates before adopting anything.
+ * RETURNS TIX_ERR_INVALID (bad name), TIX_ERR_NOT_FOUND (no such remote),
+ * TIX_ERR_IO (transport failure; err carries the transport's message).
+ */
+static inline tix_status tix_store_remote_fetch(tix_store *s, const char *remote, tix_error *err)
+{
+	TIX_REQUIRE(s && remote);
+	if (!tix_remote_name_valid(remote))
+		return tix_error_set(err, TIX_ERR_INVALID, "bad remote name '%s'", remote);
+	return s->vt->remote_fetch(s, remote, err);
+}
+
+/*
+ * Pushes each local ref in refs[] to the same name on the remote, never forced.
+ * Not atomic: refs that fast-forward are updated even if others are rejected.
+ * REQUIRES: every refs[i] is a valid ref name that exists locally.
+ * RETURNS TIX_OK when every ref was updated or already up to date;
+ * TIX_ERR_CONFLICT when at least one was rejected as not a fast-forward (the
+ * caller should pull and retry); TIX_ERR_INVALID / NOT_FOUND / IO as for fetch.
+ * n == 0 is a no-op.
+ */
+static inline tix_status tix_store_remote_push(tix_store *s, const char *remote, const char *const *refs,
+					       size_t n, tix_error *err)
+{
+	TIX_REQUIRE(s && remote && (refs || !n));
+	if (!tix_remote_name_valid(remote))
+		return tix_error_set(err, TIX_ERR_INVALID, "bad remote name '%s'", remote);
+	for (size_t i = 0; i < n; i++)
+		TIX_REQUIRE(tix_refname_valid(refs[i]));
+	return n ? s->vt->remote_push(s, remote, refs, n, err) : TIX_OK;
 }
 
 static inline void tix_store_destroy(tix_store *s)
