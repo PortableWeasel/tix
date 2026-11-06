@@ -20,8 +20,12 @@ pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET libcjson)
 add_subdirectory(modules/base)
 add_subdirectory(modules/testkit)    # test support only
 add_subdirectory(modules/store)
+add_subdirectory(modules/store_contract)  # test support only
 add_subdirectory(modules/store_mem)
 add_subdirectory(modules/model)
 add_subdirectory(modules/sim)        # test support only
+add_subdirectory(modules/core)
+add_subdirectory(modules/store_libgit)
 
+add_subdirectory(apps/cli)
 add_subdirectory(spikes)

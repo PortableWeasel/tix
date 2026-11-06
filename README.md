@@ -14,7 +14,25 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
 - **M1 done**: `base`, `store` port, `store_mem`, `model` (canonical NDJSON op-pack codec,
   DAG validation, Lamport ordering, LWW / observed-remove / comment merge rules for
   identities and tickets), with a randomised multi-clone convergence test.
-- Next: **M2**: `store_libgit`, `core`, CLI basics.
+- **M2 done**: `store_libgit` (real repos via libgit.a, passing the shared store contract),
+  `core` (clock, identity, validated writes with CAS retry, queries) and the `tix` CLI.
+- Next: **M3**: `tix pull` / `push` / `sync` with automatic merges.
+
+## Usage
+
+```bash
+tix id new                                # identity from git config user.name/email
+tix new -t "Crash on save" -l bug         # or just `tix new` to use $EDITOR
+tix ls                                    # active tickets (--all, --status, --label, --author)
+tix show 7a3fe37
+tix comment 7a3fe37 -m "looking into it"
+tix edit 7a3fe37 --status in-progress +p1 -ui
+```
+
+Also available as `git tix …`. Until M3 adds `tix pull`/`push`, tickets can be moved
+with plain git: `git push origin 'refs/tix/*:refs/tix/*'` and
+`git fetch origin 'refs/tix/*:refs/tix/*'`. This works only while nothing has diverged,
+because plain git can't merge ticket histories.
 
 ## Build
 
@@ -22,6 +40,7 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
 git clone --recurse-submodules git@git.spacegoose.org:spacegoose/tix.git
 cd tix
 cmake --preset dev && cmake --build --preset dev && ctest --preset dev
+cmake --preset release && cmake --build --preset release   # build/release/apps/cli/tix
 ```
 
 Needs: CMake ≥ 3.28, Ninja, GCC/Clang (C17), GNU make, zlib headers.

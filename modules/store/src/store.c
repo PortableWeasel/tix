@@ -52,3 +52,14 @@ bool tix_refname_valid(const char *name)
 		p = slash + 1;
 	}
 }
+
+bool tix_local_name_valid(const char *name)
+{
+	size_t n = strlen(name);
+	if (n < 1 || n > 32)
+		return false;
+	for (; *name; name++)
+		if (!((*name >= 'a' && *name <= 'z') || (*name >= '0' && *name <= '9') || *name == '-'))
+			return false;
+	return true;
+}

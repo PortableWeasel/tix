@@ -320,32 +320,46 @@ git.git ships no supported library. Its Makefile builds `libgit.a`, `xdiff/lib.a
 - Verified by `spikes/m0/roundtrip.sh`: CAS refusal, `fsck --strict` clean, two-clone round
   trip through a bare remote, and a **SHA-256 + reftable** repo.
 
-## 8. Core API sketch
+## 8. Core API (`tix/core.h`, M2 ✅)
+
+The full contract lives in the header. In outline:
 
 ```c
-typedef struct tix_repo tix_repo;                 /* store + index + clock + identity */
+typedef struct tix_env { int64_t (*now)(void *); void (*random)(void *, uint8_t *, size_t); void *ctx; } tix_env;
+typedef struct tix_repo_config { tix_store *store; tix_env env; tix_oid identity; } tix_repo_config;
 
 tix_status tix_repo_open(tix_repo **out, const tix_repo_config *cfg, tix_error *err);
-void       tix_repo_close(tix_repo *);
+tix_status tix_repo_set_identity(tix_repo *, const tix_oid *id, tix_error *);   /* in memory */
 
-/* generic over entity types: TIX_IDENTITY, TIX_TICKET, TIX_RESOURCE, TIX_CALENDAR */
-tix_status tix_entity_create (tix_repo *, tix_type, const tix_op *ops, size_t n, tix_id *out, tix_error *);
-tix_status tix_entity_apply  (tix_repo *, tix_type, const tix_id *, const tix_op *ops, size_t n, tix_error *);
-tix_status tix_entity_resolve(tix_repo *, tix_type, const char *prefix, tix_id *out, tix_error *);
+tix_status tix_entity_resolve(tix_repo *, tix_entity_type, const char *prefix, tix_oid *out, tix_error *);
+tix_status tix_entity_load   (tix_repo *, tix_entity_type, const tix_oid *id, tix_entity **out, tix_error *);
+tix_status tix_entity_create (tix_repo *, tix_entity_type, tix_op *ops, size_t n, tix_oid *out, tix_error *);
+tix_status tix_entity_apply  (tix_repo *, tix_entity_type, const tix_oid *id, const tix_op *ops, size_t n, tix_error *);
 
-/* typed read models: plain data, no oids or JSON */
-tix_status tix_ticket_load  (tix_repo *, const tix_id *, tix_ticket **out, tix_error *);
-tix_status tix_resource_load(tix_repo *, const tix_id *, tix_resource **out, tix_error *);
-tix_status tix_list(tix_repo *, const tix_query *, tix_ticket_iter **out, tix_error *);
-
-tix_status tix_plan_compute(tix_repo *, const tix_id *root, tix_date today,
-                            tix_schedule **out, tix_error *);
-
-tix_status tix_sync_pull(tix_repo *, const char *remote, tix_sync_report *out, tix_error *);
-tix_status tix_sync_push(tix_repo *, const char *remote, tix_sync_report *out, tix_error *);
+tix_status tix_ticket_list  (tix_repo *, const tix_ticket_query *q, tix_entity_list *out, tix_error *);
+tix_status tix_identity_list(tix_repo *, tix_entity_list *out, tix_error *);
 ```
 
+- **Inputs from outside**: the clock (`now`), randomness (create-op nonces) and the chosen
+  identity all come in through `tix_repo_config`. Core never reads env, time or config itself.
+- **Local state** goes through the store port (`local_get`/`local_set`). The Lamport clock is
+  `$GIT_DIR/tix/clock` in store_libgit, written under git's lockfile.
+- **Identity choice** is git config `tix.identity`. The frontend reads and writes it through
+  `tix_store_libgit_config_get/_set` and hands it to core.
+- **Writes** validate the current history first (never build on invalid data), write one pack
+  with lamport = clock + 1, and CAS the ref. A lost CAS is retried, up to 5 attempts.
+- **Up-front rule checks** for things model would silently ignore: editing another
+  identity, or editing a comment that isn't yours or doesn't exist.
+- **Listing** loads every entity (O(all commits) until the M5 index). Refs that fail
+  validation are skipped and counted (`nbroken`), never fatal. A ref whose history has a
+  different root than its name is invalid.
+- **Read models** are model's `tix_entity` (plain data). `TIX_ID_MIN_PREFIX` = 7.
+
 ## 9. CLI v1
+
+M2 ✅ implements `id`, `new`, `ls`, `show`, `comment` (incl. `--edit COMMENT-ID`) and `edit`.
+The rest arrives with M3 (sync) and M4 (planning). `$EDITOR` resolution: `TIX_EDITOR`, then
+`core.editor`, then `VISUAL`, then `EDITOR`, then `vi`. Lines starting with `#` are dropped. Exit codes: 0 ok, 1 error, 2 usage.
 
 ```
 tix id    new | ls | show <id> | use <id> | edit <id> [--name] [--email] [+key/-key]
@@ -387,7 +401,7 @@ Also installed as `git-tix`, so `git tix …` works.
    CAS `refs/tix/test`, `git fetch/push` subprocess round trip.
 2. ✅ **M1 domain** (done 2026-11-06): `base`, `model` entity framework + identity/ticket (tracking fields),
    `store_mem`, convergence tests.
-3. **M2 core + CLI**: `store_libgit`, `core`, `tix id/new/ls/show/comment/edit`.
+3. ✅ **M2 core + CLI** (done 2026-11-06): `store_libgit`, `core`, `tix id/new/ls/show/comment/edit`.
 4. **M3 sync**: pull/merge/push against Forgejo.
 5. **M4 planning**: WBS/scheduling/assignment fields, resource and calendar entities, `plan`,
    `tix wbs/plan/assign/res/cal`, `export`.

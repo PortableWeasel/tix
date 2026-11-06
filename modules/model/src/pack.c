@@ -38,6 +38,12 @@ static const op_name *name_of_kind(tix_op_kind k)
 	return NULL;
 }
 
+const char *tix_op_name(tix_op_kind kind)
+{
+	const op_name *n = name_of_kind(kind);
+	return n ? n->name : "unknown";
+}
+
 static const op_name *kind_of_name(tix_entity_type t, const char *name)
 {
 	for (size_t i = 0; i < sizeof(op_names) / sizeof(*op_names); i++)

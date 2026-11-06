@@ -140,7 +140,7 @@ static tix_op op_of(tix_op_kind k)
 tix_op tix_op_ticket_create(const char *nonce, const char *title, const char *body, const tix_strs *labels)
 {
 	tix_op op = op_of(TIX_OP_TICKET_CREATE);
-	op.u.ticket_create.nonce = tix_xstrdup(nonce);
+	op.u.ticket_create.nonce = nonce ? tix_xstrdup(nonce) : NULL;
 	op.u.ticket_create.title = tix_xstrdup(title);
 	op.u.ticket_create.body = tix_xstrdup(body ? body : "");
 	if (labels)
@@ -151,7 +151,7 @@ tix_op tix_op_ticket_create(const char *nonce, const char *title, const char *bo
 tix_op tix_op_identity_create(const char *nonce, const char *name, const char *email)
 {
 	tix_op op = op_of(TIX_OP_IDENTITY_CREATE);
-	op.u.identity_create.nonce = tix_xstrdup(nonce);
+	op.u.identity_create.nonce = nonce ? tix_xstrdup(nonce) : NULL;
 	op.u.identity_create.name = tix_xstrdup(name);
 	op.u.identity_create.email = tix_xstrdup(email);
 	return op;

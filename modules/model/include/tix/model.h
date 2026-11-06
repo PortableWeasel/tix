@@ -109,7 +109,11 @@ typedef struct tix_op {
 
 void tix_op_free(tix_op *op);
 
-/* Constructors: copy their arguments. Validation happens in tix_pack_encode. */
+/* RETURNS the wire name ("set-title", ...), or "unknown". */
+const char *tix_op_name(tix_op_kind kind);
+
+/* Constructors: copy their arguments. Validation happens in tix_pack_encode.
+ * A NULL nonce is allowed here so core can fill in fresh randomness. */
 tix_op tix_op_ticket_create(const char *nonce, const char *title, const char *body, const tix_strs *labels);
 tix_op tix_op_identity_create(const char *nonce, const char *name, const char *email);
 /* kind: SET_TITLE, SET_BODY, COMMENT, SET_NAME or SET_EMAIL */

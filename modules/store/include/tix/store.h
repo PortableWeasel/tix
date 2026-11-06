@@ -53,6 +53,9 @@ typedef struct tix_store_vt {
 	tix_status (*ref_list)(tix_store *s, const char *prefix, tix_refs *out, tix_error *err);
 	tix_status (*ref_cas)(tix_store *s, const char *name, const tix_oid *old_oid,
 			      const tix_oid *new_oid, tix_error *err);
+	tix_status (*local_get)(tix_store *s, const char *name, tix_buf *out, tix_error *err);
+	tix_status (*local_set)(tix_store *s, const char *name, const char *data, size_t len,
+				tix_error *err);
 	void (*destroy)(tix_store *s);
 } tix_store_vt;
 
@@ -60,6 +63,13 @@ struct tix_store {
 	const tix_store_vt *vt;
 	tix_hash_algo algo; /* every oid this store returns uses this algorithm */
 };
+
+/* Largest ops.ndjson blob an adapter will read (bigger ones are TIX_ERR_INVALID).
+ * Generous on purpose: model applies the real limit. */
+#define TIX_STORE_MAX_BLOB (4u << 20)
+
+/* RETURNS true for local-state names: 1-32 chars of [a-z0-9-]. */
+bool tix_local_name_valid(const char *name);
 
 /* RETURNS true for "refs/..." names made of [A-Za-z0-9._-] components, no "..",
  * no component starting with '.', none ending in ".lock", total length <= 255. */
@@ -120,6 +130,24 @@ static inline tix_status tix_store_ref_cas(tix_store *s, const char *name, const
 	if (!tix_refname_valid(name))
 		return tix_error_set(err, TIX_ERR_INVALID, "bad ref name '%s'", name);
 	return s->vt->ref_cas(s, name, old_oid, new_oid, err);
+}
+
+/*
+ * Per-clone local state (never synced): small named values such as the Lamport
+ * clock. store_libgit keeps them in $GIT_DIR/tix/<name>, written atomically.
+ * local_get RETURNS TIX_ERR_NOT_FOUND if unset; out receives the exact bytes.
+ */
+static inline tix_status tix_store_local_get(tix_store *s, const char *name, tix_buf *out, tix_error *err)
+{
+	TIX_REQUIRE(s && name && out && tix_local_name_valid(name));
+	return s->vt->local_get(s, name, out, err);
+}
+
+static inline tix_status tix_store_local_set(tix_store *s, const char *name, const char *data, size_t len,
+					     tix_error *err)
+{
+	TIX_REQUIRE(s && name && (data || !len) && tix_local_name_valid(name));
+	return s->vt->local_set(s, name, data, len, err);
 }
 
 static inline void tix_store_destroy(tix_store *s)

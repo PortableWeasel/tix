@@ -17,6 +17,8 @@ typedef struct mem_store {
 	tix_store base; /* must be first */
 	TIX_VEC(mem_commit) commits; /* sorted by oid */
 	TIX_VEC(tix_ref) refs;       /* sorted by name */
+	TIX_VEC(tix_ref) local;      /* name -> value (oid unused; value in a parallel vec) */
+	TIX_VEC(tix_buf) local_val;
 } mem_store;
 
 static const tix_store_vt mem_vt;
@@ -197,9 +199,44 @@ static tix_status mem_ref_cas(tix_store *s, const char *name, const tix_oid *old
 	return TIX_OK;
 }
 
+static tix_status mem_local_get(tix_store *s, const char *name, tix_buf *out, tix_error *err)
+{
+	mem_store *m = as_mem(s);
+	for (size_t i = 0; i < m->local.n; i++)
+		if (!strcmp(m->local.v[i].name, name)) {
+			tix_buf_reset(out);
+			tix_buf_add(out, m->local_val.v[i].data, m->local_val.v[i].len);
+			return TIX_OK;
+		}
+	return tix_error_set(err, TIX_ERR_NOT_FOUND, "local state '%s' unset", name);
+}
+
+static tix_status mem_local_set(tix_store *s, const char *name, const char *data, size_t len, tix_error *err)
+{
+	mem_store *m = as_mem(s);
+	for (size_t i = 0; i < m->local.n; i++)
+		if (!strcmp(m->local.v[i].name, name)) {
+			tix_buf_reset(&m->local_val.v[i]);
+			tix_buf_add(&m->local_val.v[i], data, len);
+			return TIX_OK;
+		}
+	tix_ref r = {tix_xstrdup(name), {0}};
+	tix_buf b = TIX_BUF_INIT;
+	tix_buf_add(&b, data, len);
+	TIX_VEC_PUSH(&m->local, r);
+	TIX_VEC_PUSH(&m->local_val, b);
+	return TIX_OK;
+}
+
 static void mem_destroy(tix_store *s)
 {
 	mem_store *m = as_mem(s);
+	for (size_t i = 0; i < m->local.n; i++) {
+		free(m->local.v[i].name);
+		tix_buf_free(&m->local_val.v[i]);
+	}
+	free(m->local.v);
+	free(m->local_val.v);
 	for (size_t i = 0; i < m->commits.n; i++) {
 		free(m->commits.v[i].parents);
 		free(m->commits.v[i].pack);
@@ -218,6 +255,8 @@ static const tix_store_vt mem_vt = {
 	.ref_read = mem_ref_read,
 	.ref_list = mem_ref_list,
 	.ref_cas = mem_ref_cas,
+	.local_get = mem_local_get,
+	.local_set = mem_local_set,
 	.destroy = mem_destroy,
 };
 
