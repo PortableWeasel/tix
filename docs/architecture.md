@@ -81,7 +81,7 @@ refs/tix/identities/<id>      identity entity
 refs/tix/tickets/<id>         ticket entity (issues, tasks, milestones, WBS nodes)
 refs/tix/resources/<id>       resource entity (person, role, equipment)
 refs/tix/calendars/<id>       working-time calendar entity
-refs/remotes/<remote>/tix/…   fetched copies; merged into refs/tix/* by `tix pull`
+refs/tix-remotes/<remote>/…  fetched copies; merged into refs/tix/* by `tix pull`
 ```
 
 ### 3.2 Entity = DAG of commits, each carrying one op-pack
@@ -308,7 +308,7 @@ They can be stored as a `baseline` op-pack on the root ticket.
 ## 6. Sync ✅ via `git` subprocess (M3 ✅)
 
 ```
-pull:  git fetch --prune -- <remote> +refs/tix/*:refs/remotes/<remote>/tix/*
+pull:  git fetch --prune -- <remote> +refs/tix/*:refs/tix-remotes/<remote>/*
        for each fetched ref of a known type (identities first, then tickets):
          replay the remote history: schema, sizes, author rules, root == id in name
            invalid           → rejected: reported, never adopted
@@ -319,9 +319,9 @@ pull:  git fetch --prune -- <remote> +refs/tix/*:refs/remotes/<remote>/tix/*
                                authored by the identity (or null); the union is replayed
                                again before the CAS (limits apply to the merged entity)
        advance and save the Lamport clock
-push:  every valid local entity ref that differs from refs/remotes/<remote>/tix/…
+push:  every valid local entity ref that differs from refs/tix-remotes/<remote>/…
        git push --porcelain -- <remote> <ref>:<ref>…     (never '+', never forced)
-       then record the pushed values in refs/remotes/<remote>/tix/…
+       then record the pushed values in refs/tix-remotes/<remote>/…
        "[rejected]" → CONFLICT (pull, retry); "[remote rejected]" (hook/policy) → error
 sync:  pull, push; on CONFLICT pull + push again (3 rounds at most)
 ```
@@ -348,9 +348,14 @@ sync:  pull, push; on CONFLICT pull + push again (3 rounds at most)
 - Merge commits differ per clone (time, author, Lamport value), so two clones that merge the
   same pair produce two merges that a later sync joins with a third. That is harmless: merge
   packs carry no ops, and snapshots are identical.
-- Known limit: a remote branch literally named `tix` would make git's own default refspec
-  map it to `refs/remotes/<remote>/tix`, which collides with the mirror namespace (a
-  directory/file conflict). git then refuses one of the two fetches; tix reports git's error.
+- The mirror lives in `refs/tix-remotes/<remote>/`, outside `refs/remotes/`. Until v0.6 it
+  was `refs/remotes/<remote>/tix/`, where a remote branch literally named `tix` (which git's
+  default refspec maps to `refs/remotes/<remote>/tix`) collided with it, a directory/file
+  conflict that made one of the fetches fail. After a successful fetch, store_libgit deletes
+  leftover old-layout refs, but only names shaped like `<kind>/<hex id>`, so a real
+  remote-tracking branch such as `tix/feature` survives. Remote names are one ref component,
+  so two remotes' mirrors can't nest. `git remote remove` doesn't know about the mirror; a
+  removed remote's refs there are stale but harmless.
 - Verified on 2026-11-06 against Forgejo (a private throwaway repo over ssh): two clones,
   concurrent edits, push refused, `sync` merged, both clones show identical tickets, and
   `fsck --strict` is clean. Forgejo stores and serves `refs/tix/*` unmodified.

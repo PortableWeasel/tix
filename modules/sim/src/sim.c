@@ -200,10 +200,10 @@ static tix_status sync_one(tix_sim_clone *dst, const char *local, tix_entity_typ
 
 tix_status tix_sim_sync(tix_sim_clone *dst, tix_sim_clone *src, tix_error *err)
 {
-	char prefix[64];
+	char prefix[128];
 	tix_refs refs;
 	tix_store_mem_fetch(dst->store, src->store, src->name);
-	snprintf(prefix, sizeof(prefix), "refs/remotes/%s/tix/", src->name);
+	tix_remote_mirror_prefix(src->name, prefix, sizeof(prefix));
 	tix_status st = tix_store_ref_list(dst->store, prefix, &refs, err);
 	if (st)
 		return st;

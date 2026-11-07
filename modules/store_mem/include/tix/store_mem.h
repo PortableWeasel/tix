@@ -13,9 +13,9 @@
 tix_store *tix_store_mem_new(tix_hash_algo algo);
 
 /*
- * Simulates `git fetch <remote>` with refspec +refs/tix/(all):refs/remotes/<remote>/tix/(all):
+ * Simulates `git fetch <remote>` with refspec +refs/tix/(all):refs/tix-remotes/<remote>/(all):
  * copies every commit of `src` missing from `dst`, then force-sets (and prunes)
- * dst's refs/remotes/<remote>/tix/... to src's refs/tix/... values.
+ * dst's refs/tix-remotes/<remote>/... to src's refs/tix/... values.
  * REQUIRES: both are store_mem stores with the same algo; remote is a valid ref component.
  */
 void tix_store_mem_fetch(tix_store *dst, tix_store *src, const char *remote);

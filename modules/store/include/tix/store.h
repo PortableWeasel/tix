@@ -79,6 +79,15 @@ bool tix_local_name_valid(const char *name);
  * starting with '-' or '.', no "..", not ending in ".lock". Never a URL or path. */
 bool tix_remote_name_valid(const char *name);
 
+/* Where a remote's refs/tix/(all) are mirrored: refs/tix-remotes/<remote>/(all). A remote
+ * name is one component, so mirrors of different remotes never nest, and nothing else
+ * (git's default refspec maps branches into refs/remotes/) writes here. Until v0.6 the
+ * mirror was refs/remotes/<remote>/tix/, which collided with a branch named "tix". */
+#define TIX_REMOTE_MIRROR_ROOT "refs/tix-remotes/"
+/* Writes "refs/tix-remotes/<remote>/" into out (n >= 96 always suffices).
+ * REQUIRES tix_remote_name_valid(remote). */
+void tix_remote_mirror_prefix(const char *remote, char *out, size_t n);
+
 /* RETURNS true for "refs/..." names made of [A-Za-z0-9._-] components, no "..",
  * no component starting with '.', none ending in ".lock", total length <= 255. */
 bool tix_refname_valid(const char *name);
@@ -161,7 +170,7 @@ static inline tix_status tix_store_local_set(tix_store *s, const char *name, con
 /*
  * Network (architecture §6). Both talk to a *configured* remote by name.
  *
- * remote_fetch mirrors the remote's refs/tix/(all) into refs/remotes/<remote>/tix/(all)
+ * remote_fetch mirrors the remote's refs/tix/(all) into refs/tix-remotes/<remote>/(all)
  * (forced: that namespace is a mirror, never written by tix otherwise; refs gone
  * from the remote are pruned). It never touches refs/tix/(all). Fetched data is
  * untrusted: the caller validates before adopting anything.

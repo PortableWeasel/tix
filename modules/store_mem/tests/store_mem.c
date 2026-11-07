@@ -25,7 +25,7 @@ static void test_fetch(void)
 	TK_OK(tix_store_commit_write(a, NULL, 0, "x", 1, "x", &c1, &e), &e);
 	TK_OK(tix_store_ref_cas(a, "refs/tix/tickets/t", NULL, &c1, &e), &e);
 	tix_store_mem_fetch(b, a, "origin");
-	TK_OK(tix_store_ref_read(b, "refs/remotes/origin/tix/tickets/t", &got, &e), &e);
+	TK_OK(tix_store_ref_read(b, "refs/tix-remotes/origin/tickets/t", &got, &e), &e);
 	TK_CHECK(tix_oid_eq(&got, &c1));
 	TK_OK(tix_store_commit_read(b, &c1, &c, &e), &e);
 	tix_commit_free(&c);
@@ -33,7 +33,7 @@ static void test_fetch(void)
 	/* the mirror is pruned: a ref gone from the source disappears */
 	tix_store *empty = tix_store_mem_new(TIX_HASH_SHA1);
 	tix_store_mem_fetch(b, empty, "origin");
-	TK_STATUS(tix_store_ref_read(b, "refs/remotes/origin/tix/tickets/t", &got, &e), TIX_ERR_NOT_FOUND, &e);
+	TK_STATUS(tix_store_ref_read(b, "refs/tix-remotes/origin/tickets/t", &got, &e), TIX_ERR_NOT_FOUND, &e);
 	tix_store_destroy(empty);
 	tix_store_destroy(a);
 	tix_store_destroy(b);

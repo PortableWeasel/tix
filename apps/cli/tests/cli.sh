@@ -119,7 +119,8 @@ expect 0 "$TIX" push; has "origin: pushed 5"   # 2 identities + 3 tickets
 expect 0 "$TIX" push; has "origin: pushed 0"
 expect 0 "$TIX" pull; has "origin: nothing new"
 [ ! -e .git/FETCH_HEAD ] || fail "tix fetch wrote FETCH_HEAD"
-[ -z "$(git for-each-ref refs/remotes/origin/ --format='%(refname)' | grep -v '/tix/')" ] || fail "fetched non-tix refs"
+[ -z "$(git for-each-ref refs/remotes/ --format='%(refname)')" ] || fail "tix fetch wrote refs/remotes/"
+[ "$(git for-each-ref refs/tix-remotes/origin/ | wc -l)" = 5 ] || fail "mirror not in refs/tix-remotes/origin/"
 
 git clone -q "$T/remote.git" "$T/b" 2>/dev/null && cd "$T/b"
 expect 0 "$TIX" ls --all; hasnt "Crash"   # a plain clone has no tix refs
@@ -150,12 +151,27 @@ git -C "$T/a" update-ref "refs/tix/tickets/$(git -C "$T/a" rev-parse HEAD)" HEAD
 git -C "$T/a" push -q origin "refs/tix/tickets/$(git -C "$T/a" rev-parse HEAD)"
 git -C "$T/a" update-ref -d "refs/tix/tickets/$(git -C "$T/a" rev-parse HEAD)"
 git --git-dir="$T/remote.git" update-ref refs/tix/widgets/x "$(git -C "$T/a" rev-parse HEAD)"
-expect 1 "$TIX" pull; has "warning: rejected refs/remotes/origin/tix/tickets/"; has "not an op-pack commit"
+expect 1 "$TIX" pull; has "warning: rejected refs/tix-remotes/origin/tickets/"; has "not an op-pack commit"
 has "1 ref(s) of an unknown kind ignored"
 expect 0 "$TIX" ls --all; hasnt "skipped"; [ -z "$(git for-each-ref refs/tix/widgets)" ] || fail "adopted unknown ref"
 expect 1 "$TIX" sync; has "pushed 0"
 git --git-dir="$T/remote.git" fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || fail "remote fsck"
 git fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || fail "clone b fsck"
+
+# a branch literally named "tix" fetches next to the mirror (clashed before 0.6), and a
+# pre-0.6 mirror is cleaned up, but only refs shaped like tix mirrors
+git --git-dir="$T/remote.git" update-ref refs/heads/tix "$(git -C "$T/a" rev-parse HEAD)"
+some=$(git for-each-ref --count=1 --format='%(refname:lstrip=2)' refs/tix/tickets/)
+git update-ref "refs/remotes/origin/tix/$some" "refs/tix/$some"
+git update-ref refs/remotes/origin/tix/feature HEAD 2>/dev/null || git update-ref refs/remotes/origin/tix/feature "refs/tix/$some"
+expect 1 "$TIX" pull; has "rejected"   # the hostile ref is still on the remote
+[ -z "$(git for-each-ref "refs/remotes/origin/tix/tickets/")" ] || fail "legacy mirror ref kept"
+[ -n "$(git for-each-ref refs/remotes/origin/tix/feature)" ] || fail "real tracking branch deleted"
+git update-ref -d refs/remotes/origin/tix/feature
+git fetch -q origin 2>&1 || fail "git fetch with a branch named tix"
+[ -n "$(git for-each-ref refs/remotes/origin/tix)" ] || fail "branch tix not fetched"
+expect 1 "$TIX" pull; has "rejected"; hasnt "git fetch failed"
+git --git-dir="$T/remote.git" update-ref -d refs/heads/tix
 
 # tix.remote picks the default remote
 git init -q --bare "$T/mirror.git" && git remote add mirror "$T/mirror.git"

@@ -1,6 +1,7 @@
 #include "tix/store.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 void tix_commit_free(tix_commit *c)
@@ -62,6 +63,13 @@ bool tix_local_name_valid(const char *name)
 		if (!((*name >= 'a' && *name <= 'z') || (*name >= '0' && *name <= '9') || *name == '-'))
 			return false;
 	return true;
+}
+
+void tix_remote_mirror_prefix(const char *remote, char *out, size_t n)
+{
+	TIX_REQUIRE(remote && out && tix_remote_name_valid(remote));
+	int k = snprintf(out, n, "%s%s/", TIX_REMOTE_MIRROR_ROOT, remote);
+	TIX_REQUIRE(k > 0 && (size_t)k < n);
 }
 
 bool tix_remote_name_valid(const char *name)

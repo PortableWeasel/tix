@@ -135,7 +135,7 @@ static tix_status integrate(tix_repo *r, tix_entity_type t, const tix_oid *id, c
 
 static void tracking_prefix(const char *remote, char *out, size_t n)
 {
-	snprintf(out, n, "refs/remotes/%s/tix/", remote);
+	tix_remote_mirror_prefix(remote, out, n);
 }
 
 tix_status tix_pull(tix_repo *r, const char *remote, tix_sync_report *rep, tix_error *err)

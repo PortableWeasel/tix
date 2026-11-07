@@ -155,7 +155,7 @@ cmake --preset release && cmake --build --preset release
 - **Everything fetched from a remote is hostile until `model` has validated it**: size
   limits, strict schema, author rules, root = id in the ref name. A malformed pack rejects
   the whole incoming ref update and never crashes. Fetches land only in
-  `refs/remotes/<remote>/tix/`; `refs/tix/` changes only by create, fast-forward or merge
+  `refs/tix-remotes/<remote>/`; `refs/tix/` changes only by create, fast-forward or merge
   (core `tix_pull`). Local refs that don't validate are never pushed.
 - Unknown op types are preserved and ignored, for forward compatibility.
 - Bump `TIX_ENTITY_CODEC_VERSION` (model) whenever `tix_entity` or the replay rules change,

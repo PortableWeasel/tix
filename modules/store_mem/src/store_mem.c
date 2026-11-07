@@ -366,8 +366,10 @@ void tix_store_mem_fetch(tix_store *dst, tix_store *src, const char *remote)
 		mem_commit *c = &s->commits.v[i];
 		insert_commit(d, &c->oid, c->parents, c->nparents, c->pack, c->pack_len, c->message);
 	}
+	char pfx[128];
+	tix_remote_mirror_prefix(remote, pfx, sizeof(pfx));
 	tix_buf prefix = TIX_BUF_INIT;
-	tix_buf_addf(&prefix, "refs/remotes/%s/tix/", remote);
+	tix_buf_adds(&prefix, pfx);
 	size_t keep = 0;
 	for (size_t i = 0; i < d->refs.n; i++) { /* prune: the namespace is a mirror */
 		if (!strncmp(d->refs.v[i].name, prefix.data, prefix.len))
@@ -382,7 +384,7 @@ void tix_store_mem_fetch(tix_store *dst, tix_store *src, const char *remote)
 		if (strncmp(name, "refs/tix/", 9))
 			continue;
 		tix_buf rn = TIX_BUF_INIT;
-		tix_buf_addf(&rn, "refs/remotes/%s/tix/%s", remote, name + 9);
+		tix_buf_addf(&rn, "%s%s", pfx, name + 9);
 		TIX_REQUIRE(tix_refname_valid(rn.data));
 		set_ref(d, rn.data, &s->refs.v[i].oid);
 		tix_buf_free(&rn);

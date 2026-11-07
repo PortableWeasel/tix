@@ -184,7 +184,7 @@ typedef struct tix_sync_report {
 void tix_sync_report_free(tix_sync_report *rep);
 
 /*
- * Fetches `remote` into refs/remotes/<remote>/tix/, validates every fetched
+ * Fetches `remote` into refs/tix-remotes/<remote>/, validates every fetched
  * entity, and integrates each valid one into refs/tix/: create, fast-forward,
  * or a merge commit (header-only pack, authored by the identity if one is set).
  * Never adopts history that fails validation; never rewrites local history.
@@ -197,7 +197,7 @@ tix_status tix_pull(tix_repo *r, const char *remote, tix_sync_report *rep, tix_e
 
 /*
  * Pushes every valid local entity ref that differs from the last-known remote
- * value (refs/remotes/<remote>/tix/), never forced, then records the pushed
+ * value (refs/tix-remotes/<remote>/), never forced, then records the pushed
  * values there. A ref whose last-known remote value is not in its history is
  * not pushed (reported in rep: pull first; after a pull it means the remote's
  * history was rejected). RETURNS TIX_ERR_CONFLICT when the remote moved since

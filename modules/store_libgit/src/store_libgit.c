@@ -351,6 +351,8 @@ static void forget_caches(void)
 	reprepare_packed_git(the_repository);
 }
 
+static void drop_legacy_mirror(const char *remote);
+
 static tix_status git_remote_fetch(tix_store *s, const char *remote, tix_error *err)
 {
 	struct child_process cp = CHILD_PROCESS_INIT;
@@ -363,13 +365,69 @@ static tix_status git_remote_fetch(tix_store *s, const char *remote, tix_error *
 	/* "--" ends options; the remote name was validated anyway. */
 	strvec_pushl(&cp.args, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
 		     "--no-recurse-submodules", "--prune", "--", remote, NULL);
-	strvec_pushf(&cp.args, "+refs/tix/*:refs/remotes/%s/tix/*", remote);
+	char mirror[128];
+	tix_remote_mirror_prefix(remote, mirror, sizeof(mirror));
+	strvec_pushf(&cp.args, "+refs/tix/*:%s*", mirror);
 	if (pipe_command(&cp, NULL, 0, &out, 0, &e, 0))
 		st = child_error(err, TIX_ERR_IO, "fetch", &e);
 	forget_caches();
+	if (!st)
+		drop_legacy_mirror(remote);
 	strbuf_release(&out);
 	strbuf_release(&e);
 	return st;
+}
+
+/* "<kind>/<hex id>" for a kind tix writes: what a pre-0.6 mirror ref looks like. */
+static bool legacy_mirror_name(const char *rest)
+{
+	static const char *const kinds[] = {"identities/", "tickets/", "resources/", "calendars/"};
+	for (size_t i = 0; i < sizeof(kinds) / sizeof(*kinds); i++) {
+		size_t k = strlen(kinds[i]);
+		if (strncmp(rest, kinds[i], k))
+			continue;
+		size_t n = strspn(rest + k, "0123456789abcdef");
+		return !rest[k + n] && n == (size_t)the_hash_algo->hexsz;
+	}
+	return false;
+}
+
+/*
+ * Until v0.6 the mirror lived in refs/remotes/<remote>/tix/. After a successful fetch
+ * into the new place, delete what is left there so a remote branch named "tix" can be
+ * fetched again. Only refs shaped like tix mirrors go; anything else under that prefix
+ * is a real remote-tracking branch and stays. Best effort: failures leave stale refs
+ * that nothing reads.
+ */
+static void drop_legacy_mirror(const char *remote)
+{
+	struct strbuf prefix = STRBUF_INIT, e = STRBUF_INIT;
+	list_ctx lc = {{0}};
+	struct ref_store *refs = get_main_ref_store(the_repository);
+	strbuf_addf(&prefix, "refs/remotes/%s/tix/", remote);
+	refs_for_each_fullref_in(refs, prefix.buf, NULL, collect_ref, &lc);
+	struct ref_transaction *tx = NULL;
+	size_t n = 0;
+	for (size_t i = 0; i < lc.refs.n; i++) {
+		if (!legacy_mirror_name(lc.refs.v[i].name + prefix.len))
+			continue;
+		struct object_id old;
+		to_git(&lc.refs.v[i].oid, &old);
+		if (!tx)
+			tx = ref_store_transaction_begin(refs, &e);
+		if (tx && !ref_transaction_delete(tx, lc.refs.v[i].name, &old, NULL, 0, "tix: old mirror", &e))
+			n++;
+	}
+	if (tx && n)
+		ref_transaction_commit(tx, &e);
+	ref_transaction_free(tx);
+	if (n)
+		forget_caches();
+	for (size_t i = 0; i < lc.refs.n; i++)
+		free(lc.refs.v[i].name);
+	free(lc.refs.v);
+	strbuf_release(&prefix);
+	strbuf_release(&e);
 }
 
 static tix_status git_remote_push(tix_store *s, const char *remote, const char *const *refs, size_t n,

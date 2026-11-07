@@ -130,7 +130,8 @@ void tix_store_contract_run(tix_store *s)
 static bool tracking(tix_store *s, const char *remote, tix_oid *out)
 {
 	char name[160];
-	snprintf(name, sizeof(name), "refs/remotes/%s/tix/contract-sync/x", remote);
+	tix_remote_mirror_prefix(remote, name, sizeof(name));
+	snprintf(name + strlen(name), sizeof(name) - strlen(name), "contract-sync/x");
 	return tix_store_ref_read(s, name, out, NULL) == TIX_OK;
 }
 
@@ -153,7 +154,8 @@ void tix_store_contract_run_remote(tix_store *s, const char *remote)
 
 	/* an empty remote fetches fine and mirrors nothing */
 	TK_OK(tix_store_remote_fetch(s, remote, &e), &e);
-	snprintf(prefix, sizeof(prefix), "refs/remotes/%s/tix/contract-sync/", remote);
+	tix_remote_mirror_prefix(remote, prefix, sizeof(prefix));
+	snprintf(prefix + strlen(prefix), sizeof(prefix) - strlen(prefix), "contract-sync/");
 	TK_OK(tix_store_ref_list(s, prefix, &r, &e), &e);
 	TK_CHECK(r.n == 0);
 	tix_refs_free(&r);
