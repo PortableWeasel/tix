@@ -551,7 +551,7 @@ Also installed as `git-tix`, so `git tix …` works.
 8. ✅ **M7 web UI enhancements** (done 2026-11-07, §13.4): search as you type, Gantt editing,
    live refresh.
 9. **After v1** (approved 2026-11-07, §14): MS Project XML export ✅, plan baselines ✅, commit
-   signature enforcement ✅, Forgejo issue bridge, TUI, hosted web mode.
+   signature enforcement ✅, Forgejo issue bridge ✅, TUI, hosted web mode.
 
 ## 12. Resolved decisions (2026-11-06)
 
@@ -955,4 +955,61 @@ checks incoming ones against the keys of the identity each commit is authored by
   a later key, require rejecting unsigned and foreign-key commits as a whole ref, warn
   adopting with a note, the audit; disabling the check fails it); and cli.sh with real ssh
   keys end to end, including the trust-on-first-use pull.
+
+### 14.4 Forgejo issue bridge ✅
+
+`tix bridge pull|push|sync` keeps tickets and a Forgejo (or Gitea) repository's issues in
+step: title, body, open/closed, labels, and new comments both ways.
+
+- **Layers**: module `bridge` holds the port (`tix_tracker`: list, labels, create, update,
+  comments, comment) and the algorithm; `bridge_forgejo` is the adapter (REST API v1 over
+  libcurl, JSON with cJSON) and the only module that includes `curl.h` (enforced at
+  configure time by `cmake/Quarantine.cmake`, which now also guards `sqlite3.h`).
+- **Links**: a new ticket field `external` ("forgejo:host/owner/repo#12", LWW like the other
+  fields; codec version 3) syncs with tix, so every clone knows which ticket is which issue.
+  Issues tix creates end with an invisible `<!-- tix:<ticket id> -->` marker: a link lost
+  between creating the issue and writing the field is found again on the next run. Two
+  tickets on one issue, a marker naming a ticket that links elsewhere or isn't here yet, and
+  a link to an issue that's gone are reported as conflicts, never guessed at.
+- **Changes**: each clone keeps a base (local state `bridge-<hash of the tracker key>`: per
+  issue, a hash of each field as both sides last agreed). A field changed on one side is
+  copied to the other. Changed on both sides, or different and never bridged from this
+  clone, it is a conflict: reported, nothing overwritten, and it clears once the sides
+  agree. `pull` only copies issue → ticket and `push` only ticket → issue; a change waiting
+  for the other direction stays pending.
+  - Status maps to open/closed: done and cancelled are closed; an issue closed elsewhere
+    makes the ticket done, reopened makes it open.
+  - Labels: only names the tracker has and tix accepts as labels are bridged (others stay
+    where they are, so nothing is copied back and forth forever). Labels are never created
+    in the tracker.
+- **Scope**: every linked ticket syncs. `push` creates issues only for unlinked tickets in an
+  explicit scope: `--under ID`, `--label L` or `--all`. `pull` imports every unlinked issue
+  without a marker.
+- **Comments**: tracker → tix comments start with "> author wrote on <key>#n (comment id):";
+  tix → tracker comments end with a marker carrying the tix comment's op id. Each side's
+  markers are what de-duplicates, so two clones bridging the same issue never echo each
+  other's comments (no base needed). Comment edits are not copied (v1).
+- **Remote text is hostile**: titles and bodies are made valid UTF-8, CR dropped, control
+  characters replaced, titles single-line, both cut to tix's limits; labels tix can't hold
+  are skipped.
+- **Adapter safety**: TLS verified; plain http only for loopback; redirects are never
+  followed (the token goes to that host only); responses capped at 32 MiB and 120 s;
+  pull requests and malformed entries are skipped; server messages are shown without
+  control characters. The token comes from `TIX_FORGEJO_TOKEN` or git's credential helpers
+  (`git credential fill`, run as a child with `GIT_TERMINAL_PROMPT=0`); it is wiped from
+  memory after use and never printed.
+- **Shown**: `tix show` prints `issue:`; the web ticket page links to the issue, but only when
+  the synced value has exactly the shape forgejo:host/owner/repo#n in safe characters.
+- **Tested**: the algorithm against an in-memory tracker (dry run, import with hostile titles
+  and labels, both directions, pull-only and push-only, conflicts and their clearing, state,
+  scoped export with marker and label filtering, a base-less clone without echoes, relinking
+  by marker, duplicate and dangling links, marker parsing); the adapter against a fake
+  Forgejo in Python (auth header, pagination with a pull request and a malformed entry,
+  label ids, marker kept on edit, 404 with an escape sequence in the message, a redirect
+  not followed, a non-JSON reply, URL parsing refusing plain http, extra path, `..` and
+  userinfo); and a real Forgejo 10 (a throwaway container from the production image on a
+  loopback port, removed afterwards): import with comment, title push, export with marker
+  and label, comment out, close and edit flowing back, an idle second run, and a conflict
+  that overwrote nothing. (The tokens in pass lack `write:issue`, so the production
+  instance wasn't used.)
 

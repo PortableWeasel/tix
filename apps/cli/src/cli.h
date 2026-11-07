@@ -74,5 +74,6 @@ int cmd_export(cli *c, int argc, char **argv);
 int cmd_index(cli *c, int argc, char **argv);
 int cmd_baseline(cli *c, int argc, char **argv);
 int cmd_verify(cli *c, int argc, char **argv);
+int cmd_bridge(cli *c, int argc, char **argv);
 
 #endif

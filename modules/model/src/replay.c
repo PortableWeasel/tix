@@ -363,6 +363,7 @@ static void fold_plan(const ctx *c, const lww *f, const or_vec *dadd, const or_v
 	pl->duration = lww_int(&f[TIX_F_DURATION], -1);
 	pl->effort = lww_int(&f[TIX_F_EFFORT], -1);
 	pl->progress = (int)lww_int(&f[TIX_F_PROGRESS], 0);
+	pl->external = lww_str(&f[TIX_F_EXTERNAL]);
 
 	tix_strs seen = {0};
 	TIX_VEC(tix_dep) deps = {0};
@@ -767,6 +768,7 @@ void tix_entity_free(tix_entity *e)
 			free(t->comments[i].body);
 		free(t->comments);
 		free(t->plan.rank);
+		free(t->plan.external);
 		free(t->plan.deps);
 		free(t->plan.assignments);
 	} else if (e->type == TIX_ENTITY_RESOURCE) {
@@ -838,6 +840,7 @@ static void snap_plan(tix_jw *w, const tix_ticket_plan *pl)
 {
 	snap_id(w, "parent", &pl->parent);
 	snap_str(w, "rank", pl->rank);
+	snap_str(w, "external", pl->external);
 	snap_str(w, "kind", tix_field_get(TIX_F_KIND)->enums[pl->kind]);
 	snap_id(w, "calendar", &pl->calendar);
 	snap_str(w, "mode", tix_field_get(TIX_F_MODE)->enums[pl->mode]);

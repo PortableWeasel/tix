@@ -351,6 +351,15 @@ git clone -q "$T/bl.git" "$T/bl2" 2>/dev/null && cd "$T/bl2"
 expect 0 "$TIX" pull; expect 0 "$TIX" baseline ls; has "Approved"; has "Build only"
 expect 0 "$TIX" baseline show "$bl"; has "2400.00 EUR"
 
+# ---- issue-tracker bridge: arguments and token lookup (the sync itself: modules/bridge tests,
+#      the adapter against a fake Forgejo, and a real Forgejo check, see architecture §14.4)
+cd "$T/bl"
+expect 2 "$TIX" bridge; has "usage: tix bridge"
+expect 2 "$TIX" bridge pull; has "give --url"
+expect 2 "$TIX" bridge pull --url http://example.org/me/proj; has "is not https://host/owner/repo"
+expect 1 env -u TIX_FORGEJO_TOKEN "$TIX" bridge pull --url https://git.example.invalid/me/proj; has "no token for git.example.invalid"
+expect 1 env TIX_FORGEJO_TOKEN=x "$TIX" bridge pull --url https://git.example.invalid/me/proj --dry-run; has "forgejo: GET"
+
 # ---- commit signatures (ssh): sign, audit, require on pull, trust on first use ----------
 if command -v ssh-keygen >/dev/null; then
 	git init -q "$T/sg" && cd "$T/sg"

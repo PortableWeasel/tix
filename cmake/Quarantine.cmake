@@ -1,0 +1,15 @@
+# Configure-time check that a third-party header is included only where it is allowed
+# (architecture §2: adapters keep their libraries to themselves).
+function(tix_quarantine header allowed_dir)
+  file(GLOB_RECURSE srcs ${PROJECT_SOURCE_DIR}/modules/*.[ch] ${PROJECT_SOURCE_DIR}/apps/*.[ch])
+  string(REPLACE "." "\\\\." re "${header}")
+  foreach(f IN LISTS srcs)
+    file(STRINGS "${f}" hits REGEX "^[ \t]*#[ \t]*include[ \t]*[\"<]${re}[\">]")
+    file(RELATIVE_PATH rel ${PROJECT_SOURCE_DIR} ${f})
+    if(hits AND NOT rel MATCHES "^${allowed_dir}/")
+      message(FATAL_ERROR "${rel} includes ${header}; only ${allowed_dir}/ may")
+    endif()
+  endforeach()
+endfunction()
+tix_quarantine(curl/curl.h modules/bridge_forgejo/src)
+tix_quarantine(sqlite3.h modules/index_sqlite/src)

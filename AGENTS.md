@@ -47,7 +47,8 @@ cmake/GitLib.cmake      builds git.git's libgit.a, xdiff, reftable → tix::gitl
 cmake/TixModule.cmake   tix_module() + configure-time include-boundary enforcement
 modules/<name>/         libraries: include/tix/<name>*.h, src/, tests/
                         base, store, store_mem, model, plan, export, index,
-                        index_mem, index_sqlite, core, input, store_libgit;
+                        index_mem, index_sqlite, core, input, store_libgit,
+                        bridge, bridge_forgejo;
                         testkit, sim, store_contract, index_contract are test-only
 apps/cli/               the `tix` / `git-tix` frontend; tests/cli.sh is the end-to-end test
 apps/web/               `tix-web`, the web UI (M6); src/web_http.h is its view of HTTP
@@ -69,7 +70,7 @@ cmake --preset release && cmake --build --preset release
   before you commit. Report failures honestly, with the output. Don't weaken a test to
   make it pass.
 - The first build compiles git.git (about 35 s). Later builds reuse it.
-- Requirements: CMake ≥ 3.28, Ninja, GCC 14 / Clang, GNU make, zlib, cJSON (`libcjson-dev`) and SQLite 3 (`libsqlite3-dev`) headers.
+- Requirements: CMake ≥ 3.28, Ninja, GCC 14 / Clang, GNU make, zlib, cJSON (`libcjson-dev`), SQLite 3 (`libsqlite3-dev`) and libcurl (`libcurl4-openssl-dev`) headers.
 - Use `uv run` for any Python helper. Never call the system Python directly.
 
 ## Architecture rules (hard constraints)
@@ -89,6 +90,9 @@ cmake --preset release && cmake --build --preset release
 5. **Mongoose is quarantined** too: only `apps/web/src/http_mongoose.c` includes
    `mongoose.h` (configure fails otherwise). Its TLS, TCP/IP stack, logging, directory
    listing and SSI stay compiled out. Bump the pin only after reading its advisories.
+   Likewise **libcurl**: only `modules/bridge_forgejo/src/` includes `curl/curl.h`
+   (`cmake/Quarantine.cmake`); it never follows redirects and sends tokens to the
+   configured host only.
 6. **Frontends hold no business logic.** `apps/*` parse arguments, call `core`/`export`,
    and format output. If a CLI command needs a rule, the rule belongs in `core`, `model`
    or `plan`.

@@ -83,6 +83,7 @@ static void encode_ticket(tix_jw *w, const tix_ticket *t)
 	e_id(w, "parent", &p->parent);
 	e_order(w, "parent_order", &p->parent_order);
 	e_str(w, "rank", p->rank);
+	e_str(w, "external", p->external);
 	e_int(w, "kind", p->kind);
 	e_id(w, "calendar", &p->calendar);
 	e_int(w, "mode", p->mode);
@@ -360,6 +361,7 @@ static void decode_ticket(dec *d, const cJSON *o, tix_ticket *t)
 	p->parent = d_id(d, o, "parent");
 	p->parent_order = d_order(d, o, "parent_order");
 	p->rank = d_str(d, o, "rank", true);
+	p->external = d_str(d, o, "external", true);
 	p->kind = (tix_ticket_kind)d_int(d, o, "kind", 0, TIX_KIND_MILESTONE);
 	p->calendar = d_id(d, o, "calendar");
 	p->mode = (tix_sched_mode)d_int(d, o, "mode", 0, TIX_MODE_MANUAL);

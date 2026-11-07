@@ -81,6 +81,7 @@ typedef struct tix_ticket_plan {
 	size_t ndeps;
 	tix_assignment *assignments; /* sorted by resource */
 	size_t nassignments;
+	char *external;   /* linked issue elsewhere ("forgejo:host/owner/repo#12"), NULL = none (§14.4) */
 	int64_t started_at; /* time of the first set-status in-progress, or -1 */
 	int64_t done_at;    /* time of the set-status that made it done, -1 unless done */
 } tix_ticket_plan;
@@ -190,7 +191,7 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out);
  * TIX_ENTITY_CODEC_VERSION whenever tix_entity or the replay rules change, so
  * stale cache entries miss instead of lying.
  */
-#define TIX_ENTITY_CODEC_VERSION 2
+#define TIX_ENTITY_CODEC_VERSION 3
 
 void tix_entity_encode(const tix_entity *e, tix_buf *out);
 /* Checks every field (types, ranges, UTF-8, id algo). RETURNS TIX_ERR_INVALID for

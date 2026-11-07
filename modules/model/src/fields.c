@@ -40,6 +40,8 @@ static const tix_field_info fields[TIX_F_COUNT] = {
 	[TIX_F_CAL_NAME] = {C, "set-name", "name", TIX_V_STR, false, 1, TIX_NAME_MAX, NULL},
 	[TIX_F_WEEKDAYS] = {C, "set-weekdays", "weekdays", TIX_V_INT, false, 0, 127, NULL},
 	[TIX_F_HOURS] = {C, "set-hours", "hours", TIX_V_INT, false, 1, 24, NULL},
+
+	[TIX_F_EXTERNAL] = {T, "set-external", "external", TIX_V_STR, true, 1, TIX_EXTERNAL_MAX, NULL},
 };
 
 #undef T

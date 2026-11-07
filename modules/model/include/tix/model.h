@@ -41,6 +41,7 @@
 #define TIX_EXCEPTION_MAX_DAYS 3660
 #define TIX_COST_MAX (1ll << 50) /* minor currency units */
 #define TIX_CURRENCY_MAX 8      /* letters */
+#define TIX_EXTERNAL_MAX 512    /* "forgejo:host/owner/repo#12" */
 
 /* ---- entity types -------------------------------------------------------- */
 typedef enum tix_entity_type {
@@ -102,6 +103,8 @@ typedef enum tix_field {
 	TIX_F_CURRENCY, TIX_F_ACTIVE,
 	/* calendar (§4.4) */
 	TIX_F_CAL_NAME, TIX_F_WEEKDAYS, TIX_F_HOURS,
+	/* ticket: link to an issue in another tracker (after v1, §14.4) */
+	TIX_F_EXTERNAL,
 	TIX_F_COUNT
 } tix_field;
 

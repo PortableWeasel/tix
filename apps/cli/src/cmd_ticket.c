@@ -246,6 +246,8 @@ static void show_plan(cli *c, const tix_ticket *t)
 	char buf[400];
 	if (!tix_oid_is_null(&p->parent))
 		printf("parent:   %s\n", name_of(c, TIX_ENTITY_TICKET, &p->parent, buf, sizeof(buf)));
+	if (p->external)
+		printf("issue:    %s\n", p->external);
 	if (p->kind == TIX_KIND_MILESTONE)
 		printf("kind:     milestone\n");
 	if (p->mode == TIX_MODE_MANUAL)

@@ -942,8 +942,35 @@ static void test_baselines(void)
 	world_close(&w);
 }
 
+/* §14.4: a linked issue shows as a link only in its exact, safe shape. */
+static void test_external(void)
+{
+	world w;
+	world_open(&w, false);
+	tix_oid good, bad;
+	TK_OK(tix_ticket_create(w.repo, "Linked", "", NULL, &good, &e), &e);
+	TK_OK(tix_ticket_create(w.repo, "Hostile link", "", NULL, &bad, &e), &e);
+	apply1(&w, TIX_ENTITY_TICKET, &good, tix_op_set(TIX_F_EXTERNAL, tix_value_str("forgejo:git.example.org/me/proj#12")));
+	apply1(&w, TIX_ENTITY_TICKET, &bad,
+	       tix_op_set(TIX_F_EXTERNAL, tix_value_str("forgejo:evil\"><script>alert(1)</script>/x/y#1")));
+	client c = new_client(&w);
+	login(&c);
+	char hex[TIX_OID_MAX_HEX + 1], target[160];
+	snprintf(target, sizeof(target), "/t/%s", tix_oid_hex(&good, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "<a rel=\"noreferrer\" href=\"https://git.example.org/me/proj/issues/12\">forgejo:git.example.org/me/proj#12</a>");
+	snprintf(target, sizeof(target), "/t/%s", tix_oid_hex(&bad, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, target);
+	HASNT(&c, "href=\"https://evil");
+	HAS(&c, "forgejo:evil&quot;&gt;&lt;script&gt;");
+	web_response_free(&c.res);
+	world_close(&w);
+}
+
 int main(void)
 {
+	test_external();
 	test_baselines();
 	test_api();
 	test_checks();

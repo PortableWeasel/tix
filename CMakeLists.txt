@@ -17,6 +17,8 @@ include(cmake/Mongoose.cmake)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET libcjson)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
+pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
+include(cmake/Quarantine.cmake)
 
 # Modules, in dependency order (a module may only depend on ones above it).
 add_subdirectory(modules/base)
@@ -35,6 +37,8 @@ add_subdirectory(modules/index_sqlite)
 add_subdirectory(modules/core)
 add_subdirectory(modules/input)
 add_subdirectory(modules/store_libgit)
+add_subdirectory(modules/bridge)
+add_subdirectory(modules/bridge_forgejo)
 
 add_subdirectory(apps/cli)
 add_subdirectory(apps/web)

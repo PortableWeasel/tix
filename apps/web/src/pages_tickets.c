@@ -1,6 +1,7 @@
 /* Ticket pages: the list (/tickets) and one ticket (/t/ID). */
 #include "app.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #define NSTATUS 5
@@ -181,6 +182,31 @@ static void planning_table(web_ctx *x, const tix_entity *e, const tix_plan_resul
 	const tix_plan_task *t = ti == SIZE_MAX ? NULL : &pr->schedule->tasks[ti];
 
 	HL(h, "<h2>Planning</h2>\n<table class=\"fields\"><tbody>\n");
+	if (p->external) { /* "forgejo:host/owner/repo#12" -> https://host/owner/repo/issues/12 (§14.4) */
+		ROW(h, "Issue");
+		/* synced data: a link only for the exact shape forgejo:host/owner/repo#n in safe characters */
+		const char *ext = p->external, *hash = strrchr(ext, '#');
+		size_t span = hash ? (size_t)(hash - ext) : 0;
+		bool linkable = !strncmp(ext, "forgejo:", 8) && hash && span > 8 && hash[1] &&
+				hash[1 + strspn(hash + 1, "0123456789")] == '\0' &&
+				strspn(ext + 8, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_:/") == span - 8;
+		size_t slashes = 0;
+		for (size_t k = 8; linkable && k < span; k++)
+			slashes += ext[k] == '/';
+		if (linkable && slashes == 2 && ext[8] != '/' && ext[span - 1] != '/' && !strstr(ext, "//") &&
+		    !strstr(ext, "..")) {
+			char url[TIX_EXTERNAL_MAX + 32];
+			snprintf(url, sizeof(url), "https://%.*s/issues/%s", (int)(span - 8), ext + 8, hash + 1);
+			HL(h, "<a rel=\"noreferrer\" href=\"");
+			h_text(h, url); /* safe characters only, checked above */
+			HL(h, "\">");
+			h_text(h, ext);
+			HL(h, "</a>");
+		} else {
+			h_text(h, ext);
+		}
+		END_ROW(h);
+	}
 	ROW(h, "Parent");
 	if (!tix_oid_is_null(&p->parent))
 		h_ticket(x, &p->parent, &pr->tickets);

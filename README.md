@@ -35,8 +35,8 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
 - After v1, done: MS Project XML export (`tix export --format mspdi`), plan baselines
   (`tix baseline take`, then `tix plan --baseline B` shows what slipped; also on the web),
   and commit signatures (`git config tix.sign true`, `tix id edit --add-signing-key`,
-  `git config tix.verify require`, `tix verify`). In progress: a Forgejo issue bridge, a
-  TUI and a hosted web mode behind SSO.
+  `git config tix.verify require`, `tix verify`), and a Forgejo issue bridge (`tix bridge
+  sync --url https://host/owner/repo`). In progress: a TUI and a hosted web mode behind SSO.
 
 tix tracks its own work: `tix pull && tix wbs` in a clone of this repo.
 

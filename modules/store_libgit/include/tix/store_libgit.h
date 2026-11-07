@@ -42,6 +42,14 @@ tix_status tix_store_libgit_local_path(tix_store *s, const char *name, tix_buf *
 tix_status tix_store_libgit_signing_key(tix_store *s, tix_buf *kind, tix_buf *fingerprint, tix_buf *pubkey,
 				       tix_error *err);
 
+/*
+ * A password or token from git's credential helpers (`git credential fill` as a child
+ * process, never prompting): for issue-tracker bridges (architecture §14.4).
+ * RETURNS TIX_ERR_NOT_FOUND when no helper has one. The caller wipes *password after use.
+ */
+tix_status tix_store_libgit_credential(tix_store *s, const char *protocol, const char *host, const char *path,
+				      tix_buf *password, tix_error *err);
+
 /* The version of the linked git.git library, e.g. "2.47.3". Static storage. */
 const char *tix_store_libgit_git_version(void);
 

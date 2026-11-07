@@ -853,3 +853,42 @@ out:
 	return st;
 }
 
+tix_status tix_store_libgit_credential(tix_store *s, const char *protocol, const char *host, const char *path,
+				      tix_buf *password, tix_error *err)
+{
+	check_store(s);
+	struct child_process cp = CHILD_PROCESS_INIT;
+	struct strbuf in = STRBUF_INIT, out = STRBUF_INIT, e = STRBUF_INIT;
+	tix_status st = TIX_OK;
+	for (const char *v[] = {protocol, host, path}, **p = v; p < v + 3; p++)
+		if (*p && strpbrk(*p, "\n\r=") ) /* the protocol is line-based: no injection */
+			return tix_error_set(err, TIX_ERR_INVALID, "credential request has a line break or '='");
+	cp.git_cmd = 1;
+	strvec_pushl(&cp.args, "credential", "fill", NULL);
+	strvec_push(&cp.env, "GIT_TERMINAL_PROMPT=0"); /* never prompt from inside tix */
+	strbuf_addf(&in, "protocol=%s\nhost=%s\n", protocol, host);
+	if (path && *path)
+		strbuf_addf(&in, "path=%s\n", path);
+	strbuf_addch(&in, '\n');
+	if (pipe_command(&cp, in.buf, in.len, &out, 0, &e, 0)) {
+		st = tix_error_set(err, TIX_ERR_NOT_FOUND, "no stored credential for %s://%s", protocol, host);
+		goto done;
+	}
+	const char *pw = NULL;
+	for (const char *l = out.buf; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL)
+		if (starts_with(l, "password="))
+			pw = l + strlen("password=");
+	if (!pw) {
+		st = tix_error_set(err, TIX_ERR_NOT_FOUND, "no stored credential for %s://%s", protocol, host);
+		goto done;
+	}
+	tix_buf_reset(password);
+	tix_buf_add(password, pw, strcspn(pw, "\n"));
+done:
+	memset(out.buf, 0, out.len); /* don't leave secrets in freed memory */
+	strbuf_release(&in);
+	strbuf_release(&out);
+	strbuf_release(&e);
+	return st;
+}
+

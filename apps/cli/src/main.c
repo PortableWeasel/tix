@@ -52,6 +52,10 @@ static const char usage_text[] =
 	"  verify [ID]...                     check commit signatures (default: every entity)\n"
 	"  pull | sync [--verify off|warn|require] [REMOTE]\n"
 	"\n"
+	"issue trackers (Forgejo; token from TIX_FORGEJO_TOKEN or a git credential helper)\n"
+	"  bridge pull|push|sync [--url https://host/owner/repo] [--under ID | --label L | --all]\n"
+	"         [--no-comments] [--dry-run]     (git config tix.bridge.url for the default URL)\n"
+	"\n"
 	"sync (REMOTE defaults to git config tix.remote, else origin)\n"
 	"  pull [REMOTE]    fetch, validate and merge the remote's tickets and identities\n"
 	"  push [REMOTE]    send yours (never forced)\n"
@@ -228,7 +232,7 @@ int main(int argc, char **argv)
 		{"push", cmd_push}, {"sync", cmd_sync}, {"assign", cmd_assign},
 		{"unassign", cmd_unassign}, {"res", cmd_res}, {"cal", cmd_cal},
 		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"export", cmd_export}, {"index", cmd_index},
-		{"baseline", cmd_baseline}, {"verify", cmd_verify},
+		{"baseline", cmd_baseline}, {"verify", cmd_verify}, {"bridge", cmd_bridge},
 	};
 	int (*fn)(cli *, int, char **) = NULL;
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(*cmds); i++)
