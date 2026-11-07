@@ -39,6 +39,9 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
   --url https://host/owner/repo`), a terminal UI (`tix tui`), and a hosted web mode behind
   an SSO proxy (`tix web --trust-proxy X-authentik-username --public-url https://... --users
   FILE`; see docs/architecture.md §14.6).
+- **Agent workflow (§15), in progress**: phase/stage statuses, claims with leases, typed
+  comments, an autonomy switch with a human-stage guard, and agent/live interfaces, so a
+  person and AI agents can hand tickets back and forth (docs/architecture.md §15).
 
 tix tracks its own work: `tix pull && tix wbs` in a clone of this repo.
 

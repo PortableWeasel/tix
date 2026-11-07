@@ -25,6 +25,7 @@ change and say why. Never let the code and the doc drift apart silently.
 | M6: web UI without JavaScript (`input`, Mongoose, `tix web`, §13) | ✅ done |
 | M7: web UI JavaScript enhancements (§13.4) | ✅ done |
 | After v1 (§14): MSPDI export, baselines, signatures, Forgejo bridge, TUI, hosted web mode | ✅ done |
+| Agent workflow (§15): phase/stage, claims, typed comments, autonomy guard, agent and live interfaces | 🚧 approved 2026-11-07, in progress |
 
 Work on the current milestone unless asked otherwise. Don't build ahead into later
 milestones "while you're there".

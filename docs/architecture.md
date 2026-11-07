@@ -1075,3 +1075,212 @@ people in (Authentik's proxy outpost sends `X-authentik-username`).
   (401 without a login, a write by ada authored by her identity, 403 for an unmapped
   login), and the CLI's flag rules.
 
+
+## 15. Agent workflow (approved 2026-11-07)
+
+Goal: let a person and AI agents hand tickets back and forth through tix: the person writes
+a ticket, an agent refines it, asks questions or declares it ready, another agent
+implements it, a third reviews it, and the person accepts the result. Agents may also run
+unattended overnight without any ticket stalling on a human.
+
+**Where the line is.** tix provides *mechanisms*; the workflow itself is *policy* and lives
+outside tix. Something belongs in tix only if (a) correctness needs atomicity, merge
+semantics or a view every clone shares, or (b) a team of only humans would also use it.
+Everything else is either:
+
+- **the skill**: agent instructions (`docs/agent-workflow.md`, mirrored as the Hermes skill).
+  It covers who may move a ticket where, the review loop, round counting, escalation,
+  assumptions, aborts and workarounds. It can change without a tix release.
+- **the runner**: whatever launches agents (Hermes cron, a loop script). It owns time budgets
+  and the circuit breaker.
+
+Recorded in tix under `tix: agent workflow`. Nothing here changes the planning engine:
+every new piece is either orthogonal to it or sits below the five phases it already
+understands.
+
+### 15.1 Status = phase / stage
+
+`status` keeps its five fixed **phases** (`open`, `in-progress`, `blocked`, `done`,
+`cancelled`). Each may carry an optional free-form **stage**, written `phase/stage`
+(`open/ready`, `in-progress/review`). The planning engine, `started_at`/`done_at`, the
+Gantt and every existing filter see only the phase. `--status open` matches every open
+stage, and `--status open/ready` matches one stage.
+
+- **Stored as one register.** The phase and stage are one LWW value, so two concurrent
+  edits can never merge into a pair nobody wrote (`done/refine`). New op
+  `{"op":"set-state","status":"open","stage":"ready"}` (stage `null` = none). For older
+  readers, a writer emits `set-status` with the same phase on the line *before* each
+  `set-state`. Older readers skip the unknown op and still see the right phase. New
+  readers treat a `set-status` followed directly by a matching `set-state` as one write,
+  and a lone `set-status` as "phase, stage cleared".
+- **Stage names**: `[a-z][a-z0-9-]{0,31}`.
+- **The project's stage list** is a field on a WBS root, inherited by its subtree (like
+  `calendar`): `stages`, an OR-map `name → {phase, human: bool, rank}`. The CLI is
+  `tix stage ls|add|rm ROOT NAME [--phase P] [--human] [--rank …]`.
+  - `human` marks a stage that waits for a person. The inbox (§15.6) and the guard (§15.5)
+    use it.
+  - Core refuses a stage that isn't on the effective list, or that is listed under another
+    phase, to catch typos. With an empty list, any stage is accepted.
+  - Merge accepts anything. A stage missing from the list is shown as unlisted, never
+    rejected.
+- **tix ships no stage list.** The agent workflow's list lives in the skill
+  (`docs/agent-workflow.md`), which also explains how to install it. For reference:
+
+  | Phase | Stages (`*` = human) |
+  |---|---|
+  | open | `draft`\*, `refine`, `needs-input`\*, `ready` |
+  | in-progress | `implementing`, `review`, `changes-requested`, `needs-input`\* |
+  | blocked | `aborted`\* |
+  | done | `unaccepted`\*, `accepted` |
+
+  Two consequences of this list:
+  - A dependent is satisfied when its predecessor's *phase* is `done`, whatever the stage.
+    So `done/unaccepted` lets dependents start, and nothing special happens in
+    autonomous mode.
+  - `blocked/aborted` is unsatisfied, like every `blocked`.
+
+- **Index**: an extra `stage` column. Bump `TIX_ENTITY_CODEC_VERSION`.
+
+### 15.2 Identity kind
+
+Identities gain `kind`: `human` (default) or `agent`. It's an LWW field, protected like the
+rest of an identity (only the identity itself may write it). The kind is what the guard
+(§15.5) and the UI's badges go by.
+
+It is self-declared, so it prevents accidents, not malice. Commit signatures (§14.3) prove
+who wrote an op, but not what kind of author they are.
+
+### 15.3 Claims
+
+A claim says "this identity is working on the ticket until T". It's generic: a person can
+claim a ticket too.
+
+- **Field**: `claim`, `{identity, until}` or empty. Ops are
+  `{"op":"claim","until":<unix>}` (the claimant is the pack author) and
+  `{"op":"release"}` (anyone may release).
+- **The first live claim wins.** This is not LWW. In total order, a `claim` op applies only
+  if one of these holds when it is replayed:
+  - the current claim is empty,
+  - it belongs to the same identity (a renewal),
+  - or its `until` is not later than the claiming pack's `time`.
+
+  Two concurrent claims therefore resolve the same way on every clone: the earlier one in
+  total order wins, and the later claimer can't steal the ticket.
+- **Time has a meaning here.** This is the first rule that gives a pack's `time` meaning
+  beyond display (§3.3). Clock skew between agents moves a lease edge by the skew, which is
+  acceptable for leases of minutes. `until` is capped at now + 24 h on write.
+- **Liveness for display and queues** compares `until` with a "now" that the caller passes
+  in (rule 7).
+- **CLI**:
+  - `tix claim ID [--for 30m]`, `tix claim ID --renew`, `tix claim ID --release`
+  - `tix claim --next [--under R] [--status open/ready,…] [--json]`
+- **`claim --next`** is the agent's one call to get work. It runs in `core`:
+  1. Pull from the remote, if one is configured.
+  2. Pick the first candidate in WBS order: in a requested state, not claimed by anyone
+     live, all predecessors satisfied, not a `human` stage, and under a root that isn't
+     halted (§15.5).
+  3. Write the claim and push.
+  4. If the push is rejected or the merge gives the claim to someone else, pull and try the
+     next candidate, up to 5 times.
+  5. Print the claimed ticket, or exit 3 for "no work".
+
+  Without a remote, the CAS ref update already serialises claims between agents sharing a
+  repository.
+
+### 15.4 Typed comments
+
+New op
+`{"op":"typed-comment","kind":"review","body":"…","data":"{…}","reply-to":"<op id>"|null}`.
+
+- `kind` follows the stage-name rule.
+- `body` is markdown, as in a plain comment. It is what older readers and plain views show.
+- `data` is a JSON object carried **as a string**, which keeps the canonical codec simple.
+  Its size is capped at 64 KiB together with `body`. Core validates that it is an object
+  of the generic shape below.
+
+tix interprets `data` only through generic shapes, never through the kinds:
+
+```
+{"fields":{"verdict":"changes","commit":"abc1234"},     key/value table
+ "items":[{"id":"f1","text":"…","state":"open"}],       checklist (ids unique per comment)
+ "questions":[{"id":"q1","text":"…"}],                  rendered as an answer form
+ "updates":[{"ref":"<op id>#f1","state":"addressed"}]}  folds into earlier items
+```
+
+- Answering a question form posts a reply (`kind: answer`, `reply-to` set) whose `fields`
+  map question ids to answers.
+- An item's current state is its latest `updates` entry in total order.
+- `question`, `answer`, `review`, `assumption`, `abort` and `workaround` are just the
+  skill's kind names. The UI shows a kind as a badge, plus `fields` / `items` /
+  `questions`.
+- Older readers ignore the op.
+- Editing a typed comment follows the `edit-comment` rule (author only, LWW).
+
+### 15.5 Autonomy and the human-stage guard
+
+- **Field**: `autonomy` on a WBS root, inherited by its subtree: `{mode, until}` with mode
+  `supervised` | `autonomous` | `halted`, LWW.
+  - `autonomous` with `until` in the past counts as `supervised`, so a forgotten switch
+    expires by itself.
+  - `halted` stops `claim --next` for the subtree until a human changes it.
+- **Who may set it**: humans may set any mode. Agents may only set `halted`, so the runner's
+  circuit breaker can stop a night but never start or resume one. This is checked in core,
+  by the identity's kind.
+- **The guard**: while the effective mode is `autonomous`, core refuses
+  (`TIX_E_REFUSED`) any write by an `agent` identity that would put a ticket into a stage
+  tagged `human`. The message tells the agent to decide and record an assumption, or abort,
+  instead.
+  - The check is local. Merges never reject ops; incoming data is validated as usual.
+  - It guarantees that a well-meaning agent can't park the night's work on a person.
+  - **The `blocked` phase is exempt.** A blocked ticket never holds up the queue:
+    `claim --next` skips only its dependents and keeps handing out other work. That makes
+    `blocked/aborted` the agent's escape hatch for impossible tickets. It's a stronger
+    "needs a person" that stops one branch of the plan, never the whole night.
+- **CLI**: `tix autonomy ROOT on --until 08:00|--for 10h`, `tix autonomy ROOT off|halt|show`.
+- The web header shows the mode, its expiry, and counts since it was switched on.
+
+### 15.6 Agent and live interfaces
+
+- **`--json`** on `ls`, `show`, `claim`, `stage ls`, `autonomy show` and `log`. Output comes
+  from the canonical JSON writer, with field names matching the op schema.
+- **`tix log [--since T] [--under R] [--json]`**: the activity feed. It lists ops in total
+  order with author, kind, ticket and summary. The web's activity page uses the same feed.
+- **`tix watch [--under R] [--pull 30s] [--json]`**: one NDJSON event per changed ticket
+  (`{"ticket","head","ops":[…]}`). It compares ref heads once a second and pulls on the
+  given interval. Agents use it to wait without polling `ls`.
+- **Web UI**:
+  - **Inbox**: tickets in a `human` stage, then live claims with their age.
+  - **Activity page**: since a time, by default since autonomy was switched on.
+  - **Typed comments** rendered from their shapes, with answer forms that are plain POSTs
+    without JavaScript.
+  - Claim badges and identity kind badges.
+  - `/events` adds `ticket` events naming the changed ids, so the ticket page updates its
+    timeline in place.
+  - An optional browser notification when a ticket enters a `human` stage.
+- **Seeing other clones' pushes**: the web server only sees its own refs.
+  - `tix web --pull-every 60s` pulls on the server tick.
+  - `POST /hooks/forgejo` (HMAC secret from `--hook-secret-file`) pulls as soon as Forgejo
+    receives a push.
+
+### 15.7 Not in tix
+
+Review rounds are counted from `review` comments by the skill. These all live in the skill:
+
+- the stage transitions each role may make,
+- not reviewing your own work, and giving the previous implementer first refusal,
+- the escalation limit (`maxReviewRounds`, default 3),
+- the shapes of assumption, abort and workaround notes.
+
+Time budgets per ticket, the abort-rate circuit breaker and how many agents run belong to
+the runner.
+
+### 15.8 Testing
+
+- **Convergence tests** for `set-state` (including with older readers), first-live-claim
+  (every merge order of concurrent claims, renewals, expiries and releases), typed-comment
+  updates, and inheritance of `stages` and `autonomy`.
+- **Contract and handler tests** for the guard (an agent refused in autonomous mode,
+  allowed in supervised and expired modes; a human always allowed), `claim --next` racing
+  between two clones over a real remote, and the web inbox and answer forms with hostile
+  content.
+- Extend `cli.sh`, `browser.py` and the TUI pty test for every new command, page and key.
