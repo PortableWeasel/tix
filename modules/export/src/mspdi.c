@@ -71,6 +71,7 @@ static void el_hours(tix_buf *out, const char *name, long long hours)
 /* Hours per day -> the end of the working day ("17:00:00" for 8). */
 static void day_end(int hours, char *out, size_t n)
 {
+	hours = hours < 0 ? 0 : hours > 24 ? 24 : hours;
 	if (hours <= 4)
 		snprintf(out, n, "%02d:00:00", 8 + hours);
 	else if (hours <= 15)
@@ -215,7 +216,7 @@ static void task(tix_buf *out, const tix_schedule *s, size_t i)
 	const tix_plan_task *t = &s->tasks[i];
 	const tix_ticket *tk = &t->ticket->u.ticket;
 	const tix_ticket_plan *p = &tk->plan;
-	char end[16];
+	char end[32];
 	day_end(cal_hours(t->calendar), end, sizeof(end));
 	bool manual = p->mode == TIX_MODE_MANUAL;
 	tix_buf_adds(out, "<Task>");
@@ -386,7 +387,7 @@ void tix_export_mspdi(const tix_schedule *s, const char *title, tix_buf *out)
 			el_i(out, "TaskUID", (long long)i + 1);
 			el_i(out, "ResourceUID", (long long)r + 1);
 			if (t->scheduled) {
-				char end[16];
+				char end[32];
 				day_end(cal_hours(t->calendar), end, sizeof(end));
 				el_dt(out, "Finish", t->finish, end);
 				el_dt(out, "Start", t->start, "08:00:00");
