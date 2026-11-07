@@ -712,6 +712,39 @@ static void test_index(void)
 	snapshots(plain, &without);
 	TK_STR_EQ(tix_buf_cstr(&with), tix_buf_cstr(&without));
 
+	/* lists decode only what they return; the rest is filtered on cached summaries */
+	tix_entity_list l0;
+	TK_OK(tix_ticket_list(r, NULL, &l0, &e), &e); /* warm: every entry has a summary */
+	tix_entity_list_free(&l0);
+	size_t hs = tix_index_mem_hits(x), ms = tix_index_mem_misses(x), sc = tix_index_mem_scans(x);
+	tix_ticket_query done = {.status_mask = 1u << TIX_TICKET_DONE};
+	TK_OK(tix_ticket_list(r, &done, &l0, &e), &e);
+	TK_CHECK(l0.n == 1 && tix_oid_eq(&l0.v[0]->id, &t[0]));
+	TK_CHECK(tix_index_mem_scans(x) == sc + 1 && tix_index_mem_hits(x) == hs + 1 && tix_index_mem_misses(x) == ms);
+	tix_entity_list_free(&l0);
+	/* a summary that doesn't decode is a miss for that ticket only: it is loaded instead */
+	tix_index_mem_corrupt_summary(x, TIX_ENTITY_TICKET, &t[0], "tixsum 1 1\n1:9");
+	TK_OK(tix_ticket_list(r, &done, &l0, &e), &e);
+	TK_CHECK(l0.n == 1 && tix_oid_eq(&l0.v[0]->id, &t[0]) && l0.v[0]->u.ticket.status == TIX_TICKET_DONE);
+	tix_entity_list_free(&l0);
+	/* ... and repaired: next time only the returned ticket is decoded */
+	hs = tix_index_mem_hits(x);
+	TK_OK(tix_ticket_list(r, &done, &l0, &e), &e);
+	TK_CHECK(l0.n == 1 && tix_index_mem_hits(x) == hs + 1);
+	tix_entity_list_free(&l0);
+	tix_index_mem_corrupt_summary(x, TIX_ENTITY_TICKET, &t[1], "");
+	tix_ticket_query open = {.status_mask = 1u << TIX_TICKET_OPEN, .sort = TIX_SORT_WBS};
+	TK_OK(tix_ticket_list(r, &open, &l0, &e), &e);
+	TK_CHECK(l0.n == 2);
+	tix_entity_list_free(&l0);
+	/* a summary for an old head is ignored (the ref moved under a writer without the cache) */
+	op = tix_op_set_status(TIX_TICKET_OPEN);
+	TK_OK(tix_entity_apply(plain, TIX_ENTITY_TICKET, &t[0], &op, 1, &e), &e);
+	tix_op_free(&op);
+	TK_OK(tix_ticket_list(r, &done, &l0, &e), &e);
+	TK_CHECK(l0.n == 0);
+	tix_entity_list_free(&l0);
+
 	/* cache hits still advance the clock: a fresh repo whose clock was lost writes after them */
 	tix_repo_close(r);
 	TK_OK(tix_store_local_set(s, "clock", "1\n", 2, &e), &e);
@@ -834,6 +867,31 @@ static void expect_order(tix_repo *r, tix_ticket_query q, const tix_oid *want, s
 	tix_entity_list_free(&l);
 }
 
+static void test_stamp(void)
+{
+	fake_env env = {1700000000, 11};
+	tix_store *s = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_repo *r = open_repo(s, &env, NULL);
+	char a[TIX_STAMP_LEN], b[TIX_STAMP_LEN], c[TIX_STAMP_LEN];
+	tix_oid me, t;
+	TK_OK(tix_repo_stamp(r, a, &e), &e);
+	TK_CHECK(strlen(a) == 16);
+	TK_OK(tix_identity_create(r, "Ada", "a@x", &me, &e), &e);
+	TK_OK(tix_repo_set_identity(r, &me, &e), &e);
+	TK_OK(tix_ticket_create(r, "One", "", NULL, &t, &e), &e);
+	TK_OK(tix_repo_stamp(r, b, &e), &e);
+	TK_CHECK(strcmp(a, b) != 0);
+	TK_OK(tix_repo_stamp(r, c, &e), &e);
+	TK_STR_EQ(b, c); /* stable while nothing changes */
+	tix_op op = tix_op_set_status(TIX_TICKET_DONE);
+	TK_OK(tix_entity_apply(r, TIX_ENTITY_TICKET, &t, &op, 1, &e), &e);
+	tix_op_free(&op);
+	TK_OK(tix_repo_stamp(r, c, &e), &e);
+	TK_CHECK(strcmp(b, c) != 0); /* an edit moves a head */
+	tix_repo_close(r);
+	tix_store_destroy(s);
+}
+
 static void test_sort(void)
 {
 	fake_env env = {1700000000, 9};
@@ -869,6 +927,7 @@ static void test_sort(void)
 int main(void)
 {
 	test_sort();
+	test_stamp();
 	test_flow();
 	test_resolve();
 	test_retry();

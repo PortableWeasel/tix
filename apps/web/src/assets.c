@@ -1,75 +1,25 @@
 /* Embedded static files, looked up by exact name (no file system serving, section 13.6).
- * Names carry a content hash, so they can be cached forever. */
+ * The sources are apps/web/assets/; cmake/Embed.cmake compiles them in. Names carry a
+ * content hash, so they can be cached forever. */
 #include "app.h"
 
 #include <stdio.h>
 #include <string.h>
 
-static const char css[] =
-	":root{color-scheme:light dark;--fg:#1d1d1f;--bg:#fff;--muted:#6b6b70;--line:#d8d8dc;"
-	"--accent:#1a5fb4;--crit:#c01c28;--ok:#26a269;--warn:#e5a50a;--soft:#f3f3f5}\n"
-	"@media (prefers-color-scheme:dark){:root{--fg:#e8e8ea;--bg:#18181b;--muted:#a0a0a8;"
-	"--line:#3a3a40;--accent:#78aeed;--crit:#f66151;--ok:#57e389;--warn:#f8e45c;--soft:#232328}}\n"
-	"*{box-sizing:border-box}\n"
-	"body{margin:0;font:15px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif;color:var(--fg);"
-	"background:var(--bg)}\n"
-	"header{border-bottom:1px solid var(--line);padding:.5rem 1rem;display:flex;flex-wrap:wrap;"
-	"gap:.5rem 1.5rem;align-items:center}\n"
-	"nav a{margin-right:.8rem}\n"
-	"main{padding:1rem;max-width:72rem}\n"
-	"h1{font-size:1.4rem;margin:.2rem 0 1rem}\n"
-	"h2{font-size:1.1rem;margin:1.5rem 0 .5rem}\n"
-	"a{color:var(--accent)}\n"
-	"code,.id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em}\n"
-	"table{border-collapse:collapse;width:100%}\n"
-	"th,td{text-align:left;padding:.3rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}\n"
-	"th{font-weight:600;color:var(--muted)}\n"
-	"td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}\n"
-	"form{margin:.5rem 0}\n"
-	"fieldset{border:1px solid var(--line);padding:.5rem 1rem;margin:1rem 0}\n"
-	"label{display:inline-block;margin:.2rem 1rem .2rem 0}\n"
-	"input,select,textarea,button{font:inherit}\n"
-	"textarea{width:100%;min-height:8rem}\n"
-	"button{cursor:pointer}\n"
-	".note{color:var(--muted)}\n"
-	".error{color:var(--crit);font-weight:600}\n"
-	".ok{color:var(--ok)}\n"
-	".crit{color:var(--crit)}\n"
-	".status{display:inline-block;padding:0 .4rem;border-radius:.6rem;background:var(--soft);font-size:.85em}\n"
-	".label{display:inline-block;padding:0 .4rem;border:1px solid var(--line);border-radius:.6rem;"
-	"font-size:.85em;margin-right:.2rem}\n"
-	".comment{border-left:3px solid var(--line);padding:.2rem .8rem;margin:.8rem 0}\n"
-	".body{white-space:pre-wrap}\n"
-	"svg.gantt{max-width:100%;height:auto;font-size:12px}\n"
-	"svg.gantt text{fill:var(--fg)}\n"
-	"svg.gantt .bar{fill:var(--accent)}\n"
-	"svg.gantt .bar.crit{fill:var(--crit)}\n"
-	"svg.gantt .bar.sum{fill:var(--muted)}\n"
-	"svg.gantt .grid{stroke:var(--line)}\n"
-	"svg.gantt .arrow{stroke:var(--muted);fill:none}\n"
-	"svg.gantt .off{fill:var(--soft)}\n"
-	"svg.gantt .today{stroke:var(--warn);stroke-width:2}\n"
-	"svg.gantt .ms{fill:var(--fg)}\n"
-	"svg.gantt .ms.crit{fill:var(--crit)}\n"
-	"svg.gantt .done{fill:var(--ok)}\n"
-	"svg.gantt .bar.late{stroke:var(--crit);stroke-width:2}\n"
-	"svg.gantt .head{fill:var(--muted)}\n"
-	"svg.gantt .day{fill:var(--muted)}\n"
-	"svg.gantt a:hover .bar,svg.gantt a:focus .bar{opacity:.75}\n"
-	".wide{overflow-x:auto}\n"
-	"table.load td,table.load th{padding:.15rem .3rem;font-size:.85em}\n"
-	"form.filters label{margin-right:.6rem}\n"
-	"form.search,form.logout,form.inline{display:inline;margin:0}\n"
-	"p.field{margin:.4rem 0}\n"
-	"td.d1{padding-left:1.5rem}td.d2{padding-left:2.5rem}td.d3{padding-left:3.5rem}td.d4{padding-left:4.5rem}\n"
-	"td.d5,td.d6,td.d7,td.d8{padding-left:5.5rem}\n"
-	"table.fields th{width:12rem}\n"
-	".s-done,.s-cancelled{opacity:.7}\n"
-	".s-blocked{color:var(--crit)}\n"
-	".s-in-progress{color:var(--accent)}\n"
-	"@media print{header{display:none}}\n";
+extern const char tix_asset_css[], tix_asset_js[];
+extern const size_t tix_asset_css_len, tix_asset_js_len;
 
-static char css_name[32];
+typedef struct asset {
+	const char *data;
+	const size_t *len;
+	const char *ext, *type;
+	char name[32];
+} asset;
+
+static asset assets[] = {
+	{tix_asset_css, &tix_asset_css_len, "css", "text/css; charset=utf-8", ""},
+	{tix_asset_js, &tix_asset_js_len, "js", "text/javascript; charset=utf-8", ""},
+};
 
 static uint32_t fnv1a(const char *s, size_t n)
 {
@@ -79,20 +29,31 @@ static uint32_t fnv1a(const char *s, size_t n)
 	return h;
 }
 
+static const char *name_of(asset *a)
+{
+	if (!a->name[0])
+		snprintf(a->name, sizeof(a->name), "tix-%08x.%s", fnv1a(a->data, *a->len), a->ext);
+	return a->name;
+}
+
 const char *asset_css_name(void)
 {
-	if (!css_name[0])
-		snprintf(css_name, sizeof(css_name), "tix-%08x.css", fnv1a(css, sizeof(css) - 1));
-	return css_name;
+	return name_of(&assets[0]);
+}
+
+const char *asset_js_name(void)
+{
+	return name_of(&assets[1]);
 }
 
 bool asset_find(const char *name, const char **type, const char **body, size_t *len)
 {
-	if (!strcmp(name, asset_css_name())) {
-		*type = "text/css; charset=utf-8";
-		*body = css;
-		*len = sizeof(css) - 1;
-		return true;
-	}
+	for (size_t i = 0; i < sizeof(assets) / sizeof(*assets); i++)
+		if (!strcmp(name, name_of(&assets[i]))) {
+			*type = assets[i].type;
+			*body = assets[i].data;
+			*len = *assets[i].len;
+			return true;
+		}
 	return false;
 }

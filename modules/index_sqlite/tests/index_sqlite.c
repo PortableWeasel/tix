@@ -45,7 +45,7 @@ int main(void)
 	tix_oid a = oid(1), h = oid(2);
 	tix_buf b = TIX_BUF_INIT;
 	if (x)
-		TK_OK(tix_index_put(x, TIX_ENTITY_TICKET, &a, &h, "kept", 4, &e), &e);
+		TK_OK(tix_index_put(x, TIX_ENTITY_TICKET, &a, &h, "kept", 4, NULL, 0, &e), &e);
 	tix_index_destroy(x);
 
 	/* persists across opens */
@@ -67,7 +67,7 @@ int main(void)
 	TK_OK(tix_index_sqlite_open(path, &x, &e), &e);
 	if (x) {
 		TK_STATUS(tix_index_get(x, TIX_ENTITY_TICKET, &a, &h, &b, &e), TIX_ERR_NOT_FOUND, &e);
-		TK_OK(tix_index_put(x, TIX_ENTITY_TICKET, &a, &h, "again", 5, &e), &e);
+		TK_OK(tix_index_put(x, TIX_ENTITY_TICKET, &a, &h, "again", 5, NULL, 0, &e), &e);
 	}
 	tix_index_destroy(x);
 

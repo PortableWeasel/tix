@@ -464,9 +464,19 @@ these: concurrent edits can still form cycles, which `plan` breaks deterministic
   version, WAL with `synchronous=OFF` (it is a cache). A file that isn't a usable tix cache
   is deleted and recreated. A symlink or non-file in its place is refused, and tix then runs
   without a cache. Busy timeout 2 s, so concurrent tix processes don't fail.
-- **Queries** still filter decoded entities in core. With the decode cost this low, SQL
-  queries weren't needed for the target size (thousands of tickets). An `entities`
-  side table with indexed columns can come later without changing the port much.
+- **Ticket lists filter on summaries** (index port v2, schema 2). Profiling `ls` on 5,100
+  tickets showed 75% of a warm run spent decoding cached entities with cJSON. Each cached
+  ticket now also carries a summary: status, author, parent, rank, title, created, updated,
+  max Lamport, labels and assignees, in a length-prefixed encoding that core owns (the
+  index stores it as opaque bytes, like the entity). `tix_ticket_list` reads every summary
+  with one `scan`, filters and sorts on them, and decodes only the tickets it returns.
+  - A row counts only if its head equals the ref's current head and its summary decodes
+    (the header carries `TIX_ENTITY_CODEC_VERSION`). Otherwise that ticket is loaded, as
+    without a cache, and its entry is rewritten.
+  - Matching stays in core rather than SQL `WHERE`: one implementation of the text match
+    and the WBS rules, and WBS ordering and `--under` need every ticket's parent anyway.
+  - Measured on 5,100 tickets, warm, release build: `ls --status done` 0.22 s → 0.06 s,
+    `ls --label X --all` (1 in 7) → 0.12 s; `ls --all` unchanged (it decodes everything).
 - Measured (release build, 500 tickets × 5 commits, loose objects): `tix ls --all` 300 ms
   without the cache, 340 ms cold (filling it), 25 ms warm. After `git gc`: 50 ms → 21 ms.
 - CLI: `tix index status|clear`. `TIX_NO_INDEX=1` disables the cache.

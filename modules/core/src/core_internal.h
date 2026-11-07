@@ -43,6 +43,28 @@ tix_status core_load_at(tix_repo *r, tix_entity_type t, const tix_oid *head, tix
 void core_clock_see(tix_repo *r, uint64_t lamport);
 tix_status core_clock_save(tix_repo *r, tix_error *err);
 
+/* What ticket lists filter and sort on (summary.c). id/head come first and survive
+ * core_facets_free; everything from status on is owned. */
+typedef struct core_facets {
+	tix_oid id, head;
+	tix_ticket_status status;
+	tix_oid author, parent; /* parent null: top level */
+	char *rank, *title;     /* rank NULL: unranked */
+	int64_t created, updated;
+	uint64_t max_lamport;
+	tix_strs labels;
+	TIX_VEC(tix_oid) assignees;
+	tix_entity *e;          /* the loaded entity, once there is one (OWNS) */
+} core_facets;
+
+/* REQUIRES e is a ticket. Replaces out's contents. */
+void core_summary_encode(const tix_entity *e, tix_buf *out);
+/* RETURNS false (f's owned part left empty) for anything but a well-formed current summary. */
+bool core_summary_decode(const char *data, size_t len, tix_hash_algo algo, core_facets *f);
+/* Takes ownership of e (f->e). */
+void core_facets_from_entity(tix_entity *e, core_facets *f);
+void core_facets_free(core_facets *f);
+
 /* "refs/tix/<type>/<hex id>" into out[n]. */
 void core_ref_of(tix_entity_type t, const tix_oid *id, char *out, size_t n);
 

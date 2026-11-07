@@ -40,6 +40,7 @@ typedef struct web_app {
 	uint64_t clock;
 	char always_headers[1024]; /* security headers on every response */
 	char css_url[64];          /* "/assets/tix-<hash>.css" */
+	char js_url[64];           /* "/assets/tix-<hash>.js" */
 } web_app;
 
 /* Fills app (makes the login token). */
@@ -76,6 +77,7 @@ void form_csrf(web_ctx *x);
 /* Assets (assets.c). RETURNS false when name isn't one. */
 bool asset_find(const char *name, const char **type, const char **body, size_t *len);
 const char *asset_css_name(void); /* "tix-<hash>.css" */
+const char *asset_js_name(void);  /* "tix-<hash>.js": progressive enhancement only (M7) */
 
 /* ---- shared page helpers (util.c) ---- */
 

@@ -41,6 +41,7 @@ void web_app_init(web_app *app, const web_app_config *cfg)
 	app->err = (tix_error)TIX_ERROR_INIT;
 	random_hex(app, app->token);
 	snprintf(app->css_url, sizeof(app->css_url), "/assets/%s", asset_css_name());
+	snprintf(app->js_url, sizeof(app->js_url), "/assets/%s", asset_js_name());
 	snprintf(app->always_headers, sizeof(app->always_headers),
 		 "Content-Security-Policy: default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; "
 		 "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'\r\n"
@@ -124,7 +125,9 @@ void page_begin(web_ctx *x, const char *title)
 	      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
 	      "<link rel=\"stylesheet\" href=\"");
 	h_text(h, x->app->css_url);
-	HL(h, "\"><title>");
+	HL(h, "\"><script defer src=\"");
+	h_text(h, x->app->js_url);
+	HL(h, "\"></script><title>");
 	h_text(h, title);
 	HL(h, " · tix</title></head>\n<body>\n");
 	if (x->session) {

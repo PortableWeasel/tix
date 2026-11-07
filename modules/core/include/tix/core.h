@@ -49,6 +49,13 @@ void tix_repo_close(tix_repo *r);
  * clock (state is unchanged). */
 tix_status tix_repo_refresh(tix_repo *r, tix_error *err);
 
+/* A fingerprint of every entity ref (refs/tix/(all): names and heads), as 16 lowercase hex
+ * digits plus NUL. It changes whenever any entity is created or moves, so a frontend can
+ * tell a page is stale (M7 live refresh). Not stored; not a security property. Call
+ * tix_repo_refresh first to see other processes' changes. */
+#define TIX_STAMP_LEN 17
+tix_status tix_repo_stamp(tix_repo *r, char out[TIX_STAMP_LEN], tix_error *err);
+
 /* RETURNS false (and leaves *out alone) when no identity is set. */
 bool tix_repo_identity(const tix_repo *r, tix_oid *out);
 /* Makes id the identity new ops are written as (in memory; persisting the choice,

@@ -37,6 +37,26 @@ tix_status tix_repo_refresh(tix_repo *r, tix_error *err)
 	return clock_load(r, err);
 }
 
+tix_status tix_repo_stamp(tix_repo *r, char out[TIX_STAMP_LEN], tix_error *err)
+{
+	TIX_REQUIRE(r && out);
+	tix_refs refs;
+	tix_status st = tix_store_ref_list(r->store, "refs/tix/", &refs, err);
+	if (st)
+		return st;
+	uint64_t h = 14695981039346656037ull; /* FNV-1a 64 over "name hex\n" in name order */
+	char hex[TIX_OID_MAX_HEX + 1];
+	for (size_t i = 0; i < refs.n; i++) {
+		const char *parts[] = {refs.v[i].name, " ", tix_oid_hex(&refs.v[i].oid, hex), "\n"};
+		for (size_t k = 0; k < 4; k++)
+			for (const char *p = parts[k]; *p; p++)
+				h = (h ^ (unsigned char)*p) * 1099511628211ull;
+	}
+	tix_refs_free(&refs);
+	snprintf(out, TIX_STAMP_LEN, "%016llx", (unsigned long long)h);
+	return TIX_OK;
+}
+
 tix_status core_clock_save(tix_repo *r, tix_error *err)
 {
 	char s[32];
@@ -270,6 +290,20 @@ static bool cache_get(tix_repo *r, tix_entity_type t, const tix_oid *id, const t
 	return true;
 }
 
+/* Caches a validated entity at its head, with a ticket's summary. */
+static void cache_put(tix_repo *r, const tix_entity *e)
+{
+	if (!r->index)
+		return;
+	tix_buf enc = TIX_BUF_INIT, sum = TIX_BUF_INIT;
+	tix_entity_encode(e, &enc);
+	if (e->type == TIX_ENTITY_TICKET)
+		core_summary_encode(e, &sum);
+	tix_index_put(r->index, e->type, &e->id, &e->head, enc.data, enc.len, sum.data, sum.len, NULL);
+	tix_buf_free(&enc);
+	tix_buf_free(&sum);
+}
+
 tix_status tix_entity_load(tix_repo *r, tix_entity_type t, const tix_oid *id, tix_entity **out, tix_error *err)
 {
 	char ref[128];
@@ -288,12 +322,7 @@ tix_status tix_entity_load(tix_repo *r, tix_entity_type t, const tix_oid *id, ti
 		*out = NULL;
 		return tix_error_set(err, TIX_ERR_INVALID, "%s does not point at the history of that id", ref);
 	}
-	if (r->index) { /* only validated entities are cached */
-		tix_buf enc = TIX_BUF_INIT;
-		tix_entity_encode(*out, &enc);
-		tix_index_put(r->index, t, id, &head, enc.data, enc.len, NULL);
-		tix_buf_free(&enc);
-	}
+	cache_put(r, *out); /* only validated entities are cached */
 	return TIX_OK;
 }
 
@@ -620,14 +649,6 @@ static tix_status list_all(tix_repo *r, tix_entity_type t, tix_entity_list *out,
 	return TIX_OK;
 }
 
-static int cmp_ticket(const void *pa, const void *pb)
-{
-	const tix_entity *a = *(tix_entity *const *)pa, *b = *(tix_entity *const *)pb;
-	if (a->created != b->created)
-		return a->created > b->created ? -1 : 1;
-	return tix_oid_cmp(&a->id, &b->id);
-}
-
 static const char *entity_name(const tix_entity *e)
 {
 	switch (e->type) {
@@ -646,13 +667,13 @@ static int cmp_by_name(const void *pa, const void *pb)
 }
 
 /* id prefix, or title substring ignoring ASCII case (byte-wise, so UTF-8 safe). */
-static bool text_matches(const char *text, const tix_entity *e)
+static bool text_matches(const char *text, const core_facets *f)
 {
 	char hex[TIX_OID_MAX_HEX + 1];
 	size_t n = strlen(text);
-	if (!strncmp(tix_oid_hex(&e->id, hex), text, n))
+	if (!strncmp(tix_oid_hex(&f->id, hex), text, n))
 		return true;
-	const char *title = e->u.ticket.title;
+	const char *title = f->title;
 	for (size_t i = 0; title[i]; i++) {
 		size_t k = 0;
 		while (k < n && title[i + k] &&
@@ -664,56 +685,91 @@ static bool text_matches(const char *text, const tix_entity *e)
 	return false;
 }
 
-static bool matches(const tix_ticket_query *q, const tix_entity *e, const tix_entity_list *all)
+static int cmp_facet_id_row(const void *pa, const void *pb)
 {
-	const tix_ticket *t = &e->u.ticket;
+	return tix_oid_cmp(&((const tix_index_row *)pa)->id, &((const tix_index_row *)pb)->id);
+}
+
+/* Ticket list state: one facets record per valid ticket ref, sorted by id. */
+typedef struct facet_set {
+	core_facets *v;
+	size_t n;
+} facet_set;
+
+static int cmp_facet_id(const void *pa, const void *pb)
+{
+	return tix_oid_cmp(&((const core_facets *)pa)->id, &((const core_facets *)pb)->id);
+}
+
+static const core_facets *facet_find(const facet_set *fs, const tix_oid *id)
+{
+	core_facets key = {.id = *id};
+	return bsearch(&key, fs->v, fs->n, sizeof(*fs->v), cmp_facet_id);
+}
+
+/* Parent chain from f up, ending at a missing parent or a cycle (remote data can't loop). */
+static size_t parent_chain(const facet_set *fs, const core_facets *f, const core_facets **up, size_t cap)
+{
+	size_t n = 0;
+	while (f && n < cap) {
+		for (size_t k = 0; k < n; k++)
+			if (up[k] == f)
+				return n;
+		up[n++] = f;
+		f = tix_oid_is_null(&f->parent) ? NULL : facet_find(fs, &f->parent);
+	}
+	return n;
+}
+
+static bool facets_match(const tix_ticket_query *q, const core_facets *f, const facet_set *fs,
+			 const core_facets **scratch)
+{
 	if (!q)
 		return true;
 	if (q->assignee) {
 		bool hit = false;
-		for (size_t k = 0; k < t->plan.nassignments && !hit; k++)
-			hit = tix_oid_eq(&t->plan.assignments[k].resource, q->assignee);
+		for (size_t k = 0; k < f->assignees.n && !hit; k++)
+			hit = tix_oid_eq(&f->assignees.v[k], q->assignee);
 		if (!hit)
 			return false;
 	}
-	if (q->under && (tix_oid_eq(&e->id, q->under) || tix_oid_is_null(&t->plan.parent) ||
-			 !parent_reaches(all, &t->plan.parent, q->under)))
+	if (q->under) {
+		size_t n = parent_chain(fs, f, scratch, fs->n);
+		bool below = false;
+		for (size_t k = 1; k < n && !below; k++) /* k = 0 is f itself */
+			below = tix_oid_eq(&scratch[k]->id, q->under);
+		if (!below)
+			return false;
+	}
+	if (q->status_mask && !(q->status_mask & (1u << f->status)))
 		return false;
-	if (q->status_mask && !(q->status_mask & (1u << t->status)))
+	if (q->label && !tix_strs_contains(&f->labels, q->label))
 		return false;
-	if (q->label && !tix_strs_contains(&t->labels, q->label))
+	if (q->author && !tix_oid_eq(q->author, &f->author))
 		return false;
-	if (q->author && !tix_oid_eq(q->author, &t->author))
-		return false;
-	if (q->text && *q->text && !text_matches(q->text, e))
+	if (q->text && *q->text && !text_matches(q->text, f))
 		return false;
 	return true;
 }
 
-/* One ticket to order, with its parent chain from the root (chain[depth-1] == e). */
+/* One ticket to order, with its parent chain from the root (chain[depth-1] == f). */
 typedef struct sort_item {
-	tix_entity *e;
-	const tix_entity **chain;
+	core_facets *f;
+	const core_facets **chain;
 	size_t depth;
 } sort_item;
 
 static tix_ticket_sort sort_mode; /* qsort context; single-threaded (rule 8) */
 
-static int cmp_oid_ptr(const void *pa, const void *pb)
-{
-	return tix_oid_cmp(&(*(tix_entity *const *)pa)->id, &(*(tix_entity *const *)pb)->id);
-}
-
 /* Sibling order, as plan's: ranked first (by rank), then unranked; ties by id. */
-static int cmp_siblings(const tix_entity *a, const tix_entity *b)
+static int cmp_siblings(const core_facets *a, const core_facets *b)
 {
-	const char *ra = a->u.ticket.plan.rank, *rb = b->u.ticket.plan.rank;
-	if (ra && rb) {
-		int c = strcmp(ra, rb);
+	if (a->rank && b->rank) {
+		int c = strcmp(a->rank, b->rank);
 		if (c)
 			return c;
-	} else if (ra || rb) {
-		return ra ? -1 : 1;
+	} else if (a->rank || b->rank) {
+		return a->rank ? -1 : 1;
 	}
 	return tix_oid_cmp(&a->id, &b->id);
 }
@@ -736,85 +792,118 @@ static int status_order(tix_ticket_status s)
 static int cmp_item(const void *pa, const void *pb)
 {
 	const sort_item *a = pa, *b = pb;
+	const core_facets *x = a->f, *y = b->f;
 	switch (sort_mode) {
 	case TIX_SORT_UPDATED:
-		if (a->e->updated != b->e->updated)
-			return a->e->updated > b->e->updated ? -1 : 1;
-		return tix_oid_cmp(&a->e->id, &b->e->id);
+		if (x->updated != y->updated)
+			return x->updated > y->updated ? -1 : 1;
+		return tix_oid_cmp(&x->id, &y->id);
 	case TIX_SORT_STATUS: {
-		int sa = status_order(a->e->u.ticket.status), sb = status_order(b->e->u.ticket.status);
+		int sa = status_order(x->status), sb = status_order(y->status);
 		if (sa != sb)
 			return sa < sb ? -1 : 1;
 	}
 		/* fall through */
 	case TIX_SORT_WBS:
 		return cmp_wbs(a, b);
-	default:
-		return cmp_ticket(&a->e, &b->e);
+	default: /* newest: created desc, then id */
+		if (x->created != y->created)
+			return x->created > y->created ? -1 : 1;
+		return tix_oid_cmp(&x->id, &y->id);
 	}
 }
 
-/* Parent chains for items, looked up in all (sorted by id here). Cycles and missing
- * parents end a chain, so remote data can't loop. */
-static void build_chains(tix_entity_list *all, sort_item *items, size_t n)
+/*
+ * Facets for every ticket ref. With an index, one scan supplies summaries; a row counts
+ * only if its head is the ref's current head and its summary decodes. Everything else is
+ * loaded (replayed and re-cached), as without an index.
+ */
+static tix_status gather(tix_repo *r, facet_set *fs, size_t *nbroken, tix_error *err)
 {
-	tix_entity **byid = tix_xcalloc(all->n ? all->n : 1, sizeof(*byid));
-	memcpy(byid, all->v, all->n * sizeof(*byid));
-	qsort(byid, all->n, sizeof(*byid), cmp_oid_ptr);
-	TIX_VEC(const tix_entity *) up = {0};
-	for (size_t i = 0; i < n; i++) {
-		up.n = 0;
-		const tix_entity *cur = items[i].e;
-		while (cur && up.n <= all->n) {
-			bool seen = false;
-			for (size_t k = 0; k < up.n && !seen; k++)
-				seen = up.v[k] == cur;
-			if (seen)
-				break;
-			TIX_VEC_PUSH(&up, cur);
-			const tix_oid *p = &cur->u.ticket.plan.parent;
-			if (tix_oid_is_null(p))
-				break;
-			tix_entity key = {.id = *p}, *kp = &key;
-			tix_entity **hit = bsearch(&kp, byid, all->n, sizeof(*byid), cmp_oid_ptr);
-			cur = hit ? *hit : NULL;
+	tix_refs refs;
+	tix_index_rows rows = {0};
+	const char *prefix = tix_entity_ref_prefix(TIX_ENTITY_TICKET);
+	tix_status st = tix_store_ref_list(r->store, prefix, &refs, err);
+	if (st)
+		return st;
+	if (r->index && tix_index_scan(r->index, TIX_ENTITY_TICKET, &rows, NULL) == TIX_OK && rows.n)
+		qsort(rows.v, rows.n, sizeof(*rows.v), cmp_facet_id_row);
+	size_t plen = strlen(prefix), hexlen = tix_oid_rawlen(r->store->algo) * 2;
+	fs->v = tix_xcalloc(refs.n ? refs.n : 1, sizeof(*fs->v));
+	fs->n = 0;
+	for (size_t i = 0; i < refs.n; i++) {
+		core_facets *f = &fs->v[fs->n];
+		const char *hex = refs.v[i].name + plen;
+		if (strlen(hex) != hexlen || !tix_oid_from_hex(&f->id, hex, hexlen)) {
+			(*nbroken)++;
+			continue;
 		}
-		items[i].depth = up.n;
-		items[i].chain = tix_xcalloc(up.n, sizeof(*items[i].chain));
-		for (size_t k = 0; k < up.n; k++)
-			items[i].chain[k] = up.v[up.n - 1 - k];
+		f->head = refs.v[i].oid;
+		tix_index_row key = {.id = f->id};
+		const tix_index_row *row = rows.n ? bsearch(&key, rows.v, rows.n, sizeof(*rows.v), cmp_facet_id_row) : NULL;
+		if (row && tix_oid_eq(&row->head, &f->head) &&
+		    core_summary_decode(row->summary.data, row->summary.len, r->store->algo, f)) {
+			core_clock_see(r, f->max_lamport);
+			fs->n++;
+			continue;
+		}
+		tix_entity *e;
+		if (tix_entity_load(r, TIX_ENTITY_TICKET, &f->id, &e, NULL)) {
+			(*nbroken)++;
+			continue;
+		}
+		if (r->index && row && tix_oid_eq(&row->head, &e->head))
+			cache_put(r, e); /* the entity hit but its summary didn't: repair it */
+		core_facets_from_entity(e, f);
+		fs->n++;
 	}
-	free(up.v);
-	free(byid);
+	tix_refs_free(&refs);
+	tix_index_rows_free(&rows);
+	qsort(fs->v, fs->n, sizeof(*fs->v), cmp_facet_id);
+	return TIX_OK;
 }
 
 tix_status tix_ticket_list(tix_repo *r, const tix_ticket_query *q, tix_entity_list *out, tix_error *err)
 {
-	tix_status st = list_all(r, TIX_ENTITY_TICKET, out, err);
+	facet_set fs = {0};
+	memset(out, 0, sizeof(*out));
+	tix_status st = gather(r, &fs, &out->nbroken, err);
 	if (st)
 		return st;
-	/* decide first (the WBS walk needs every ticket), then drop */
-	bool *keep_it = tix_xcalloc(out->n ? out->n : 1, sizeof(bool));
-	sort_item *items = tix_xcalloc(out->n ? out->n : 1, sizeof(*items));
+	const core_facets **scratch = tix_xcalloc(fs.n ? fs.n : 1, sizeof(*scratch));
+	sort_item *items = tix_xcalloc(fs.n ? fs.n : 1, sizeof(*items));
 	size_t keep = 0;
-	for (size_t i = 0; i < out->n; i++)
-		if ((keep_it[i] = matches(q, out->v[i], out)))
-			items[keep++].e = out->v[i];
-	/* order while the dropped tickets still exist: their chains may pass through them */
+	for (size_t i = 0; i < fs.n; i++)
+		if (facets_match(q, &fs.v[i], &fs, scratch))
+			items[keep++].f = &fs.v[i];
 	sort_mode = q ? q->sort : TIX_SORT_NEWEST;
 	if (sort_mode == TIX_SORT_WBS || sort_mode == TIX_SORT_STATUS)
-		build_chains(out, items, keep);
+		for (size_t i = 0; i < keep; i++) {
+			size_t n = parent_chain(&fs, items[i].f, scratch, fs.n);
+			items[i].depth = n;
+			items[i].chain = tix_xcalloc(n ? n : 1, sizeof(*items[i].chain));
+			for (size_t k = 0; k < n; k++)
+				items[i].chain[k] = scratch[n - 1 - k];
+		}
 	qsort(items, keep, sizeof(*items), cmp_item);
-	for (size_t i = 0; i < out->n; i++)
-		if (!keep_it[i])
-			tix_entity_free(out->v[i]);
+	/* decode only what is returned (cache hits when the index is warm) */
+	out->v = tix_xcalloc(keep ? keep : 1, sizeof(*out->v));
 	for (size_t i = 0; i < keep; i++) {
-		out->v[i] = items[i].e;
+		core_facets *f = items[i].f;
+		if (!f->e && tix_entity_load(r, TIX_ENTITY_TICKET, &f->id, &f->e, NULL)) {
+			out->nbroken++; /* moved or went bad since the scan */
+			f->e = NULL;
+		} else {
+			out->v[out->n++] = f->e;
+			f->e = NULL;
+		}
 		free(items[i].chain);
 	}
+	for (size_t i = 0; i < fs.n; i++)
+		core_facets_free(&fs.v[i]);
+	free(fs.v);
 	free(items);
-	free(keep_it);
-	out->n = keep;
+	free(scratch);
 	return TIX_OK;
 }
 

@@ -19,8 +19,16 @@ foreach(t request http)
   set_tests_properties(web.${t} PROPERTIES LABELS web TIMEOUT 60)
 endforeach()
 
+# Static files (apps/web/assets) compiled in: no file system serving (section 13.6).
+set(_assets ${CMAKE_CURRENT_SOURCE_DIR}/assets/tix.css ${CMAKE_CURRENT_SOURCE_DIR}/assets/app.js)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/assets_gen.c
+  COMMAND ${CMAKE_COMMAND} -DOUT=${CMAKE_CURRENT_BINARY_DIR}/assets_gen.c
+    "-DINPUTS=tix_asset_css=${CMAKE_CURRENT_SOURCE_DIR}/assets/tix.css$<SEMICOLON>tix_asset_js=${CMAKE_CURRENT_SOURCE_DIR}/assets/app.js"
+    -P ${PROJECT_SOURCE_DIR}/cmake/Embed.cmake
+  DEPENDS ${_assets} ${PROJECT_SOURCE_DIR}/cmake/Embed.cmake VERBATIM)
+
 # Pages, sessions and request checks: everything above HTTP, testable on store_mem.
-add_library(tix_web_app STATIC src/app.c src/html.c src/assets.c src/util.c src/gantt.c
+add_library(tix_web_app STATIC ${CMAKE_CURRENT_BINARY_DIR}/assets_gen.c src/app.c src/html.c src/assets.c src/util.c src/gantt.c
   src/pages_tickets.c src/pages_plan.c src/pages_res.c src/forms.c src/actions.c)
 target_link_libraries(tix_web_app PUBLIC tix_web_request tix::core tix::input tix::export)
 tix_apply_warnings(tix_web_app)

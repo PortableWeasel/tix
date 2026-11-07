@@ -357,11 +357,13 @@ static void field(world *w, tix_entity_type t, const tix_oid *id, const char *na
 	tix_input_free(&in);
 }
 
-/* No page may carry markup that came from the data. */
+/* No page may carry markup that came from the data. The one script tag is ours (M7). */
 static void clean(client *c, const char *what)
 {
-	const char *b = body(c);
-	if (strstr(b, "<script") || strstr(b, "<img") || strstr(b, "\xe2\x80\xae") || strstr(b, "href=\"javascript"))
+	const char *b = body(c), *s = strstr(b, "<script");
+	if (s && (strncmp(s, "<script defer src=\"/assets/tix-", strlen("<script defer src=\"/assets/tix-")) || strstr(s + 1, "<script")))
+		tk_fail(__FILE__, __LINE__, "unexpected script on %s", what);
+	if (strstr(b, "<img") || strstr(b, "\xe2\x80\xae") || strstr(b, "href=\"javascript"))
 		tk_fail(__FILE__, __LINE__, "unescaped hostile content on %s", what);
 }
 

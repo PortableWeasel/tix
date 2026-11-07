@@ -8,12 +8,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define SCHEMA_VERSION 1
+#define SCHEMA_VERSION 2 /* 2: summary column (port v2) */
 
 typedef struct sql_index {
 	tix_index base; /* must be first */
 	sqlite3 *db;
-	sqlite3_stmt *get, *put, *clear, *count;
+	sqlite3_stmt *get, *put, *scan, *clear, *count;
 } sql_index;
 
 static const tix_index_vt sql_vt;
@@ -68,13 +68,54 @@ static tix_status s_get(tix_index *x, tix_entity_type t, const tix_oid *id, cons
 	return st;
 }
 
+/* Inverse of key_of. RETURNS false for a key this adapter didn't write. */
+static bool oid_of(const void *blob, int len, tix_oid *out)
+{
+	const uint8_t *b = blob;
+	if (len < 1 || (b[0] != TIX_HASH_SHA1 && b[0] != TIX_HASH_SHA256) ||
+	    (size_t)len != tix_oid_rawlen((tix_hash_algo)b[0]) + 1)
+		return false;
+	memset(out, 0, sizeof(*out));
+	out->algo = b[0];
+	memcpy(out->bytes, b + 1, (size_t)len - 1);
+	return true;
+}
+
+static tix_status s_scan(tix_index *x, tix_entity_type t, tix_index_rows *out, tix_error *err)
+{
+	sql_index *s = as_sql(x);
+	TIX_VEC(tix_index_row) rows = {0};
+	sqlite3_reset(s->scan);
+	sqlite3_bind_int(s->scan, 1, (int)t);
+	int rc;
+	while ((rc = sqlite3_step(s->scan)) == SQLITE_ROW) {
+		tix_index_row r = {.summary = TIX_BUF_INIT};
+		if (!oid_of(sqlite3_column_blob(s->scan, 0), sqlite3_column_bytes(s->scan, 0), &r.id) ||
+		    !oid_of(sqlite3_column_blob(s->scan, 1), sqlite3_column_bytes(s->scan, 1), &r.head))
+			continue; /* not ours: a miss for that entity */
+		const void *sum = sqlite3_column_blob(s->scan, 2);
+		int n = sqlite3_column_bytes(s->scan, 2);
+		if (sum && n > 0)
+			tix_buf_add(&r.summary, sum, (size_t)n);
+		TIX_VEC_PUSH(&rows, r);
+	}
+	sqlite3_reset(s->scan);
+	out->v = rows.v;
+	out->n = rows.n;
+	if (rc != SQLITE_DONE) {
+		tix_index_rows_free(out);
+		return sql_err(err, s->db, "scan");
+	}
+	return TIX_OK;
+}
+
 static tix_status s_put(tix_index *x, tix_entity_type t, const tix_oid *id, const tix_oid *head, const char *data,
-			size_t len, tix_error *err)
+			size_t len, const char *summary, size_t summary_len, tix_error *err)
 {
 	sql_index *s = as_sql(x);
 	uint8_t k[40], h[40];
 	int kl, hl;
-	if (len > TIX_INDEX_MAX_ENTRY)
+	if (len > TIX_INDEX_MAX_ENTRY || summary_len > TIX_INDEX_MAX_ENTRY)
 		return tix_error_set(err, TIX_ERR_INVALID, "index: entry too large");
 	key_of(id, k, &kl);
 	key_of(head, h, &hl);
@@ -83,6 +124,7 @@ static tix_status s_put(tix_index *x, tix_entity_type t, const tix_oid *id, cons
 	sqlite3_bind_blob(s->put, 2, k, kl, SQLITE_STATIC);
 	sqlite3_bind_blob(s->put, 3, h, hl, SQLITE_STATIC);
 	sqlite3_bind_blob(s->put, 4, len ? data : "", (int)len, SQLITE_STATIC);
+	sqlite3_bind_blob(s->put, 5, summary_len ? summary : "", (int)summary_len, SQLITE_STATIC);
 	int rc = sqlite3_step(s->put);
 	sqlite3_reset(s->put);
 	return rc == SQLITE_DONE ? TIX_OK : sql_err(err, s->db, "store");
@@ -115,6 +157,7 @@ static void close_all(sql_index *s)
 {
 	sqlite3_finalize(s->get);
 	sqlite3_finalize(s->put);
+	sqlite3_finalize(s->scan);
 	sqlite3_finalize(s->clear);
 	sqlite3_finalize(s->count);
 	sqlite3_close(s->db);
@@ -127,12 +170,12 @@ static void s_destroy(tix_index *x)
 	free(s);
 }
 
-static const tix_index_vt sql_vt = {s_get, s_put, s_clear, s_count, s_destroy};
+static const tix_index_vt sql_vt = {s_get, s_put, s_scan, s_clear, s_count, s_destroy};
 
 static const char schema[] =
 	"CREATE TABLE IF NOT EXISTS entities ("
 	" type INTEGER NOT NULL, id BLOB NOT NULL, head BLOB NOT NULL, data BLOB NOT NULL,"
-	" PRIMARY KEY (type, id)) WITHOUT ROWID;";
+	" summary BLOB NOT NULL, PRIMARY KEY (type, id)) WITHOUT ROWID;";
 
 /* RETURNS SQLITE_OK, or the code that made this database unusable. */
 static int try_open(const char *path, sql_index *s)
@@ -162,8 +205,11 @@ static int try_open(const char *path, sql_index *s)
 		return rc;
 	if ((rc = sqlite3_prepare_v2(s->db, "SELECT data FROM entities WHERE type=?1 AND id=?2 AND head=?3", -1,
 				     &s->get, NULL)) ||
-	    (rc = sqlite3_prepare_v2(s->db, "INSERT OR REPLACE INTO entities(type, id, head, data) VALUES(?1,?2,?3,?4)",
+	    (rc = sqlite3_prepare_v2(s->db,
+				     "INSERT OR REPLACE INTO entities(type, id, head, data, summary) VALUES(?1,?2,?3,?4,?5)",
 				     -1, &s->put, NULL)) ||
+	    (rc = sqlite3_prepare_v2(s->db, "SELECT id, head, summary FROM entities WHERE type=?1", -1, &s->scan,
+				     NULL)) ||
 	    (rc = sqlite3_prepare_v2(s->db, "DELETE FROM entities", -1, &s->clear, NULL)) ||
 	    (rc = sqlite3_prepare_v2(s->db, "SELECT count(*) FROM entities", -1, &s->count, NULL)))
 		return rc;

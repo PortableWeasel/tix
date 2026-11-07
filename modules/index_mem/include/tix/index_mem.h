@@ -11,5 +11,8 @@ size_t tix_index_mem_hits(tix_index *x);
 size_t tix_index_mem_misses(tix_index *x);
 /* Overwrites the stored bytes of (t, id), keeping its head (to test corrupt entries). */
 void tix_index_mem_corrupt(tix_index *x, tix_entity_type t, const tix_oid *id, const char *data);
+/* scan calls so far, and overwrite a stored summary (to test corrupt summaries). */
+size_t tix_index_mem_scans(tix_index *x);
+void tix_index_mem_corrupt_summary(tix_index *x, tix_entity_type t, const tix_oid *id, const char *summary);
 
 #endif
