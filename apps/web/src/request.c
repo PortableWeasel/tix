@@ -208,6 +208,17 @@ bool web_request_decode(const web_raw *raw, web_request *req, char *why, size_t 
 		size_t base = strcspn(ct, ";");
 		while (base && ct[base - 1] == ' ')
 			base--;
+		bool hook = raw->uri_len == strlen(WEB_HOOK_PATH) && !memcmp(raw->uri, WEB_HOOK_PATH, raw->uri_len);
+		if (hook && base == 16 && !strncasecmp(ct, "application/json", 16)) {
+			if (memchr(raw->body, '\0', raw->body_len))
+				return fail(why, why_len, "NUL in the body");
+			req->json = tix_xstrndup(raw->body, raw->body_len);
+			req->json_len = raw->body_len;
+			req->signature = header_dup(raw, "X-Forgejo-Signature");
+			if (!req->signature)
+				req->signature = header_dup(raw, "X-Gitea-Signature");
+			return true;
+		}
 		if (base != 33 || strncasecmp(ct, "application/x-www-form-urlencoded", 33))
 			return fail(why, why_len, "only form bodies are accepted");
 		if (!web_urldecode_form(raw->body, raw->body_len, &req->form, why, why_len))
@@ -227,6 +238,8 @@ void web_request_free(web_request *req)
 	free(req->origin);
 	free(req->referer);
 	free(req->content_type);
+	free(req->json);
+	free(req->signature);
 	web_kvs_free(&req->query);
 	web_kvs_free(&req->form);
 	web_kvs_free(&req->cookies);

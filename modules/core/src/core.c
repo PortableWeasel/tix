@@ -30,6 +30,11 @@ static tix_status clock_load(tix_repo *r, tix_error *err)
 	return st;
 }
 
+tix_store *tix_repo_store(tix_repo *r)
+{
+	return r->store;
+}
+
 tix_status tix_repo_refresh(tix_repo *r, tix_error *err)
 {
 	TIX_REQUIRE(r);

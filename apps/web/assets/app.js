@@ -123,11 +123,49 @@
 
 	/* ---- live refresh (server-sent events) --------------------------------------- */
 
+	/* Desktop notifications when a ticket starts waiting for a person (opt-in, §15.6). */
+	const notified = new Set();
+	function notify(changed) {
+		if (!window.Notification || Notification.permission !== 'granted') return;
+		for (const c of changed) {
+			if (!c.human || notified.has(c.id)) continue;
+			notified.add(c.id);
+			const n = new Notification('tix: waiting for you', {body: c.title, tag: 'tix-' + c.id});
+			n.onclick = () => { window.focus(); location.href = '/t/' + c.id; };
+		}
+		for (const c of changed) if (!c.human) notified.delete(c.id);
+	}
+
+	function notifyButton(root) {
+		const b = $('#tix-notify', root);
+		if (!b || !window.Notification || Notification.permission === 'granted') return;
+		b.hidden = false;
+		b.addEventListener('click', async () => {
+			const p = await Notification.requestPermission();
+			if (p === 'granted') { b.hidden = true; toast('Notifications on'); }
+		});
+	}
+
 	function live() {
 		if (!body.dataset.stamp || !window.EventSource) return;
 		const es = new EventSource('/events');
+		let skip = false; /* the next stamp only changed tickets this page doesn't show */
+		es.addEventListener('tickets', (e) => {
+			let d;
+			try { d = JSON.parse(e.data); } catch (_) { return; }
+			const changed = Array.isArray(d.changed) ? d.changed : [];
+			notify(changed);
+			const t = body.dataset.ticket;
+			skip = !!t && changed.length < 50 &&
+				!changed.some((c) => c.id === t || $(`main a[href="/t/${CSS.escape(c.id)}"]`));
+		});
 		es.addEventListener('stamp', (e) => {
 			if (e.data === body.dataset.stamp) return;
+			if (skip) { /* a ticket page refreshes for its own ticket and the ones it links */
+				skip = false;
+				body.dataset.stamp = e.data;
+				return;
+			}
 			if (busyEditing()) banner();
 			else refresh();
 		});
@@ -551,6 +589,7 @@
 	function enhance(root) {
 		pickers(root);
 		inlineStatus(root);
+		notifyButton(root);
 		$$('svg.gantt', root).forEach(gantt);
 	}
 

@@ -107,6 +107,22 @@ static void test_requests(void)
 	hdrs json = {{"Content-Type"}, {"application/json"}};
 	TK_CHECK(!decode("POST", "/x", NULL, "{}", &json, &req, why) && strstr(why, "only form"));
 	web_request_free(&req);
+	/* ...except a JSON webhook delivery on its one path, kept raw with its signature (§15.6) */
+	hdrs hook = {{"Content-Type", "X-Gitea-Signature"}, {"application/json; charset=utf-8", "ab12"}};
+	TK_CHECK(decode("POST", WEB_HOOK_PATH, NULL, "{\"ref\":\"x\"}", &hook, &req, why));
+	TK_CHECK(req.json && req.json_len == 11 && !strcmp(req.json, "{\"ref\":\"x\"}") && !req.form_body && !req.form.n);
+	TK_STR_EQ(req.signature, "ab12");
+	web_request_free(&req);
+	TK_CHECK(!decode("POST", "/hooks/forgejo/x", NULL, "{}", &json, &req, why));
+	web_request_free(&req);
+	TK_CHECK(!decode("POST", WEB_HOOK_PATH "x", NULL, "{}", &json, &req, why));
+	web_request_free(&req);
+	hdrs hooktext = {{"Content-Type"}, {"text/plain"}};
+	TK_CHECK(!decode("POST", WEB_HOOK_PATH, NULL, "{}", &hooktext, &req, why));
+	web_request_free(&req);
+	web_raw nul = {"POST", WEB_HOOK_PATH, "", "{\0}", 4, strlen(WEB_HOOK_PATH), 0, 3, hdr, &json, NULL, NULL};
+	TK_CHECK(!web_request_decode(&nul, &req, why, sizeof(why)));
+	web_request_free(&req);
 	hdrs none = {{0}, {0}};
 	TK_CHECK(!decode("POST", "/x", NULL, "a=1", &none, &req, why));
 	web_request_free(&req);

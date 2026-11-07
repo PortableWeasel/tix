@@ -186,6 +186,22 @@ def main() -> int:
             page.wait_for_selector("text=Arrived live", timeout=6000)
             check(page.evaluate("window.__marker === 1"), "live refresh swapped the page in place")
 
+            # a ticket page refreshes for its own ticket (and ones it links), not for others (§15.6)
+            page.goto(f"{base}/t/{a}")
+            page.evaluate("window.__marker = 2")
+            r0 = page.evaluate("+(document.body.dataset.refreshes || 0)")
+            s0 = page.evaluate("document.body.dataset.stamp")
+            new("-t", "Unrelated elsewhere")
+            moved = until(page, f"document.body.dataset.stamp !== '{s0}'")
+            check(moved and page.evaluate(f"+(document.body.dataset.refreshes || 0) === {r0}"),
+                  "an unrelated change only moves the stamp")
+            run(tix, "comment", a, "-m", "Seen on its own page")
+            page.wait_for_selector("text=Seen on its own page", timeout=6000)
+            check(page.evaluate("window.__marker === 2"), "its own change refreshes in place")
+            # the inbox offers notifications when the browser can show them
+            page.goto(base + "/inbox")
+            check(page.locator("#tix-notify").count() == 1, "the inbox has a notify button")
+
             # ... but not while typing: a banner instead
             page.goto(f"{base}/t/{a}/edit")
             page.fill("input[name=title]", "Half-typed")

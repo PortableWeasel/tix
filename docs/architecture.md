@@ -1310,19 +1310,37 @@ tix interprets `data` only through generic shapes, never through the kinds:
   `{"owner","stages":[…]}`; `autonomy show --json` `{"mode","until","owner"}`; `log`
   entries are `{"time","id","ticket","short","title","author","name","op","summary"}`
   (core `tix_activity_log`).
-- **Web UI**:
-  - **Inbox**: tickets in a `human` stage, then live claims with their age.
-  - **Activity page**: since a time, by default since autonomy was switched on.
-  - **Typed comments** rendered from their shapes, with answer forms that are plain POSTs
-    without JavaScript.
-  - Claim badges and identity kind badges.
-  - `/events` adds `ticket` events naming the changed ids, so the ticket page updates its
-    timeline in place.
-  - An optional browser notification when a ticket enters a `human` stage.
-- **Seeing other clones' pushes**: the web server only sees its own refs.
-  - `tix web --pull-every 60s` pulls on the server tick.
-  - `POST /hooks/forgejo` (HMAC secret from `--hook-secret-file`) pulls as soon as Forgejo
-    receives a push.
+- **Web UI** ✅:
+  - **`/inbox`**: "Waiting for you" (tickets in a `human` stage, and tickets with questions
+    no later comment replies to), then "Being worked on" (live claims: who, for how long,
+    how much lease is left).
+  - **`/activity?since=2h|24h|7d`**: by default since autonomy was last switched on (else
+    the last day). A summary line (changes, how many went to done and to blocked, typed
+    comments by kind), then the feed, newest first.
+  - **Typed comments** show a kind badge and what they reply to, then their `fields` (a
+    table), `items` (with their current state), `questions` and `updates`. Questions come
+    with an answer form (`POST /t/ID/answer`: `reply-to` plus `a.<question id>`). It writes
+    an `answer` comment whose `fields` hold the non-empty answers, a plain form without
+    JavaScript.
+  - Claims: `@name` in ticket lists, "claimed by …, N min left" (plus anyone waiting) on
+    the ticket page. Agents get an "agent" badge after their name.
+  - **Autonomy banner** in every page's header for each root that is autonomous (not yet
+    expired) or halted, linking to the activity page and the inbox.
+  - **`/events`** sends `event: tickets` (`{"changed":[{"id","title","human"}]}`, up to 50)
+    before each stamp. A ticket page (`<body data-ticket>`) refreshes only when its own
+    ticket, or one it links to, changed; otherwise it just takes the new stamp. With
+    permission (a button on the inbox), `app.js` shows a browser notification when a
+    ticket starts waiting for a person.
+- **Seeing other clones' pushes** ✅: the web server only sees its own refs.
+  - `tix web --pull-every 60s` (10 s to 24 h) pulls on the server tick, which then runs
+    even with no page open.
+  - `POST /hooks/forgejo` exists only with `--hook-secret-file F` (16–255 bytes). It takes
+    an `application/json` body (the only non-form body the decoder accepts, and only on
+    that path) and checks `X-Forgejo-Signature` (or `X-Gitea-Signature`), an HMAC-SHA256
+    of the body (new `tix/base_sha256.h`, RFC 4231 vectors). It needs no session or form
+    token, because the signature is the check. A good signature pulls at once (204, or 502
+    if the pull fails); anything else is 403. In hosted mode the proxy must let that path
+    through.
 
 ### 15.7 Not in tix
 

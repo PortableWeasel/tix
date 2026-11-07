@@ -23,6 +23,10 @@ static const char usage[] =
 	"                      (default 7480, or the next free port up to 7499)\n"
 	"  --read-only         serve pages but accept no changes\n"
 	"  --no-open           don't start a browser\n"
+	"  --pull-every 60s    pull from the remote (tix.remote, else origin) on this interval, so\n"
+	"                      pushes from other clones show up (and in live pages) without a sync\n"
+	"  --hook-secret-file F  accept POST /hooks/forgejo signed with the secret in F (a Forgejo\n"
+	"                      push webhook, content type application/json), and pull at once\n"
 	"hosted mode, behind a reverse proxy that signs people in (docs/architecture.md 13.8):\n"
 	"  --trust-proxy HEADER  take the login from this request header (e.g. X-authentik-username)\n"
 	"  --public-url URL      the proxy's address (https://tix.example.org): the only Host/Origin\n"
@@ -197,7 +201,8 @@ int main(int argc, char **argv)
 	char host[64] = "127.0.0.1";
 	int port = 7480;
 	bool fixed_port = false, read_only = false, open_browser = true;
-	const char *listen = NULL, *users_file = NULL;
+	const char *listen = NULL, *users_file = NULL, *hook_file = NULL;
+	int pull_every = 0;
 	static web_hosted hosted;
 	static const char *from[16];
 	size_t nfrom = 0;
@@ -223,6 +228,20 @@ int main(int argc, char **argv)
 			read_only = true;
 		} else if (!strcmp(argv[i], "--no-open")) {
 			open_browser = false;
+		} else if (!strcmp(argv[i], "--pull-every") && i + 1 < argc) {
+			char *end;
+			long v = strtol(argv[++i], &end, 10);
+			if (*end == 'm')
+				v *= 60, end++;
+			else if (*end == 's')
+				end++;
+			if (*end || v < 10 || v > 86400) {
+				fprintf(stderr, "tix web: --pull-every takes 10s to 24h, like 60s or 5m\n");
+				return 2;
+			}
+			pull_every = (int)v;
+		} else if (!strcmp(argv[i], "--hook-secret-file") && i + 1 < argc) {
+			hook_file = argv[++i];
 		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
 			fputs(usage, stdout);
 			return 0;
@@ -316,9 +335,28 @@ int main(int argc, char **argv)
 	}
 	hosted.users = users.v;
 	hosted.nusers = users.n;
+	static uint8_t secret[256];
+	size_t secret_len = 0;
+	if (hook_file) {
+		FILE *f = fopen(hook_file, "r");
+		if (f) {
+			secret_len = fread(secret, 1, sizeof(secret), f);
+			fclose(f);
+		}
+		while (secret_len && (secret[secret_len - 1] == '\n' || secret[secret_len - 1] == '\r'))
+			secret_len--;
+		if (!f || secret_len < 16 || secret_len == sizeof(secret)) {
+			fprintf(stderr, "tix web: --hook-secret-file needs a readable file holding 16 to 255 bytes\n");
+			tix_repo_close(repo);
+			tix_index_destroy(index);
+			tix_store_destroy(store);
+			return 2;
+		}
+	}
 	static web_app app; /* large; not on the stack */
 	web_app_config acfg = {.repo = repo, .random = env_random, .today = today, .now = env_now, .read_only = read_only,
-			       .remote = remote, .hosted = is_hosted ? &hosted : NULL};
+			       .remote = remote, .hosted = is_hosted ? &hosted : NULL, .pull_every = pull_every,
+			       .hook_secret = hook_file ? secret : NULL, .hook_secret_len = secret_len};
 	web_app_init(&app, &acfg);
 	runner r = {.app = &app, .open_browser = open_browser};
 	snprintf(r.host, sizeof(r.host), "%s", host);
@@ -336,7 +374,8 @@ int main(int argc, char **argv)
 		snprintf(url, sizeof(url), v6 ? "http://[%s]:%d" : "http://%s:%d", host, port + attempt);
 		web_server_opts o = {.listen = url, .handler = web_app_handle, .app = &app, .on_listen = on_listen,
 				     .listen_ctx = &r, .always_headers = app.always_headers,
-				     .tick = web_app_tick, .tick_ms = 1000, .extra_header = hosted.header};
+				     .tick = web_app_tick, .tick_ms = 1000, .tick_always = pull_every > 0,
+				     .extra_header = hosted.header};
 		err = (tix_error)TIX_ERROR_INIT;
 		if (web_serve(&o, &stop, &err)) {
 			rc = 0;
@@ -348,6 +387,7 @@ int main(int argc, char **argv)
 	for (size_t i = 0; i < users.n; i++)
 		free((char *)users.v[i].login);
 	free(users.v);
+	web_app_free(&app);
 	tix_repo_close(repo);
 	tix_index_destroy(index);
 	tix_store_destroy(store);

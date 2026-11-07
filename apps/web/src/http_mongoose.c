@@ -230,7 +230,7 @@ bool web_serve(const web_server_opts *o, volatile sig_atomic_t *stop, tix_error 
 	uint64_t last_tick = mg_millis(), every = (uint64_t)(o->tick_ms ? o->tick_ms : 1000);
 	while (!(stop && *stop) && (!o->keep_going || o->keep_going(o->app))) {
 		mg_mgr_poll(&mgr, 100);
-		if (o->tick && sv.streams > 0 && mg_millis() - last_tick >= every) {
+		if (o->tick && (sv.streams > 0 || o->tick_always) && mg_millis() - last_tick >= every) {
 			last_tick = mg_millis();
 			tick(&sv);
 		}

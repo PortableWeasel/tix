@@ -4,6 +4,7 @@
  */
 #include "app.h"
 #include "tix/store_mem.h"
+#include "tix/base_sha256.h"
 #include "tix/testkit.h"
 
 #include <stdarg.h>
@@ -173,6 +174,7 @@ static void world_open(world *w, bool read_only)
 
 static void world_close(world *w)
 {
+	web_app_free(&w->app);
 	tix_repo_close(w->repo);
 	tix_store_destroy(w->store);
 }
@@ -876,7 +878,13 @@ static void test_api(void)
 	TK_OK(tix_entity_apply(w.repo, TIX_ENTITY_TICKET, &b, &op, 1, &e), &e);
 	tix_op_free(&op);
 	web_app_tick(c.app, &ev);
-	TK_CHECK(!strncmp(tix_buf_cstr(&ev), "event: stamp\ndata: ", 19) && strncmp(tix_buf_cstr(&ev) + 19, stamp, 16));
+	/* first which tickets moved (and whether they wait for a person), then the stamp */
+	char tev[300], bhex[TIX_OID_MAX_HEX + 1];
+	snprintf(tev, sizeof(tev), "event: tickets\ndata: {\"changed\":[{\"id\":\"%s\",\"title\":\"Plain other\",\"human\":false}]}\n\n",
+		 tix_oid_hex(&b, bhex));
+	TK_CHECK(!strncmp(tix_buf_cstr(&ev), tev, strlen(tev)));
+	const char *se = strstr(tix_buf_cstr(&ev), "event: stamp\ndata: ");
+	TK_CHECK(se && strncmp(se + 19, stamp, 16));
 	tix_buf_reset(&ev);
 	web_app_tick(c.app, &ev);
 	TK_CHECK(ev.len == 0);
@@ -1037,6 +1045,183 @@ static void test_stages(void)
 	world_close(&w);
 }
 
+/* A Forgejo webhook delivery: JSON body plus its signature header (NULL: none). */
+static int call_hook(client *c, const char *json, const char *sig)
+{
+	web_response_free(&c->res);
+	c->res = (web_response)WEB_RESPONSE_INIT;
+	hdrs h = {{0}, {0}};
+	add_hdr(&h, "Host", c->host);
+	add_hdr(&h, "Content-Type", "application/json");
+	if (sig)
+		add_hdr(&h, "X-Forgejo-Signature", sig);
+	web_raw raw = {"POST", WEB_HOOK_PATH, "", json, 4, strlen(WEB_HOOK_PATH), 0, strlen(json), hdr, &h, "127.0.0.1", NULL};
+	web_request req;
+	char why[128];
+	TK_CHECK(web_request_decode(&raw, &req, why, sizeof(why)));
+	web_app_handle(c->app, &req, &c->res);
+	web_request_free(&req);
+	return c->res.status;
+}
+
+/* §15.6: inbox, activity, typed comments and their answer form, the banner. */
+static void test_flow(void)
+{
+	world w;
+	world_open(&w, false);
+	tix_oid root, t, u;
+	TK_OK(tix_ticket_create(w.repo, "Night <img src=x>", "", NULL, &root, &e), &e);
+	apply1(&w, TIX_ENTITY_TICKET, &root, tix_op_stage_add("needs-input", TIX_TICKET_OPEN, true, 10));
+	apply1(&w, TIX_ENTITY_TICKET, &root, tix_op_stage_add("ready", TIX_TICKET_OPEN, false, 20));
+	TK_OK(tix_ticket_create(w.repo, "Asks questions", "", NULL, &t, &e), &e);
+	TK_OK(tix_ticket_create(w.repo, "Waits <b>", "", NULL, &u, &e), &e);
+	apply1(&w, TIX_ENTITY_TICKET, &t, tix_op_set(TIX_F_PARENT, tix_value_id(&root)));
+	apply1(&w, TIX_ENTITY_TICKET, &u, tix_op_set(TIX_F_PARENT, tix_value_id(&root)));
+	apply1(&w, TIX_ENTITY_TICKET, &u, tix_op_set_state(TIX_TICKET_OPEN, "needs-input"));
+	apply1(&w, TIX_ENTITY_TICKET, &t,
+	       tix_op_typed_comment("question", "Two things <script>", "{\"questions\":[{\"id\":\"q1\",\"text\":\"Which DB? <img>\"},"
+					"{\"id\":\"q2\",\"text\":\"Port?\"}]}", NULL));
+	apply1(&w, TIX_ENTITY_TICKET, &t,
+	       tix_op_typed_comment("review", "", "{\"fields\":{\"verdict\":\"changes\"},\"items\":[{\"id\":\"f1\","
+					"\"text\":\"Add tests\",\"state\":\"open\"}]}", NULL));
+	apply1(&w, TIX_ENTITY_TICKET, &t, tix_op_claim(w.env.now + 1800));
+	client c = new_client(&w);
+	login(&c);
+
+	TK_CHECK(call(&c, "GET", "/inbox", NULL) == 200);
+	clean(&c, "/inbox");
+	HAS(&c, "<h2>Waiting for you</h2>");
+	HAS(&c, "Waits &lt;b&gt;</a></td><td>its stage waits for a person");
+	HAS(&c, "Asks questions</a></td><td>2 open questions");
+	HAS(&c, "<h2>Being worked on</h2>");
+	HAS(&c, "id=\"tix-notify\" type=\"button\" hidden");
+
+	char hex[TIX_OID_MAX_HEX + 1], target[160];
+	snprintf(target, sizeof(target), "/t/%s", tix_oid_hex(&t, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, target);
+	HAS(&c, "data-ticket=\"");
+	HAS(&c, "<span class=\"badge kind\">question</span>");
+	HAS(&c, "<dt>verdict</dt><dd>changes</dd>");
+	HAS(&c, "<li><span class=\"status\">open</span> <b>f1</b> Add tests</li>");
+	HAS(&c, "Which DB? &lt;img&gt;<br><textarea rows=\"2\" cols=\"60\" name=\"a.q1\">");
+	HAS(&c, "/answer\">");
+	tix_entity *te = ticket(&w, &t);
+	char rid[TIX_OID_MAX_HEX + 12];
+	tix_opid_str(&te->u.ticket.comments[0].id, rid);
+	tix_entity_free(te);
+
+	/* answering: a typed "answer" reply with the non-empty answers */
+	snprintf(target, sizeof(target), "/t/%s/answer", hex);
+	TK_CHECK(call(&c, "POST", target, form(&c, "reply-to", rid, "a.q1", "Postgres", "a.q2", "", NULL)) == 303);
+	te = ticket(&w, &t);
+	const tix_comment *ans = &te->u.ticket.comments[te->u.ticket.ncomments - 1];
+	TK_CHECK(ans->kind && !strcmp(ans->kind, "answer") && !strcmp(ans->data, "{\"fields\":{\"q1\":\"Postgres\"}}"));
+	tix_entity_free(te);
+	TK_CHECK(call(&c, "POST", target, form(&c, "reply-to", rid, "a.q1", "", NULL)) == 422);
+	HAS(&c, "Write at least one answer.");
+	TK_CHECK(call(&c, "POST", target, form(&c, "reply-to", "nonsense", "a.q1", "x", NULL)) == 422);
+	TK_CHECK(call(&c, "POST", target, form(&c, "reply-to", rid, "a.BAD", "x", NULL)) == 422);
+	TK_CHECK(call(&c, "POST", target, form(&c, "a.q1", "x", NULL)) == 422);
+	snprintf(target, sizeof(target), "/t/%s", hex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "re Ada &lt;script&gt;&rsquo;s question");
+	HAS(&c, "answered already");
+	TK_CHECK(call(&c, "GET", "/inbox", NULL) == 200);
+	HASNT(&c, "open questions"); /* answered */
+
+	/* activity: the summary and the feed, newest first */
+	apply1(&w, TIX_ENTITY_TICKET, &root, tix_op_set_autonomy(TIX_AUTO_AUTONOMOUS, w.env.now + 7200));
+	apply1(&w, TIX_ENTITY_TICKET, &t, tix_op_set_status(TIX_TICKET_DONE));
+	TK_CHECK(call(&c, "GET", "/activity", NULL) == 200);
+	clean(&c, "/activity");
+	HAS(&c, "(autonomy last switched on, else the last day)");
+	HAS(&c, " to done, ");
+	HAS(&c, "status done");
+	HASNT(&c, "[question] Two things"); /* before autonomy was switched on */
+	TK_CHECK(call(&c, "GET", "/activity?since=7d", NULL) == 200);
+	HAS(&c, "[question] Two things &lt;script&gt;");
+	HAS(&c, "notes: ");
+	/* the banner, on every page */
+	HAS(&c, "<p class=\"autonomy\"><a href=\"/t/");
+	HAS(&c, "Night &lt;img src=x&gt;</a>: autonomous until ");
+	apply1(&w, TIX_ENTITY_TICKET, &root, tix_op_set_autonomy(TIX_AUTO_HALTED, -1));
+	TK_CHECK(call(&c, "GET", "/tickets?status=done", NULL) == 200);
+	HAS(&c, "<p class=\"autonomy halted\">");
+	HAS(&c, "<span class=\"claim\">@Ada &lt;script&gt;");
+	apply1(&w, TIX_ENTITY_TICKET, &root, tix_op_set_autonomy(TIX_AUTO_SUPERVISED, -1));
+	TK_CHECK(call(&c, "GET", "/tickets", NULL) == 200);
+	HASNT(&c, "class=\"autonomy");
+
+	/* no hook secret configured: the hook doesn't exist */
+	TK_CHECK(call_hook(&c, "{}", "00") == 404);
+	web_response_free(&c.res);
+	world_close(&w);
+}
+
+/* §15.6: the Forgejo push hook pulls when (and only when) correctly signed. */
+static void test_hook(void)
+{
+	world w;
+	world_open(&w, false);
+	tix_store *server = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_store_mem_add_remote(w.store, "origin", server);
+	static const uint8_t secret[] = "a-long-enough-secret";
+	w.app.cfg.remote = "origin";
+	w.app.cfg.hook_secret = secret;
+	w.app.cfg.hook_secret_len = sizeof(secret) - 1;
+	/* someone else pushes a ticket to the server */
+	fake_env env2 = {1700000000, 77};
+	tix_store *other = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_store_mem_add_remote(other, "origin", server);
+	tix_repo *r2 = NULL;
+	TK_OK(tix_repo_open(&r2, &(tix_repo_config){.store = other, .env = {fake_now, fake_random, &env2}}, &e), &e);
+	tix_oid bob, bt;
+	TK_OK(tix_identity_create(r2, "Bob", "b@x", &bob, &e), &e);
+	TK_OK(tix_repo_set_identity(r2, &bob, &e), &e);
+	TK_OK(tix_ticket_create(r2, "From elsewhere", "", NULL, &bt, &e), &e);
+	tix_sync_report rep = {0};
+	TK_OK(tix_push(r2, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+
+	client c = new_client(&w);
+	const char *json = "{\"ref\":\"refs/heads/main\"}";
+	uint8_t mac[TIX_SHA256_LEN];
+	char sig[2 * TIX_SHA256_LEN + 1];
+	tix_hmac_sha256(secret, sizeof(secret) - 1, json, strlen(json), mac);
+	for (int i = 0; i < TIX_SHA256_LEN; i++)
+		snprintf(sig + 2 * i, 3, "%02x", mac[i]);
+	TK_CHECK(call_hook(&c, json, NULL) == 403);
+	TK_CHECK(call_hook(&c, json, "00") == 403);
+	char bad[sizeof(sig)];
+	memcpy(bad, sig, sizeof(sig));
+	bad[0] = bad[0] == '0' ? '1' : '0';
+	TK_CHECK(call_hook(&c, json, bad) == 403);
+	TK_CHECK(call_hook(&c, "{\"ref\":\"x\"}", sig) == 403); /* signature of another body */
+	TK_STATUS(tix_entity_load(w.repo, TIX_ENTITY_TICKET, &bt, &(tix_entity *){NULL}, &e), TIX_ERR_NOT_FOUND, &e);
+	TK_CHECK(call_hook(&c, json, sig) == 204); /* no session needed: the signature is the check */
+	tix_entity *got = NULL;
+	TK_OK(tix_entity_load(w.repo, TIX_ENTITY_TICKET, &bt, &got, &e), &e);
+	tix_entity_free(got);
+	/* GET is refused; a form body isn't a hook delivery */
+	TK_CHECK(call(&c, "GET", WEB_HOOK_PATH, NULL) == 405);
+	/* the timed pull (--pull-every) runs on the tick */
+	w.app.cfg.pull_every = 60;
+	TK_OK(tix_ticket_create(r2, "Second", "", NULL, &bt, &e), &e);
+	TK_OK(tix_push(r2, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	tix_buf ev = TIX_BUF_INIT;
+	web_app_tick(&w.app, &ev);
+	TK_OK(tix_entity_load(w.repo, TIX_ENTITY_TICKET, &bt, &got, &e), &e);
+	tix_entity_free(got);
+	tix_buf_free(&ev);
+	tix_repo_close(r2);
+	tix_store_destroy(other);
+	web_response_free(&c.res);
+	world_close(&w);
+	tix_store_destroy(server);
+}
+
 /* The csrf token from the last page. */
 static void grab_csrf(client *c)
 {
@@ -1131,6 +1316,8 @@ static void test_hosted(void)
 
 int main(void)
 {
+	test_flow();
+	test_hook();
 	test_stages();
 	test_hosted();
 	test_external();

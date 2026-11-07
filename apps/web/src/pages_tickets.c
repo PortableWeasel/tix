@@ -119,7 +119,13 @@ void page_tickets(web_ctx *x)
 		h_id(h, &e->id);
 		HL(h, "\">");
 		h_text(h, e->u.ticket.title);
-		HL(h, "</a></td><td>");
+		HL(h, "</a>");
+		if (tix_claim_live(&e->u.ticket.claim, web_now(x))) {
+			HL(h, " <span class=\"claim\">@");
+			h_who(x, &e->u.ticket.claim.identity);
+			HL(h, "</span>");
+		}
+		HL(h, "</td><td>");
 		h_labels(h, &e->u.ticket.labels);
 		HL(h, "</td><td>");
 		h_time(h, e->updated);
@@ -416,6 +422,7 @@ void page_ticket(web_ctx *x)
 		return;
 	}
 	const tix_ticket *t = &e->u.ticket;
+	x->page_ticket = &e->id;
 	page_begin(x, t->title);
 	html *h = &x->h;
 	HL(h, "<p>");
@@ -468,6 +475,18 @@ void page_ticket(web_ctx *x)
 		h_time(h, c->time);
 		if (c->edited)
 			HL(h, " (edited)");
+		if (c->kind) {
+			HL(h, " <span class=\"badge kind\">");
+			h_text(h, c->kind);
+			HL(h, "</span>");
+			for (size_t k = 0; k < i && !tix_oid_is_null(&c->reply_to.commit); k++)
+				if (!tix_opid_cmp(&t->comments[k].id, &c->reply_to)) {
+					HL(h, " re ");
+					h_who(x, &t->comments[k].author);
+					HL(h, "&rsquo;s ");
+					h_text(h, t->comments[k].kind ? t->comments[k].kind : "comment");
+				}
+		}
 		tix_oid me;
 		if (writable(x) && tix_repo_identity(x->app->cfg.repo, &me) && tix_oid_eq(&me, &c->author)) {
 			char sid[TIX_OID_MAX_HEX + 16];
@@ -477,9 +496,15 @@ void page_ticket(web_ctx *x)
 			h_text(h, tix_opid_str(&c->id, sid));
 			HL(h, "\">edit</a>");
 		}
-		HL(h, "</p><div class=\"body\">");
-		h_text(h, c->body);
-		HL(h, "</div></div>\n");
+		HL(h, "</p>");
+		if (c->body[0]) {
+			HL(h, "<div class=\"body\">");
+			h_text(h, c->body);
+			HL(h, "</div>");
+		}
+		if (c->kind)
+			h_note(x, e, c);
+		HL(h, "</div>\n");
 	}
 	if (writable(x)) {
 		HL(h, "<form method=\"post\" action=\"/t/");

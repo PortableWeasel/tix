@@ -69,6 +69,9 @@ tix_status tix_repo_refresh(tix_repo *r, tix_error *err);
 #define TIX_STAMP_LEN 17
 tix_status tix_repo_stamp(tix_repo *r, char out[TIX_STAMP_LEN], tix_error *err);
 
+/* The store the repo was opened on (BORROWED; for listing refs, e.g. ticket heads). */
+tix_store *tix_repo_store(tix_repo *r);
+
 /* Changes the signature policy of an open repo (e.g. one `tix pull --verify warn` to trust
  * a new clone's existing history on first use). */
 void tix_repo_set_verify(tix_repo *r, tix_verify_policy v);

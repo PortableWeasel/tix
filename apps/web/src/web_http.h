@@ -39,7 +39,14 @@ typedef struct web_request {
 	char *peer;         /* remote address of the connection (hosted mode checks it), or NULL */
 	char *extra;        /* the header named by web_raw.extra_name, or NULL */
 	bool form_body;     /* the body was a form (urlencoded); false for no body */
+	/* POST /hooks/forgejo only (§15.6): the raw JSON body (no NUL inside) and the
+	 * X-Forgejo-Signature (else X-Gitea-Signature) header; NULL elsewhere. */
+	char *json;
+	size_t json_len;
+	char *signature;
 } web_request;
+
+#define WEB_HOOK_PATH "/hooks/forgejo"
 
 /* Raw request parts, as the HTTP library hands them over (not NUL-terminated). */
 typedef struct web_raw {
@@ -100,6 +107,7 @@ typedef struct web_server_opts {
 	 * thread. Bytes it appends to event go to every open stream as they are. */
 	void (*tick)(void *app, tix_buf *event);
 	int tick_ms;
+	bool tick_always;    /* tick even with no stream open (timed pulls) */
 	int ping_ms;         /* 0: WEB_PING_MS */
 	const char *extra_header; /* decoded into web_request.extra (hosted mode's user header) */
 } web_server_opts;

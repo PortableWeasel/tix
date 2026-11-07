@@ -52,8 +52,15 @@ typedef struct web_app_config {
 	void *now_ctx;
 	bool read_only;
 	const char *remote; /* for sync: git config tix.remote, else "origin" */
+	int pull_every;     /* seconds between pulls on the server tick; 0 = never (§15.6) */
+	const uint8_t *hook_secret; /* POST /hooks/forgejo pulls when signed with it; NULL = no hook */
+	size_t hook_secret_len;
 	const web_hosted *hosted; /* NULL: local mode (loopback, login token) */
 } web_app_config;
+
+typedef struct web_head {
+	tix_oid id, head;
+} web_head;
 
 typedef struct web_app {
 	web_app_config cfg;
@@ -68,10 +75,15 @@ typedef struct web_app {
 	char css_url[64];          /* "/assets/tix-<hash>.css" */
 	char js_url[64];           /* "/assets/tix-<hash>.js" */
 	char stamp[TIX_STAMP_LEN]; /* last repository stamp sent to event streams */
+	struct web_head *heads;    /* ticket heads as of the last stamp (per-ticket events) */
+	size_t nheads;
+	int64_t last_pull;
 } web_app;
 
 /* Fills app (makes the login token). */
 void web_app_init(web_app *app, const web_app_config *cfg);
+void web_app_free(web_app *app);
+
 /* Sets the accepted Host values once the port is known: "127.0.0.1:P" or "[::1]:P", plus
  * "localhost:P". */
 void web_app_set_listen(web_app *app, const char *host, int port);
@@ -91,6 +103,7 @@ typedef struct web_ctx {
 	html h;
 	char segs[4][96]; /* path segments, at most 4 */
 	size_t nsegs;
+	const tix_oid *page_ticket; /* set by ticket pages: <body data-ticket> for live refresh */
 } web_ctx;
 
 /* Standard page frame. title is plain text (escaped). */
@@ -182,5 +195,15 @@ void page_baselines(web_ctx *x);
 void post_baseline_take(web_ctx *x);
 void post_baseline_rename(web_ctx *x);
 void page_events(web_ctx *x);
+/* §15.6: the agent workflow's pages */
+void page_inbox(web_ctx *x);
+void page_activity(web_ctx *x);
+void post_answer(web_ctx *x);
+void h_autonomy_banner(web_ctx *x);
+/* A typed comment's data: fields, items with their current state, questions (with an answer
+ * form when writable) and updates. */
+void h_note(web_ctx *x, const tix_entity *ticket, const tix_comment *c);
+/* POST /hooks/forgejo: verifies the signature, then pulls (§15.6). */
+void web_hook_forgejo(web_ctx *x);
 
 #endif

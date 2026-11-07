@@ -216,15 +216,18 @@ int main(int argc, char **argv)
 		TK_CHECK(run(cli_more, out, sizeof(out)) == 0);
 		got = 0;
 		ev[0] = '\0';
-		while (!strstr(ev, "data: ") && poll(&pf, 1, 4000) > 0) {
+		while (!(strstr(ev, "event: stamp\ndata: ") && strstr(strstr(ev, "event: stamp\ndata: "), "\n\n")) &&
+		       poll(&pf, 1, 4000) > 0) {
 			ssize_t r = read(fd, ev + got, sizeof(ev) - 1 - got);
 			if (r <= 0)
 				break;
 			got += (size_t)r;
 			ev[got] = '\0';
 		}
+		CONTAINS(ev, "event: tickets\ndata: {\"changed\":[{\"id\":\""); /* which ticket moved, first */
+		CONTAINS(ev, "\"title\":\"Seen live\"");
 		char second[20] = "";
-		grab(ev, "data: ", "\n", second, sizeof(second));
+		grab(ev, "event: stamp\ndata: ", "\n", second, sizeof(second));
 		TK_CHECK(strlen(second) == 16 && strcmp(first, second));
 		close(fd);
 	}

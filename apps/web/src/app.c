@@ -6,6 +6,7 @@
 #include "app.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -30,6 +31,13 @@ static bool secret_eq(const char *a, const char *b)
 	for (size_t i = 0; i < nb; i++)
 		diff |= (unsigned)(unsigned char)(i < na ? a[i] : 0) ^ (unsigned char)b[i];
 	return diff == 0;
+}
+
+void web_app_free(web_app *app)
+{
+	free(app->heads);
+	app->heads = NULL;
+	app->nheads = 0;
 }
 
 void web_app_init(web_app *app, const web_app_config *cfg)
@@ -191,9 +199,15 @@ void page_begin(web_ctx *x, const char *title)
 	}
 	if (!web_can_write(x))
 		HL(h, " data-read-only");
+	if (x->page_ticket) {
+		HL(h, " data-ticket=\"");
+		h_id(h, x->page_ticket);
+		HL(h, "\"");
+	}
 	HL(h, ">\n");
 	if (x->session) {
 		HL(h, "<header><nav><a href=\"/tickets\"><b>tix</b></a> <a href=\"/tickets\">Tickets</a> "
+		      "<a href=\"/inbox\">Inbox</a> <a href=\"/activity\">Activity</a> "
 		      "<a href=\"/wbs\">WBS</a> <a href=\"/plan\">Plan</a> <a href=\"/baselines\">Baselines</a> "
 		      "<a href=\"/load\">Load</a> "
 		      "<a href=\"/res\">Resources</a> <a href=\"/cal\">Calendars</a> <a href=\"/sync\">Sync</a> "
@@ -224,6 +238,7 @@ void page_begin(web_ctx *x, const char *title)
 			form_csrf(x);
 			HL(h, "<button>Log out</button></form>");
 		}
+		h_autonomy_banner(x);
 		if (x->app->cfg.read_only)
 			HL(h, "<p class=\"note\">Read-only: this server doesn't accept changes.</p>");
 		else if (x->app->cfg.hosted && !x->session->mapped)
@@ -388,11 +403,13 @@ static const route_def get_routes[] = {
 	{"cal", 2, NULL, 0, page_calendar},     {"id", 1, NULL, 0, page_identities},
 	{"sync", 1, NULL, 0, page_sync},       {"api", 2, "tickets", 1, page_api_tickets},
 	{"events", 1, NULL, 0, page_events},     {"baselines", 1, NULL, 0, page_baselines},
+	{"inbox", 1, NULL, 0, page_inbox},       {"activity", 1, NULL, 0, page_activity},
 };
 static const route_def post_routes[] = {
 	{"new", 1, NULL, 0, post_new},            {"t", 2, NULL, 0, post_ticket},
 	{"t", 3, "comment", 2, post_comment},     {"t", 4, "comment", 2, post_comment},
 	{"t", 3, "dep", 2, post_dep},             {"t", 3, "assign", 2, post_assign},
+	{"t", 3, "answer", 2, post_answer},
 	{"res", 2, NULL, 0, res_post},            {"cal", 2, NULL, 0, cal_post},
 	{"cal", 3, "exception", 2, post_exception}, {"sync", 1, NULL, 0, post_sync},
 	{"baselines", 1, NULL, 0, post_baseline_take}, {"baselines", 2, NULL, 0, post_baseline_rename},
@@ -463,6 +480,17 @@ void web_app_handle(void *vapp, const web_request *req, web_response *res)
 	}
 	if (is(&x, 0, "assets")) {
 		serve_asset(&x);
+		return;
+	}
+	if (!strcmp(req->path, WEB_HOOK_PATH)) {
+		if (!app->cfg.hook_secret) {
+			page_error(&x, 404, "Not found", "No such page.");
+		} else if (!post) {
+			page_error(&x, 405, "Method not allowed", "This address only takes webhooks.");
+			web_header(res, "Allow", "POST");
+		} else {
+			web_hook_forgejo(&x);
+		}
 		return;
 	}
 	if (is(&x, 0, "login") && x.nsegs == 1 && !app->cfg.hosted) {

@@ -77,3 +77,9 @@ svg.gantt .link-h{fill:var(--bg);stroke:var(--accent);stroke-width:1.5;opacity:0
 svg.gantt a.task:hover .link-h,svg.gantt a.task:focus .link-h{opacity:1}
 svg.gantt .link-tmp{stroke:var(--accent);stroke-width:1.5;stroke-dasharray:4 3}
 svg.gantt .base{fill:var(--muted);opacity:.8}
+.autonomy{margin:.3rem 0;padding:.2rem .5rem;border-left:3px solid var(--line);background:var(--soft)}
+.autonomy.halted{border-left-color:#c33}
+.note-fields{display:grid;grid-template-columns:max-content 1fr;gap:0 .8rem;margin:.3rem 0}
+.note-fields dt{font-weight:600}
+.note-items,.note-questions,.note-updates{margin:.3rem 0}
+.claim{font-size:.85em;opacity:.8}
