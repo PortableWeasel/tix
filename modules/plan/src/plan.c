@@ -955,9 +955,10 @@ tix_status tix_plan_compute(const tix_plan_input *in, tix_schedule **out, tix_er
 	free(p.task_of);
 	free(p.parent);
 	free(p.tk);
-	free(p.cal);
 	s->resources = p.res;
 	s->nresources = p.nres;
+	s->calendars = p.cal;
+	s->ncalendars = p.ncal;
 	*out = s;
 	return TIX_OK;
 }
@@ -976,6 +977,7 @@ void tix_schedule_free(tix_schedule *s)
 	free(s->loads);
 	free(s->tasks);
 	free(s->resources);
+	free(s->calendars);
 	free(s);
 }
 

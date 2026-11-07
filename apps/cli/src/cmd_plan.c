@@ -309,7 +309,7 @@ int cmd_export(cli *c, int argc, char **argv)
 	if (rc)
 		return rc;
 	if (!a.format || !tix_export_format_parse(a.format, &f))
-		return cli_usage("export: --format mermaid|csv|json is required");
+		return cli_usage("export: --format mermaid|csv|json|mspdi is required");
 	if ((rc = run_plan(c, &a, &pr)))
 		return rc;
 	tix_buf out = TIX_BUF_INIT;

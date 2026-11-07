@@ -87,6 +87,8 @@ typedef struct tix_schedule {
 	size_t ndays;           /* length of each load array (<= TIX_PLAN_MAX_LOAD_DAYS) */
 	const tix_entity **resources; /* the input's, sorted by id (array OWNED, entities BORROWED) */
 	size_t nresources;
+	const tix_entity **calendars; /* likewise (exports that carry calendars, e.g. MSPDI) */
+	size_t ncalendars;
 } tix_schedule;
 
 /*

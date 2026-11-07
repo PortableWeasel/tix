@@ -484,10 +484,18 @@
 			const close = el('button', {type: 'button'}, 'Close');
 			close.addEventListener('click', () => d.close());
 			d.append(t, close);
+			d.addEventListener('close', () => {
+				if (d.returnTo && document.contains(d.returnTo)) d.returnTo.focus();
+				else document.activeElement.blur();
+			});
 			body.append(d);
 		}
-		if (d.open) d.close();
-		else d.showModal();
+		if (d.open) {
+			d.close();
+		} else {
+			d.returnTo = document.activeElement !== body ? document.activeElement : null;
+			d.showModal();
+		}
 	}
 
 	function rows() {
@@ -508,7 +516,8 @@
 	document.addEventListener('keydown', (e) => {
 		if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
 		const t = e.target;
-		if (t.closest && t.closest('input, textarea, select, [contenteditable], dialog')) return;
+		/* a closed dialog can keep focus for a moment after closing: only an open one counts */
+		if (t.closest && t.closest('input, textarea, select, [contenteditable], dialog[open]')) return;
 		const k = e.key;
 		if (prefix === 'g') {
 			prefix = '';

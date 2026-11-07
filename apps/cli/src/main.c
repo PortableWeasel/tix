@@ -41,7 +41,7 @@ static const char usage_text[] =
 	"plans (ROOT: a ticket; default every ticket; --today D overrides today)\n"
 	"  wbs [ROOT]                            tree with WBS codes, dates and rollups\n"
 	"  plan [ROOT] [--gantt] [--critical] [--load]\n"
-	"  export [ROOT] --format mermaid|csv|json\n"
+	"  export [ROOT] --format mermaid|csv|json|mspdi   (mspdi: MS Project XML)\n"
 	"\n"
 	"sync (REMOTE defaults to git config tix.remote, else origin)\n"
 	"  pull [REMOTE]    fetch, validate and merge the remote's tickets and identities\n"

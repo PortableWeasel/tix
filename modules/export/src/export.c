@@ -1,14 +1,14 @@
 /* Schedule renderers (see tix/export.h). */
+#include "export_internal.h"
 #include "tix/base_json.h"
-#include "tix/export.h"
 
 #include <stdio.h>
 #include <string.h>
 
 bool tix_export_format_parse(const char *s, tix_export_format *out)
 {
-	static const char *const names[] = {"mermaid", "csv", "json"};
-	for (int i = 0; i < 3; i++)
+	static const char *const names[] = {"mermaid", "csv", "json", "mspdi"};
+	for (int i = 0; i < 4; i++)
 		if (!strcmp(s, names[i])) {
 			*out = (tix_export_format)i;
 			return true;
@@ -304,5 +304,6 @@ void tix_export(const tix_schedule *s, tix_export_format f, const char *title, t
 	case TIX_EXPORT_MERMAID: mermaid(s, title, out); break;
 	case TIX_EXPORT_CSV: csv(s, out); break;
 	case TIX_EXPORT_JSON: json(s, out); break;
+	case TIX_EXPORT_MSPDI: tix_export_mspdi(s, title, out); break;
 	}
 }

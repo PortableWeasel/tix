@@ -494,6 +494,11 @@ static void test_pages(void)
 	HEADER(&c, "Content-Disposition: attachment; filename=\"plan.csv\"");
 	TK_CHECK(call(&c, "GET", "/export?format=json", NULL) == 200);
 	HEADER(&c, "Content-Type: application/json");
+	TK_CHECK(call(&c, "GET", "/export?format=mspdi", NULL) == 200);
+	TK_CHECK(strstr(tix_buf_cstr(&c.res.headers), "Content-Type: application/xml\r\n") &&
+		 strstr(tix_buf_cstr(&c.res.headers), "filename=\"plan.xml\""));
+	HAS(&c, "<Project xmlns=\"http://schemas.microsoft.com/project\">");
+	HASNT(&c, "<script>"); /* hostile titles are XML-escaped */
 	TK_CHECK(call(&c, "GET", "/export?format=exe", NULL) == 400);
 	TK_CHECK(call(&c, "GET", "/export", NULL) == 400);
 

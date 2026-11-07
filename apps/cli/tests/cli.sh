@@ -243,7 +243,9 @@ has "gantt"; has "title House"; has "1.3 Pour slab :crit, t$pour, 2026-11-12, 20
 has "1.5 Handover :crit, milestone, t$hand"
 expect 0 "$TIX" export "$house" --format csv; has "1.3,$pour"; has "Ada:50%"
 expect 0 "$TIX" export --format json; has '"tasks":[{"wbs":"1"'; has '"diagnostics":['
-expect 2 "$TIX" export "$house"; has "--format mermaid|csv|json is required"
+expect 0 "$TIX" export "$house" --format mspdi; has '<Project xmlns="http://schemas.microsoft.com/project">'
+has "<OutlineNumber>1.3</OutlineNumber>"; has "<PredecessorLink>"; has "<Resources><Resource>"
+expect 2 "$TIX" export "$house"; has "--format mermaid|csv|json|mspdi is required"
 expect 2 "$TIX" plan --frobnicate; has "unexpected"
 
 # a concurrent re-parent that forms a cycle on merge is broken the same way everywhere

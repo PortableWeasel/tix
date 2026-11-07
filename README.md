@@ -32,8 +32,9 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
   Gantt editing (drag to move, drag the end to resize, drag the handle to link, arrow
   keys), inline status changes, keyboard shortcuts (`?` lists them) and live refresh when
   the CLI or a sync changes something. Everything still works without it.
-- In progress: plan baselines, MS Project XML export, commit signature enforcement, a
-  Forgejo issue bridge, a TUI, and a hosted web mode behind SSO.
+- After v1: MS Project XML export (`tix export --format mspdi`) is done; plan baselines,
+  commit signature enforcement, a Forgejo issue bridge, a TUI and a hosted web mode behind
+  SSO are in progress.
 
 tix tracks its own work: `tix pull && tix wbs` in a clone of this repo.
 
@@ -58,7 +59,7 @@ tix new -t "Pour slab" --parent <house> --rank last --duration 2d --dep +<dig>:F
 tix assign <dig> <crew>
 tix wbs <house>                           # tree with WBS codes and rollups
 tix plan <house> --gantt --load           # ASCII Gantt and resource load (also --critical)
-tix export <house> --format mermaid       # or csv, json
+tix export <house> --format mermaid       # or csv, json, mspdi (MS Project XML)
 ```
 
 Also available as `git tix …`. A plain `git clone` doesn't copy tickets: run `tix pull`

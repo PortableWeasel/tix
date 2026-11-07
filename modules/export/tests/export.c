@@ -31,14 +31,121 @@ static tix_entity *task(int n, const char *title, int64_t duration)
 	return t;
 }
 
+/* Every <Task> block's elements must follow the MSPDI schema's sequence (readers are
+ * order-sensitive). The subset tix writes, in schema order: */
+static const char *const task_order[] = {
+	"UID", "ID", "Name", "Active", "Manual", "Type", "IsNull", "WBS", "OutlineNumber", "OutlineLevel", "Priority",
+	"Start", "Finish", "Duration", "DurationFormat", "Work", "EffortDriven", "Estimated", "Milestone", "Summary",
+	"Critical", "EarlyStart", "EarlyFinish", "LateStart", "LateFinish", "TotalSlack", "PercentComplete",
+	"ActualStart", "ActualFinish", "ConstraintType", "CalendarUID", "ConstraintDate", "Deadline", "Notes",
+	"PredecessorLink", "ManualStart", "ManualFinish", "ManualDuration", NULL};
+
+static int order_of(const char *name, size_t n)
+{
+	for (int i = 0; task_order[i]; i++)
+		if (strlen(task_order[i]) == n && !strncmp(task_order[i], name, n))
+			return i;
+	return -1;
+}
+
+static void check_task_order(const char *xml)
+{
+	for (const char *t = strstr(xml, "<Task>"); t; t = strstr(t + 1, "<Task>")) {
+		const char *end = strstr(t, "</Task>");
+		int last = -1;
+		for (const char *p = t + 6; p && p < end;) {
+			size_t n = strcspn(p + 1, ">");
+			int k = order_of(p + 1, n);
+			if (k < 0 || k < last)
+				tk_fail(__FILE__, __LINE__, "Task element <%.*s> out of schema order", (int)n, p + 1);
+			last = k;
+			const char *close = strstr(p, "</");
+			if (!strncmp(p + 1, "PredecessorLink", 15)) /* skip its children */
+				close = strstr(p, "</PredecessorLink>");
+			p = close ? strchr(close, '>') : NULL;
+			if (p)
+				p++;
+			while (p && p < end && *p != '<')
+				p++;
+		}
+	}
+}
+
+/* Overlapping tix calendar exceptions (later wins) become disjoint MSPDI runs. */
+static void test_mspdi_calendar(void)
+{
+	tix_entity *cal = tix_xcalloc(1, sizeof(*cal)), *t = task(20, "Under a calendar", 3);
+	cal->type = TIX_ENTITY_CALENDAR;
+	cal->id = oid(30);
+	tix_calendar *c = &cal->u.calendar;
+	c->name = tix_xstrdup("Site & <yard>");
+	c->weekdays = 0x3f; /* Mon-Sat */
+	c->hours = 6;
+	c->exceptions = tix_xcalloc(3, sizeof(tix_cal_exception));
+	c->nexceptions = 3;
+	tix_date d1, d2, d3, d4;
+	TIX_REQUIRE(tix_date_parse("2026-12-24", &d1) && tix_date_parse("2027-01-01", &d2) &&
+		    tix_date_parse("2026-12-26", &d3) && tix_date_parse("2026-12-31", &d4));
+	c->exceptions[0] = (tix_cal_exception){.from = d1, .to = d2, .working = false, .note = tix_xstrdup("Holidays"), .order = {.lamport = 1}};
+	c->exceptions[1] = (tix_cal_exception){.from = d3, .to = d3, .working = true, .order = {.lamport = 2}};
+	c->exceptions[2] = (tix_cal_exception){.from = d4, .to = d4, .working = false, .note = tix_xstrdup("NYE"), .order = {.lamport = 3}};
+	t->u.ticket.plan.calendar = cal->id;
+	const tix_entity *tickets[] = {t}, *cals[] = {cal};
+	tix_date today;
+	TIX_REQUIRE(tix_date_parse("2026-11-09", &today));
+	tix_plan_input in = {tickets, 1, NULL, 0, cals, 1, NULL, today};
+	tix_schedule *s = NULL;
+	TK_OK(tix_plan_compute(&in, &s, &e), &e);
+	tix_buf b = TIX_BUF_INIT;
+	if (s)
+		tix_export(s, TIX_EXPORT_MSPDI, NULL, &b);
+	const char *x = tix_buf_cstr(&b);
+	TK_CHECK(strstr(x, "<Calendar><UID>2</UID><Name>Site &amp; &lt;yard&gt;</Name>"));
+	/* Mon-Sat with 6 hours: Saturday (DayType 7) works 08-12, 13-15; Sunday doesn't */
+	TK_CHECK(strstr(x, "<WeekDay><DayType>1</DayType><DayWorking>0</DayWorking></WeekDay>"));
+	TK_CHECK(strstr(x, "<WeekDay><DayType>7</DayType><DayWorking>1</DayWorking><WorkingTimes><WorkingTime><FromTime>"
+			   "08:00:00</FromTime><ToTime>12:00:00</ToTime></WorkingTime><WorkingTime><FromTime>13:00:00"
+			   "</FromTime><ToTime>15:00:00</ToTime></WorkingTime></WorkingTimes></WeekDay>"));
+	static const char *const runs[] = {"2026-12-24", "2026-12-25", "0", "Holidays",
+					   "2026-12-26", "2026-12-26", "1", "Holidays",
+					   "2026-12-27", "2026-12-30", "0", "Holidays",
+					   "2026-12-31", "2026-12-31", "0", "NYE",
+					   "2027-01-01", "2027-01-01", "0", "Holidays"};
+	const char *p = x;
+	for (size_t i = 0; i < 20; i += 4) {
+		char want[400];
+		snprintf(want, sizeof(want),
+			 "<Exception><EnteredByOccurrences>0</EnteredByOccurrences><TimePeriod><FromDate>%sT00:00:00"
+			 "</FromDate><ToDate>%sT23:59:00</ToDate></TimePeriod><Occurrences>1</Occurrences><Name>%s</Name>"
+			 "<Type>1</Type><DayWorking>%s</DayWorking>",
+			 runs[i], runs[i + 1], runs[i + 3], runs[i + 2]);
+		const char *hit = strstr(p, want);
+		if (!hit)
+			tk_fail(__FILE__, __LINE__, "missing or out of order: %s", want);
+		else
+			p = hit + 1;
+	}
+	TK_CHECK(!strstr(p + 1, "<Exception><Entered")); /* exactly five */
+	TK_CHECK(strstr(x, "<CalendarUID>2</CalendarUID>"));
+	TK_CHECK(strstr(x, "<Finish>2026-11-11T15:00:00</Finish>")); /* a 6-hour day ends at 15:00 */
+	check_task_order(x);
+	tix_buf_free(&b);
+	tix_schedule_free(s);
+	tix_entity_free(t);
+	tix_entity_free(cal);
+}
+
 int main(void)
 {
+	test_mspdi_calendar();
 	tix_entity *proj = task(1, "Build: phase #1", -1), *a = task(2, "=SUM(A1)", 2), *m = task(3, "Done, \"really\"", 0);
 	tix_entity *u = task(4, "Someday", -1), *r = tix_xcalloc(1, sizeof(*r));
 	r->type = TIX_ENTITY_RESOURCE;
 	r->id = oid(9);
 	r->u.resource.name = tix_xstrdup("Ada");
 	r->u.resource.capacity = 100;
+	r->u.resource.rate = -1; /* unset, as the model's default */
+	r->u.resource.active = true;
 	a->u.ticket.plan.parent = proj->id;
 	m->u.ticket.plan.parent = proj->id;
 	m->u.ticket.plan.kind = TIX_KIND_MILESTONE;
@@ -95,6 +202,32 @@ int main(void)
 	TK_CHECK(strstr(b.data, "\"load\":[{\"resource\":\"0900000000000000000000000000000000000000\",\"name\":\"Ada\","
 				"\"capacity\":100,\"peak\":50,\"over_days\":0,\"units\":[50,50],\"working\":[true,true]}]"));
 	TK_CHECK(strstr(b.data, "\"title\":\"Someday\",\"kind\":\"task\",\"status\":\"open\",\"scheduled\":false,\"start\":null"));
+	TK_CHECK(tix_utf8_valid(b.data, b.len));
+
+	/* MS Project XML */
+	tix_buf_reset(&b);
+	TK_CHECK(tix_export_format_parse("mspdi", &f) && f == TIX_EXPORT_MSPDI);
+	tix_export(s, TIX_EXPORT_MSPDI, "Plan <Q4> & \"co\"\x01", &b);
+	const char *x = tix_buf_cstr(&b);
+	TK_CHECK(strstr(x, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+			   "<Project xmlns=\"http://schemas.microsoft.com/project\"><SaveVersion>14</SaveVersion>"
+			   "<Name>Plan &lt;Q4&gt; &amp; &quot;co&quot; </Name>") == x);
+	TK_CHECK(strstr(x, "<Task><UID>0</UID><ID>0</ID>")); /* the project summary */
+	TK_CHECK(strstr(x, "<Task><UID>1</UID><ID>1</ID><Name>Build: phase #1</Name>"));
+	TK_CHECK(strstr(x, "<Name>=SUM(A1)</Name><Active>1</Active><Manual>0</Manual><Type>0</Type><IsNull>0</IsNull>"
+			   "<WBS>1.1</WBS><OutlineNumber>1.1</OutlineNumber><OutlineLevel>2</OutlineLevel>"));
+	TK_CHECK(strstr(x, "<Duration>PT16H0M0S</Duration>")); /* 2 days x 8 h */
+	TK_CHECK(strstr(x, "<Name>Done, &quot;really&quot;</Name>"));
+	TK_CHECK(strstr(x, "<Milestone>1</Milestone>"));
+	TK_CHECK(strstr(x, "<PredecessorLink><PredecessorUID>2</PredecessorUID><Type>1</Type><CrossProject>0"
+			   "</CrossProject><LinkLag>0</LinkLag><LagFormat>7</LagFormat></PredecessorLink>"));
+	TK_CHECK(strstr(x, "<Name>Someday</Name>") && strstr(x, "<Estimated>1</Estimated>"));
+	TK_CHECK(strstr(x, "<Resource><UID>1</UID><ID>1</ID><Name>Ada</Name><Type>1</Type><IsNull>0</IsNull>"
+			   "<MaxUnits>1.00</MaxUnits><IsInactive>0</IsInactive></Resource>"));
+	TK_CHECK(strstr(x, "<Assignment><UID>1</UID><TaskUID>2</TaskUID><ResourceUID>1</ResourceUID>"));
+	TK_CHECK(strstr(x, "<Units>0.50</Units><Work>PT8H0M0S</Work></Assignment>"));
+	TK_CHECK(strstr(x, "</Assignments>\n</Project>\n"));
+	check_task_order(x);
 	TK_CHECK(tix_utf8_valid(b.data, b.len));
 	tix_buf_free(&b);
 	tix_schedule_free(s);

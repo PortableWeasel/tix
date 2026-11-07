@@ -513,7 +513,7 @@ tix cal   new NAME | ls | show | edit   (--weekdays mon-fri, --hours 8, --off D[
                                          --on D[..D], --clear D[..D], --name)
 tix wbs   [root]                       tree with WBS codes and rollups
 tix plan  [root] [--gantt] [--critical] [--load]   ASCII Gantt / resource load
-tix export [root] --format mermaid|csv|json
+tix export [root] --format mermaid|csv|json|mspdi
 tix pull | push | sync [remote]
 tix --version                          tix and the linked git.git version
 ```
@@ -547,9 +547,10 @@ Also installed as `git-tix`, so `git tix …` works.
 6. ✅ **M5 index** (done 2026-11-06): SQLite cache of replayed entities, `tix index`.
 7. ✅ **M6 web UI, no JavaScript** (done 2026-11-06, §13): `input` module, store refresh, Mongoose
    adapter, pages, forms, SVG Gantt, `tix web`.
-8. **M7 web UI enhancements** (§13.4) ✅: search as you type, Gantt editing, live refresh.
-9. Later: signature enforcement, baselines, TUI, Forgejo issue bridge, MS Project XML export,
-   hosted web mode (§13.8).
+8. ✅ **M7 web UI enhancements** (done 2026-11-07, §13.4): search as you type, Gantt editing,
+   live refresh.
+9. **After v1** (approved 2026-11-07, §14): MS Project XML export ✅, plan baselines, commit
+   signature enforcement, Forgejo issue bridge, TUI, hosted web mode.
 
 ## 12. Resolved decisions (2026-11-06)
 
@@ -836,3 +837,39 @@ from the request context rather than from globals. The auth check is one functio
   - `tix web`, the tests in §13.7, and docs.
 - **M7 web JS**: `app.js`, `/api/tickets`, Gantt drag/resize/link, inline status,
   shortcuts and SSE live refresh.
+
+## 14. After v1 (approved 2026-11-07)
+
+Each item lands as its own commit series with tests, recorded in tix under
+`tix: after v1` (5484c09).
+
+### 14.1 MS Project XML export ✅
+
+`tix export --format mspdi` (and the plan page's "MS Project" link) writes MSPDI, the XML
+that Microsoft Project, ProjectLibre, GanttProject and MPXJ read. It lives in the `export`
+module (`src/mspdi.c`), pure like the other renderers. `tix_schedule` now also carries the
+plan's calendars (sorted by id, like resources).
+
+- **Order**: MSPDI readers are order-sensitive (schema sequences). The element order follows
+  MPXJ's generated schema classes; the export test checks every `<Task>` against it.
+- **Time**: durations are working days × 8 h (`MinutesPerDay` 480), lags and total slack in
+  tenths of minutes. Days run 08:00–12:00 and 13:00 onwards for the calendar's hours, so a
+  6-hour day ends at 15:00. A milestone's start and finish are both the day's end.
+- **Calendars**: UID 1 is the built-in Mon–Fri 8 h ("Standard"); tix calendars follow in
+  id order. tix exceptions may overlap (the later op wins); MSPDI's may not. They are
+  flattened into runs of covered days that share the resulting working/off status and the
+  winning note.
+- **Tasks**: UID 0 is the project summary; then each task in WBS order (`WBS` and
+  `OutlineNumber` = the tix WBS code). Auto tasks with a start get "start no earlier than";
+  manual tasks get `Manual` with fixed start and finish. Deadlines, progress, actual dates,
+  notes (the body) and FS/SS/FF/SF links with lags carry over. Unscheduled tasks are
+  `Estimated` with no dates. Cancelled tasks are inactive.
+- **Resources and assignments**: every resource is a work resource with `MaxUnits` from
+  capacity and an hourly `StandardRate`. A currency is written when all rated resources
+  share one. Assignments carry units and, where set, effort as `Work`.
+- **Escaping**: text is XML-escaped; control characters XML 1.0 forbids become spaces.
+- **Verified** by reading exports back with MPXJ 13 (via its Python package and a JRE in a
+  scratch directory): calendars and exceptions, outline, constraints, deadline, notes,
+  links with lags, the manual task, the milestone, actuals, rates, units and work all came
+  back as written. 5,100 tasks export in 2 s (debug build) and read back whole.
+

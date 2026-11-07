@@ -152,7 +152,12 @@ void page_plan_view(web_ctx *x)
 			HL(h, "&amp;root=");
 			h_id(h, &root);
 		}
-		HL(h, "\">Mermaid</a></p>\n");
+		HL(h, "\">Mermaid</a> <a href=\"/export?format=mspdi");
+		if (have) {
+			HL(h, "&amp;root=");
+			h_id(h, &root);
+		}
+		HL(h, "\">MS Project</a></p>\n");
 	}
 	h_gantt(x, s, page_today(x), critical);
 	HL(h, "<table class=\"plan\"><thead><tr><th>WBS</th><th>ID</th><th>Title</th><th>Status</th><th>Start</th>"
@@ -255,13 +260,13 @@ void page_load(web_ctx *x)
 	tix_plan_result_free(&pr);
 }
 
-/* GET /export?format=csv|json|mermaid&root=ID: a download, escaped by the export module. */
+/* GET /export?format=csv|json|mermaid|mspdi&root=ID: a download, escaped by the export module. */
 void page_export(web_ctx *x)
 {
 	tix_export_format f;
 	const char *fmt = web_kvs_get(&x->req->query, "format");
 	if (!fmt || !tix_export_format_parse(fmt, &f)) {
-		page_error(x, 400, "Export", "format must be csv, json or mermaid.");
+		page_error(x, 400, "Export", "format must be csv, json, mermaid or mspdi.");
 		return;
 	}
 	tix_oid root;
@@ -271,10 +276,14 @@ void page_export(web_ctx *x)
 		return;
 	const tix_entity *r = have ? list_find(&pr.tickets, &root) : NULL;
 	tix_export(pr.schedule, f, r ? r->u.ticket.title : NULL, &x->res->body);
-	static const char *const types[] = {"text/plain; charset=utf-8", "text/csv; charset=utf-8",
-					    "application/json"};
-	static const char *const names[] = {"attachment; filename=\"plan.mmd\"", "attachment; filename=\"plan.csv\"",
-					    "attachment; filename=\"plan.json\""};
+	static const char *const types[] = {
+		[TIX_EXPORT_MERMAID] = "text/plain; charset=utf-8", [TIX_EXPORT_CSV] = "text/csv; charset=utf-8",
+		[TIX_EXPORT_JSON] = "application/json", [TIX_EXPORT_MSPDI] = "application/xml"};
+	static const char *const names[] = {[TIX_EXPORT_MERMAID] = "attachment; filename=\"plan.mmd\"",
+					    [TIX_EXPORT_CSV] = "attachment; filename=\"plan.csv\"",
+					    [TIX_EXPORT_JSON] = "attachment; filename=\"plan.json\"",
+					    [TIX_EXPORT_MSPDI] = "attachment; filename=\"plan.xml\""};
+	_Static_assert(sizeof(types) / sizeof(*types) == TIX_EXPORT_MSPDI + 1, "a type per format");
 	web_header(x->res, "Content-Type", types[f]);
 	web_header(x->res, "Content-Disposition", names[f]);
 	web_header(x->res, "Cache-Control", "no-store");
