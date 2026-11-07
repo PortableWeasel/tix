@@ -317,7 +317,7 @@ int main(int argc, char **argv)
 	hosted.users = users.v;
 	hosted.nusers = users.n;
 	static web_app app; /* large; not on the stack */
-	web_app_config acfg = {.repo = repo, .random = env_random, .today = today, .read_only = read_only,
+	web_app_config acfg = {.repo = repo, .random = env_random, .today = today, .now = env_now, .read_only = read_only,
 			       .remote = remote, .hosted = is_hosted ? &hosted : NULL};
 	web_app_init(&app, &acfg);
 	runner r = {.app = &app, .open_browser = open_browser};

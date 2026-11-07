@@ -506,6 +506,113 @@ static void test_stages(void)
 	tix_sim_clone_free(&b);
 }
 
+/* §15.3: the first live claim wins, identically everywhere; renewals; expiry; release. */
+static void test_claims(void)
+{
+	tix_sim_clone a, b;
+	new_clone(&a, "a", "Ada");
+	new_clone(&b, "b", "Bob");
+	tix_oid t = new_ticket(&a, "T", NULL);
+	sync_both(&a, &b);
+	const int64_t far = (int64_t)TIX_LAMPORT_MAX - 1;
+
+	/* concurrent claims: both clones end up with the same, earlier claimant */
+	apply1(&a, &t, tix_op_claim(far));
+	apply1(&b, &t, tix_op_claim(far));
+	apply1(&b, &t, tix_op_claim(far)); /* Bob renews his own (losing) claim */
+	sync_both(&a, &b);
+	tix_entity *ea = loadt(&a, &t), *eb = loadt(&b, &t);
+	TK_CHECK(ea && eb && tix_oid_eq(&ea->u.ticket.claim.identity, &eb->u.ticket.claim.identity));
+	tix_oid winner = ea->u.ticket.claim.identity;
+	TK_CHECK(tix_oid_eq(&winner, &a.me) || tix_oid_eq(&winner, &b.me));
+	TK_CHECK(tix_claim_live(&ea->u.ticket.claim, 0));
+	int64_t since = ea->u.ticket.claim.since;
+	tix_entity_free(ea);
+	tix_entity_free(eb);
+
+	tix_sim_clone *w = tix_oid_eq(&winner, &a.me) ? &a : &b, *l = w == &a ? &b : &a;
+	/* the loser can't take a live claim over; the winner's renewal keeps `since` */
+	apply1(l, &t, tix_op_claim(far));
+	apply1(w, &t, tix_op_claim(far - 5));
+	sync_both(&a, &b);
+	ea = loadt(&a, &t);
+	TK_CHECK(ea && tix_oid_eq(&ea->u.ticket.claim.identity, &winner) && ea->u.ticket.claim.since == since &&
+		 (ea->u.ticket.claim.until == far || ea->u.ticket.claim.until == far - 5));
+	tix_entity_free(ea);
+
+	/* an expired claim is anyone's: winner lets it lapse (until in the past) */
+	apply1(w, &t, tix_op_claim(1));
+	apply1(l, &t, tix_op_claim(far)); /* not seen the lapse yet: still the winner's */
+	ea = loadt(l, &t);
+	TK_CHECK(ea && tix_oid_eq(&ea->u.ticket.claim.identity, &winner));
+	tix_entity_free(ea);
+	sync_both(&a, &b);
+	apply1(l, &t, tix_op_claim(far));
+	ea = loadt(l, &t);
+	TK_CHECK(ea && tix_oid_eq(&ea->u.ticket.claim.identity, &l->me));
+	TK_CHECK(!tix_claim_live(&ea->u.ticket.claim, far));
+	tix_entity_free(ea);
+
+	/* a release by someone who doesn't hold a live claim frees nothing */
+	apply1(w, &t, tix_op_release());
+	sync_both(&a, &b);
+	ea = loadt(&a, &t);
+	TK_CHECK(ea && tix_oid_eq(&ea->u.ticket.claim.identity, &l->me));
+	tix_entity_free(ea);
+
+	/* the loser-yields protocol: whichever of two concurrent claims replays first holds,
+	 * the other waits; when the holder releases, the waiting one takes over */
+	tix_oid t2 = new_ticket(&a, "T2", NULL);
+	sync_both(&a, &b);
+	apply1(&a, &t2, tix_op_claim(far));
+	apply1(&b, &t2, tix_op_claim(far));
+	sync_both(&a, &b);
+	ea = loadt(&a, &t2);
+	TK_CHECK(ea && ea->u.ticket.nwaiting == 1);
+	tix_oid holder = ea->u.ticket.claim.identity, waiter = ea->u.ticket.waiting[0].identity;
+	TK_CHECK(!tix_oid_eq(&holder, &waiter));
+	tix_entity_free(ea);
+	tix_sim_clone *hc = tix_oid_eq(&holder, &a.me) ? &a : &b;
+	apply1(hc, &t2, tix_op_release());
+	sync_both(&a, &b);
+	ea = loadt(&a, &t2);
+	eb = loadt(&b, &t2);
+	TK_CHECK(ea && eb && tix_oid_eq(&ea->u.ticket.claim.identity, &waiter) && ea->u.ticket.nwaiting == 0 &&
+		 tix_oid_eq(&eb->u.ticket.claim.identity, &waiter));
+	tix_entity_free(ea);
+	tix_entity_free(eb);
+	/* the waiter, had it yielded instead, would leave the holder alone */
+	tix_oid t3 = new_ticket(&a, "T3", NULL);
+	sync_both(&a, &b);
+	apply1(&a, &t3, tix_op_claim(far));
+	apply1(&b, &t3, tix_op_claim(far));
+	sync_both(&a, &b);
+	ea = loadt(&a, &t3);
+	holder = ea->u.ticket.claim.identity;
+	waiter = ea->u.ticket.waiting[0].identity;
+	tix_entity_free(ea);
+	apply1(tix_oid_eq(&waiter, &a.me) ? &a : &b, &t3, tix_op_release());
+	sync_both(&a, &b);
+	ea = loadt(&b, &t3);
+	TK_CHECK(ea && tix_oid_eq(&ea->u.ticket.claim.identity, &holder) && ea->u.ticket.nwaiting == 0);
+	tix_entity_free(ea);
+	sync_both(&a, &b);
+	ea = loadt(&a, &t);
+	eb = loadt(&b, &t);
+	tix_buf sa = TIX_BUF_INIT, sb = TIX_BUF_INIT;
+	if (ea && eb) {
+		tix_entity_snapshot(ea, &sa);
+		tix_entity_snapshot(eb, &sb);
+		TK_STR_EQ(tix_buf_cstr(&sa), tix_buf_cstr(&sb));
+	}
+	tix_entity_free(ea);
+	tix_entity_free(eb);
+	tix_buf_free(&sa);
+	tix_buf_free(&sb);
+	tix_sim_clone_free(&a);
+	tix_sim_clone_free(&b);
+}
+
 static void test_resource_and_calendar(void)
 {
 	tix_sim_clone a, b;
@@ -680,6 +787,7 @@ static void test_baseline(void)
 
 int main(void)
 {
+	test_claims();
 	test_stages();
 	test_baseline();
 	test_lifecycle();

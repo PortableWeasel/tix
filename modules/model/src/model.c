@@ -252,6 +252,8 @@ void tix_op_free(tix_op *op)
 		free(op->u.stage_remove.name);
 		break;
 	case TIX_OP_SET_STATUS:
+	case TIX_OP_CLAIM:
+	case TIX_OP_RELEASE:
 	case TIX_OP_DEP_ADD:
 	case TIX_OP_DEP_REMOVE:
 	case TIX_OP_ASSIGN:
@@ -329,6 +331,18 @@ tix_op tix_op_stage_remove(const char *name)
 	tix_op op = op_of(TIX_OP_STAGE_REMOVE);
 	op.u.stage_remove.name = tix_xstrdup(name);
 	return op;
+}
+
+tix_op tix_op_claim(int64_t until)
+{
+	tix_op op = op_of(TIX_OP_CLAIM);
+	op.u.claim.until = until;
+	return op;
+}
+
+tix_op tix_op_release(void)
+{
+	return op_of(TIX_OP_RELEASE);
 }
 
 tix_op tix_op_label(const tix_strs *add, const tix_strs *remove)

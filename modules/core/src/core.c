@@ -623,6 +623,32 @@ static tix_status precheck_ticket(tix_repo *r, const tix_entity *e, const tix_op
 			if (tix_oid_eq(&e->u.ticket.plan.assignments[k].resource, &op->u.unref.target))
 				return TIX_OK;
 		return tix_error_set(err, TIX_ERR_NOT_FOUND, "%s is not assigned", short_hex(&op->u.unref.target, a));
+	case TIX_OP_CLAIM: {
+		int64_t now = r->env.now(r->env.ctx);
+		char who[16];
+		if (op->u.claim.until <= now || op->u.claim.until > now + TIX_CLAIM_MAX_SECS)
+			return tix_error_set(err, TIX_ERR_INVALID, "a claim must end within %d hours from now",
+					     TIX_CLAIM_MAX_SECS / 3600);
+		if (e && tix_claim_live(&e->u.ticket.claim, now) && !tix_oid_eq(&e->u.ticket.claim.identity, &r->identity))
+			return tix_error_set(err, TIX_ERR_CONFLICT, "claimed by %s for %lld more minutes",
+					     short_hex(&e->u.ticket.claim.identity, who),
+					     (long long)((e->u.ticket.claim.until - now + 59) / 60));
+		return TIX_OK;
+	}
+	case TIX_OP_RELEASE: {
+		int64_t now = r->env.now(r->env.ctx);
+		const tix_ticket *t = e ? &e->u.ticket : NULL;
+		char who[16];
+		bool waiting = false;
+		for (size_t k = 0; t && k < t->nwaiting; k++)
+			waiting |= tix_oid_eq(&t->waiting[k].identity, &r->identity);
+		if (!t || (tix_oid_is_null(&t->claim.identity) && !waiting))
+			return tix_error_set(err, TIX_ERR_NOT_FOUND, "this ticket isn't claimed");
+		if (waiting || tix_oid_eq(&t->claim.identity, &r->identity) || !tix_claim_live(&t->claim, now))
+			return TIX_OK;
+		return tix_error_set(err, TIX_ERR_CONFLICT, "claimed by %s; only they can release it (it ends in %lld minutes)",
+				     short_hex(&t->claim.identity, who), (long long)((t->claim.until - now + 59) / 60));
+	}
 	case TIX_OP_STAGE_REMOVE:
 		if (e && tix_stage_find(e, op->u.stage_remove.name))
 			return TIX_OK;

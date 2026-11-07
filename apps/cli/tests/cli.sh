@@ -318,6 +318,51 @@ expect 0 "$TIX" stage rm "$wr" ready
 expect 0 "$TIX" stage ls "$wr"; hasnt "open/ready"
 expect 0 "$TIX" new -t "Free stage" --status blocked/whatever; has "Created ticket"   # no list: any stage
 
+# ---- claims (§15.3): leases, claim --next, races through a remote ---------------------
+git init -q --bare "$T/claims.git"
+git init -q "$T/c1" && cd "$T/c1" && git remote add origin "$T/claims.git"
+git config user.name Ada && git config user.email ada@example.org
+expect 0 "$TIX" id new --name Ada --kind agent
+expect 0 "$TIX" new -t "First job"; j1=$(sed -n 's/^Created ticket //p' <<<"$out")
+expect 0 "$TIX" new -t "Second job" --dep "+$j1"; j2=$(sed -n 's/^Created ticket //p' <<<"$out")
+expect 0 "$TIX" new -t "Third job" --rank last; j3=$(sed -n 's/^Created ticket //p' <<<"$out")
+expect 0 "$TIX" edit "$j1" --rank first
+expect 0 "$TIX" sync
+git clone -q "$T/claims.git" "$T/c2" 2>/dev/null && cd "$T/c2"
+git config user.name Bob && git config user.email bob@example.org
+expect 0 "$TIX" pull
+expect 0 "$TIX" id new --name Bob --kind agent
+cd "$T/c1"
+expect 0 "$TIX" claim --next; has "Claimed $j1 First job (for 30 min)"
+expect 0 "$TIX" show "$j1"; has "claimed:  Ada until"
+expect 0 "$TIX" ls; has "First job  @Ada"
+cd "$T/c2"
+expect 0 "$TIX" claim --next --for 2h; has "Claimed $j3 Third job (for 120 min)"   # j1 taken, j2 waits on j1
+expect 0 "$TIX" claim --next; has "Claimed $j3"   # what you hold comes back first (renewed)
+expect 3 "$TIX" claim --next --status blocked; has "no work"
+expect 1 "$TIX" claim "$j1"; has "claimed by"
+expect 1 "$TIX" claim "$j1" --release; has "only they can release it"
+expect 1 "$TIX" claim "$j2" --release; has "isn't claimed"
+expect 2 "$TIX" claim "$j2" --for 3d; has "up to 24h"
+expect 2 "$TIX" claim --next --status wip; has "unknown status"
+expect 0 "$TIX" claim --next --local; has "Claimed $j3"   # my own comes back (renewed)
+# a race: Bob claims j2 locally without pushing, Ada finishes j1 and claims j2 through the remote
+cd "$T/c1"
+expect 0 "$TIX" edit "$j1" --status done
+expect 0 "$TIX" claim "$j1" --release
+expect 0 "$TIX" sync
+cd "$T/c2"
+expect 0 "$TIX" pull
+expect 0 "$TIX" claim "$j2" --for 1h   # not pushed
+cd "$T/c1"
+expect 0 "$TIX" claim --next; has "Claimed $j2"
+cd "$T/c2"
+expect 0 "$TIX" claim --next; has "Claimed $j3"   # Bob's pull shows Ada's claim on j2: he yields it
+expect 0 "$TIX" show "$j2"; has "claimed:  Ada until"; hasnt "waiting:"
+cd "$T/c1" && expect 0 "$TIX" pull && expect 0 "$TIX" show "$j2"; has "claimed:  Ada until"; hasnt "waiting:"
+expect 0 "$TIX" claim "$j2" --release; has "Released"
+expect 0 "$TIX" show "$j2"; hasnt "claimed:"
+
 # ---- index cache (M5) ------------------------------------------------------------
 cd "$T/a"
 expect 0 "$TIX" index clear; has "index: 0 cached"

@@ -166,7 +166,7 @@ static void world_open(world *w, bool read_only)
 	TK_OK(tix_identity_create(w->repo, "Ada <script>", "ada@example.org", &w->me, &e), &e);
 	TK_OK(tix_repo_set_identity(w->repo, &w->me, &e), &e);
 	web_app_config acfg = {.repo = w->repo, .random = fake_random, .random_ctx = &w->env, .today = fixed_today,
-			       .read_only = read_only};
+			       .now = fake_now, .now_ctx = &w->env, .read_only = read_only};
 	web_app_init(&w->app, &acfg);
 	web_app_set_listen(&w->app, "127.0.0.1", 7480);
 }
@@ -1012,7 +1012,16 @@ static void test_stages(void)
 	snprintf(target, sizeof(target), "/t/%s/edit", hex);
 	TK_CHECK(call(&c, "GET", target, NULL) == 200);
 	HAS(&c, "<option selected>open/ready</option>");
-	/* identity kind badge (§15.2) */
+	/* claims (§15.3) */
+	apply1(&w, TIX_ENTITY_TICKET, &t, tix_op_claim(w.env.now + 1800));
+	snprintf(target, sizeof(target), "/t/%s", hex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "<span class=\"claim\">claimed by Ada &lt;script&gt;, ");
+	HAS(&c, " min left</span>");
+	apply1(&w, TIX_ENTITY_TICKET, &t, tix_op_release());
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HASNT(&c, "claimed by");
+		/* identity kind badge (§15.2) */
 	HASNT(&c, "badge agent");
 	tix_oid me;
 	TK_CHECK(tix_repo_identity(w.repo, &me));

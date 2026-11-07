@@ -1167,42 +1167,60 @@ table's `TIX_F_ID_KIND`; older readers skip it). CLI: `tix id new --kind agent`,
 edit --kind human|agent`, shown by `id show` and marked in `id ls`; the web UI puts an
 "agent" badge after an agent's name, the TUI "(agent)".
 
-### 15.3 Claims
+### 15.3 Claims ✅
 
 A claim says "this identity is working on the ticket until T". It's generic: a person can
 claim a ticket too.
 
-- **Field**: `claim`, `{identity, until}` or empty. Ops are
-  `{"op":"claim","until":<unix>}` (the claimant is the pack author) and
-  `{"op":"release"}` (anyone may release).
-- **The first live claim wins.** This is not LWW. In total order, a `claim` op applies only
-  if one of these holds when it is replayed:
-  - the current claim is empty,
-  - it belongs to the same identity (a renewal),
-  - or its `until` is not later than the claiming pack's `time`.
+- **Fields**: `claim` = `{identity, since, until}` or empty, and `waiting`, the claims queued
+  behind it. Ops are `{"op":"claim","until":<unix>}` (the claimant is the pack author) and
+  `{"op":"release"}`.
+- **Replay** (not LWW), in total order:
+  - `claim` by A at pack time T: A holds the ticket if it is free, A's own (a renewal,
+    which keeps `since`) or expired at T. Otherwise A **waits**, queued in arrival order
+    (a renewal updates its `until`).
+  - `release` by A at T: drops A's waiting claim. If A holds the ticket, or the hold
+    expired at T, it is freed and the first waiting claim still live at T takes over.
+    Someone else's live claim can't be released; it ends with its lease.
 
-  Two concurrent claims therefore resolve the same way on every clone: the earlier one in
-  total order wins, and the later claimer can't steal the ticket.
+  A claim therefore never takes over a live one, and concurrent claims resolve the same
+  way on every clone.
+- **Why a queue** (found while testing, 2026-11-07): merge order is the Lamport order, not
+  the order claims reached the remote. If losing claims were simply dropped, a claim pushed
+  *later* but ordered *earlier* would overturn one an agent had already been told it won.
+  With the queue, the side that lost the race can hand the ticket over by releasing.
+- **Whoever sees a contested claim yields.** The claim that reached the remote first was
+  pushed without seeing the other, so its owner never sees a contest. The other side sees
+  both claims as soon as it pulls, and releases in the same sync that publishes its claim.
+  `claim --next` does this after every pull. Core's write check (a claim over someone's
+  live claim is refused) means waiting claims only ever come from such races.
 - **Time has a meaning here.** This is the first rule that gives a pack's `time` meaning
   beyond display (§3.3). Clock skew between agents moves a lease edge by the skew, which is
-  acceptable for leases of minutes. `until` is capped at now + 24 h on write.
+  acceptable for leases of minutes. On write, `until` must be after now and at most now +
+  24 h.
 - **Liveness for display and queues** compares `until` with a "now" that the caller passes
-  in (rule 7).
+  in (rule 7). The web app's clock is `web_app_config.now`.
 - **CLI**:
-  - `tix claim ID [--for 30m]`, `tix claim ID --renew`, `tix claim ID --release`
-  - `tix claim --next [--under R] [--status open/ready,…] [--json]`
-- **`claim --next`** is the agent's one call to get work. It runs in `core`:
-  1. Pull from the remote, if one is configured.
-  2. Pick the first candidate in WBS order: in a requested state, not claimed by anyone
-     live, all predecessors satisfied, not a `human` stage, and under a root that isn't
-     halted (§15.5).
-  3. Write the claim and push.
-  4. If the push is rejected or the merge gives the claim to someone else, pull and try the
-     next candidate, up to 5 times.
-  5. Print the claimed ticket, or exit 3 for "no work".
+  - `tix claim ID [--for 30m]` (also renews), `tix claim ID --release`
+  - `tix claim --next [--status S]... [--under ID] [--for 30m] [--remote R | --local]`.
+    The remote defaults to `tix.remote`, else `origin`, and is used only when configured.
+  - `show` prints the claim and anyone waiting; `ls` adds `@name` to live claims.
+- **`claim --next`** (`tix_claim_next`) is the agent's one call to get work:
+  1. Pull from the remote, if any, then yield any of my claims that are contested.
+  2. Candidates in WBS order: in a requested state (default: the open and in-progress
+     phases), not claimed live by anyone else, every predecessor done or cancelled, not in
+     a `human` stage. A ticket I already hold comes first and is renewed.
+  3. Write the claim and push. If the push is refused, pull. If the merge shows someone
+     else's live claim on the ticket, release mine, sync, and try the next candidate (up
+     to 5); otherwise push again.
+  4. Print the claimed ticket, or exit 3 for "no work".
 
-  Without a remote, the CAS ref update already serialises claims between agents sharing a
-  repository.
+  Without a remote, the CAS ref update and the write check already serialise claims
+  between agents sharing a repository. The autonomy halt (§15.5) adds one more filter.
+- **Tested**: replay of renewals, expiry, holder-only release and hand-over in both
+  orders; convergence with random claims and releases; core races where the loser's
+  fetch was stale (refused push) and where its own claim was still unpushed; a `cli.sh`
+  race between two clones over a bare remote.
 
 ### 15.4 Typed comments
 

@@ -283,6 +283,11 @@ static void push_or_range(or_vec *v, tix_date from, tix_date to, const op_ref *r
 	push_or(v, key, r);
 }
 
+bool tix_claim_live(const tix_claim *c, int64_t now)
+{
+	return !tix_oid_is_null(&c->identity) && c->until > now;
+}
+
 int tix_order_cmp(const tix_order *a, const tix_order *b)
 {
 	if (a->lamport != b->lamport)
@@ -443,8 +448,59 @@ static void set_phase(tix_ticket *t, tix_ticket_status s, const char *stage, int
 	t->plan.done_at = s == TIX_TICKET_DONE ? time : -1;
 }
 
+typedef TIX_VEC(tix_claim) claim_vec;
+
+static void drop_waiting(claim_vec *w, const tix_oid *who)
+{
+	size_t k = 0;
+	for (size_t i = 0; i < w->n; i++)
+		if (!tix_oid_eq(&w->v[i].identity, who))
+			w->v[k++] = w->v[i];
+	w->n = k;
+}
+
+/* §15.3: the holder keeps a live claim; anyone else waits in line. */
+static void fold_claim(tix_ticket *t, claim_vec *w, const tix_oid *who, int64_t time, int64_t until)
+{
+	tix_claim *h = &t->claim;
+	bool free_now = tix_oid_is_null(&h->identity) || h->until <= time;
+	if (free_now || tix_oid_eq(&h->identity, who)) {
+		if (free_now || !tix_oid_eq(&h->identity, who))
+			h->since = time;
+		h->identity = *who;
+		h->until = until;
+		drop_waiting(w, who);
+		return;
+	}
+	for (size_t i = 0; i < w->n; i++)
+		if (tix_oid_eq(&w->v[i].identity, who)) {
+			w->v[i].until = until;
+			return;
+		}
+	tix_claim q = {*who, time, until};
+	TIX_VEC_PUSH(w, q);
+}
+
+static void fold_release(tix_ticket *t, claim_vec *w, const tix_oid *who, int64_t time)
+{
+	tix_claim *h = &t->claim;
+	drop_waiting(w, who);
+	if (tix_oid_is_null(&h->identity) || (!tix_oid_eq(&h->identity, who) && h->until > time))
+		return; /* only the holder frees a live claim */
+	memset(h, 0, sizeof(*h));
+	for (size_t i = 0; i < w->n; i++)
+		if (w->v[i].until > time) {
+			*h = w->v[i];
+			h->since = time;
+			memmove(&w->v[i], &w->v[i + 1], (w->n - i - 1) * sizeof(*w->v));
+			w->n--;
+			break;
+		}
+}
+
 static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t)
 {
+	claim_vec waiting = {0};
 	or_vec adds = {0}, rems = {0}, dadd = {0}, drem = {0}, aadd = {0}, arem = {0}, sadd = {0}, srem = {0};
 	lww f[TIX_F_COUNT];
 	memset(f, 0, sizeof(f));
@@ -477,6 +533,8 @@ static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t
 			 * land here in a row, so together they are one write (§15.1). */
 			set_phase(t, op->u.set_state.status, op->u.set_state.stage, p->time);
 			break;
+		case TIX_OP_CLAIM: fold_claim(t, &waiting, &p->author, p->time, op->u.claim.until); break;
+		case TIX_OP_RELEASE: fold_release(t, &waiting, &p->author, p->time); break;
 		case TIX_OP_STAGE_ADD: push_or(&sadd, op->u.stage_add.name, r); break;
 		case TIX_OP_STAGE_REMOVE: push_or(&srem, op->u.stage_remove.name, r); break;
 		case TIX_OP_SET_FIELD: fold_field(c, r, f); break;
@@ -521,6 +579,8 @@ static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t
 	t->ncomments = comments.n;
 	fold_plan(c, f, &dadd, &drem, &aadd, &arem, &t->plan);
 	fold_stages(c, &sadd, &srem, t);
+	t->waiting = waiting.v;
+	t->nwaiting = waiting.n;
 	free(sadd.v);
 	free(srem.v);
 	free(adds.v);
@@ -815,6 +875,7 @@ void tix_entity_free(tix_entity *e)
 		free(t->title);
 		free(t->body);
 		free(t->stage);
+		free(t->waiting);
 		for (size_t i = 0; i < t->nstages; i++)
 			free(t->stages[i].name);
 		free(t->stages);
@@ -957,6 +1018,19 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out)
 		tix_jw_key(&w, "status");
 		tix_jw_str(&w, tix_ticket_status_name(t->status));
 		snap_str(&w, "stage", t->stage);
+		snap_id(&w, "claim", &t->claim.identity);
+		snap_int(&w, "claim_since", tix_oid_is_null(&t->claim.identity) ? -1 : t->claim.since);
+		snap_int(&w, "claim_until", tix_oid_is_null(&t->claim.identity) ? -1 : t->claim.until);
+		tix_jw_key(&w, "waiting");
+		tix_jw_arr_begin(&w);
+		for (size_t i = 0; i < t->nwaiting; i++) {
+			tix_jw_obj_begin(&w);
+			snap_id(&w, "identity", &t->waiting[i].identity);
+			snap_int(&w, "since", t->waiting[i].since);
+			snap_int(&w, "until", t->waiting[i].until);
+			tix_jw_obj_end(&w);
+		}
+		tix_jw_arr_end(&w);
 		tix_jw_key(&w, "stages");
 		tix_jw_arr_begin(&w);
 		for (size_t i = 0; i < t->nstages; i++) {

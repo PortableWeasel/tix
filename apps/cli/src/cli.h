@@ -13,7 +13,7 @@
 
 #include <stdio.h>
 
-enum { EXIT_OK = 0, EXIT_ERR = 1, EXIT_USAGE = 2 };
+enum { EXIT_OK = 0, EXIT_ERR = 1, EXIT_USAGE = 2, EXIT_NO_WORK = 3 };
 
 typedef struct cli {
 	tix_store *store;
@@ -76,5 +76,6 @@ int cmd_baseline(cli *c, int argc, char **argv);
 int cmd_verify(cli *c, int argc, char **argv);
 int cmd_bridge(cli *c, int argc, char **argv);
 int cmd_stage(cli *c, int argc, char **argv);
+int cmd_claim(cli *c, int argc, char **argv);
 
 #endif

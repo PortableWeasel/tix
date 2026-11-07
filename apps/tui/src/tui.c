@@ -172,6 +172,8 @@ static void build_detail(tui *t, int width)
 	add_line(t, T_NORMAL, "id:       %s", tix_oid_hex(&e->id, hex));
 	char st[TIX_STATE_STR];
 	add_line(t, T_NORMAL, "status:   %s", tix_state_str(k->status, k->stage, st));
+	if (tix_claim_live(&k->claim, (int64_t)time(NULL)))
+		add_line(t, T_NORMAL, "claimed:  %s", who(t, &k->claim.identity, buf, sizeof(buf)));
 	if (k->labels.n) {
 		tix_buf l = TIX_BUF_INIT;
 		for (size_t i = 0; i < k->labels.n; i++)

@@ -431,6 +431,8 @@ static void test_workflow_ops(void)
 		tix_op_set_state(TIX_TICKET_DONE, NULL),
 		tix_op_stage_add("needs-input", TIX_TICKET_IN_PROGRESS, true, 40),
 		tix_op_stage_remove("needs-input"),
+		tix_op_claim(1700001800),
+		tix_op_release(),
 	};
 	round_trip(TIX_ENTITY_TICKET, t, sizeof(t) / sizeof(*t),
 		"{\"tix\":1,\"type\":\"ticket\",\"author\":\"" A40 "\",\"lamport\":3,\"time\":9}\n"
@@ -438,7 +440,9 @@ static void test_workflow_ops(void)
 		"{\"op\":\"set-state\",\"status\":\"open\",\"stage\":\"ready\"}\n"
 		"{\"op\":\"set-state\",\"status\":\"done\",\"stage\":null}\n"
 		"{\"op\":\"stage-add\",\"name\":\"needs-input\",\"phase\":\"in-progress\",\"human\":true,\"rank\":40}\n"
-		"{\"op\":\"stage-remove\",\"name\":\"needs-input\"}\n");
+		"{\"op\":\"stage-remove\",\"name\":\"needs-input\"}\n"
+		"{\"op\":\"claim\",\"until\":1700001800}\n"
+		"{\"op\":\"release\"}\n");
 
 	static const bad_case cases[] = {
 		{"stage uppercase", HDR "{\"op\":\"set-state\",\"status\":\"open\",\"stage\":\"Ready\"}\n", TIX_ERR_INVALID},
@@ -453,6 +457,11 @@ static void test_workflow_ops(void)
 		{"stage-add negative rank", HDR "{\"op\":\"stage-add\",\"name\":\"x\",\"phase\":\"open\",\"human\":false,\"rank\":-1}\n", TIX_ERR_INVALID},
 		{"stage-add key order", HDR "{\"op\":\"stage-add\",\"phase\":\"open\",\"name\":\"x\",\"human\":false,\"rank\":1}\n", TIX_ERR_INVALID},
 		{"stage-remove bad name", HDR "{\"op\":\"stage-remove\",\"name\":\"X\"}\n", TIX_ERR_INVALID},
+		{"claim negative", HDR "{\"op\":\"claim\",\"until\":-1}\n", TIX_ERR_INVALID},
+		{"claim float", HDR "{\"op\":\"claim\",\"until\":1.5}\n", TIX_ERR_INVALID},
+		{"claim missing until", HDR "{\"op\":\"claim\"}\n", TIX_ERR_INVALID},
+		{"claim with identity", HDR "{\"op\":\"claim\",\"until\":5,\"identity\":\"" A40 "\"}\n", TIX_ERR_INVALID},
+		{"release extra", HDR "{\"op\":\"release\",\"x\":1}\n", TIX_ERR_INVALID},
 	};
 	for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
 		tix_error e = TIX_ERROR_INIT;

@@ -53,7 +53,9 @@ static tix_op random_ticket_op(uint64_t *rng, tix_sim_clone *c, const tix_oid *t
 	*ok = true;
 	if (tk_rand_below(rng, 2))
 		return random_plan_op(rng);
-	switch (tk_rand_below(rng, 10)) {
+	switch (tk_rand_below(rng, 12)) {
+	case 10: return tix_op_claim(1700000050 + (int64_t)tk_rand_below(rng, 200));
+	case 11: return tix_op_release();
 	case 7: return tix_op_set_state((tix_ticket_status)tk_rand_below(rng, 5), pick(rng, labels, 3));
 	case 8: return tix_op_stage_add(pick(rng, labels, 3), (tix_ticket_status)tk_rand_below(rng, 5),
 					tk_rand_below(rng, 2), (int32_t)tk_rand_below(rng, 3));

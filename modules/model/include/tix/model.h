@@ -45,6 +45,7 @@
 #define TIX_STAGE_MAX 32        /* stage names: [a-z][a-z0-9-]{0,31} (architecture §15.1) */
 #define TIX_STAGE_RANK_MAX 1000000
 #define TIX_STAGES_MAX 64       /* stage definitions per ticket */
+#define TIX_CLAIM_MAX_SECS (24 * 3600) /* longest lease core writes (§15.3) */
 
 /* ---- entity types -------------------------------------------------------- */
 typedef enum tix_entity_type {
@@ -219,6 +220,8 @@ typedef enum tix_op_kind {
 	TIX_OP_SET_STATE,         /* "set-state": status, stage|null (one register with set-status) */
 	TIX_OP_STAGE_ADD,         /* "stage-add": name, phase, human, rank */
 	TIX_OP_STAGE_REMOVE,      /* "stage-remove": name */
+	TIX_OP_CLAIM,             /* "claim": until (the claimant is the pack author) */
+	TIX_OP_RELEASE,           /* "release" */
 } tix_op_kind;
 
 /* "task" op of a baseline: one planned task as it was when the snapshot was taken. */
@@ -246,6 +249,7 @@ typedef struct tix_op {
 		struct { tix_ticket_status status; char *stage; /* NULL = none */ } set_state;
 		struct { char *name; tix_ticket_status phase; bool human; int32_t rank; } stage_add;
 		struct { char *name; } stage_remove;
+		struct { int64_t until; } claim; /* unix seconds */
 		struct { tix_strs add, remove; } label;
 		struct { tix_opid target; char *body; } edit_comment;
 		struct { char *kind, *fingerprint, *pubkey; } key_add;
@@ -286,6 +290,8 @@ tix_op tix_op_set_status(tix_ticket_status s);
 tix_op tix_op_set_state(tix_ticket_status s, const char *stage);
 tix_op tix_op_stage_add(const char *name, tix_ticket_status phase, bool human, int32_t rank);
 tix_op tix_op_stage_remove(const char *name);
+tix_op tix_op_claim(int64_t until);
+tix_op tix_op_release(void);
 tix_op tix_op_label(const tix_strs *add, const tix_strs *remove);
 tix_op tix_op_edit_comment(const tix_opid *target, const char *body);
 tix_op tix_op_key_add(const char *kind, const char *fingerprint, const char *pubkey);

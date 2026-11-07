@@ -428,7 +428,9 @@ void page_ticket(web_ctx *x)
 	h_time(h, e->created);
 	HL(h, ", updated ");
 	h_time(h, e->updated);
-	HL(h, "</span></p>\n<p class=\"note\">id <span class=\"id\">");
+	HL(h, "</span> ");
+	h_claim(x, t);
+	HL(h, "</p>\n<p class=\"note\">id <span class=\"id\">");
 	h_id(h, &e->id);
 	HL(h, "</span></p>\n");
 	if (writable(x)) {

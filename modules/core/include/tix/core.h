@@ -126,7 +126,11 @@ tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t
  *   - removing a dependency, assignment, calendar exception or stage definition
  *     that isn't there is TIX_ERR_NOT_FOUND;
  *   - a set-state whose stage isn't on the ticket's effective stage list (or is
- *     listed under another phase) is TIX_ERR_INVALID; with no list, any stage goes.
+ *     listed under another phase) is TIX_ERR_INVALID; with no list, any stage goes;
+ *   - a claim while someone else's claim is live is TIX_ERR_CONFLICT; a claim must
+ *     end after now and at most TIX_CLAIM_MAX_SECS later (TIX_ERR_INVALID); releasing
+ *     an unclaimed ticket is TIX_ERR_NOT_FOUND, someone else's live claim
+ *     TIX_ERR_CONFLICT (it ends with its lease).
  * Each set-state op is written right after a set-status op of the same phase
  * (added here when the caller didn't), so older readers see the phase (§15.1).
  */
@@ -186,6 +190,38 @@ tix_status tix_ticket_stages(tix_repo *r, const tix_oid *id, const tix_oid *pare
 			     tix_error *err);
 /* The definition of stage in owner's list, or NULL. */
 const tix_stage_def *tix_stage_find(const tix_entity *owner, const char *stage);
+
+/* ---- claims (architecture §15.3) ------------------------------------------------ */
+
+/* A state to look for: a phase, and a stage (NULL = any stage of that phase, "" = none). */
+typedef struct tix_ticket_state {
+	tix_ticket_status status;
+	const char *stage;
+} tix_ticket_state;
+
+typedef struct tix_claim_query {
+	const tix_ticket_state *states; /* NULL/0: the open and in-progress phases */
+	size_t nstates;
+	const tix_oid *under; /* only below this ticket; NULL = anywhere */
+	int64_t lease;        /* seconds, 1..TIX_CLAIM_MAX_SECS */
+	const char *remote;   /* pull before, sync after; NULL = this repository only */
+} tix_claim_query;
+
+/*
+ * Hands out work: the first ticket in WBS order that is in one of the states, isn't
+ * claimed by anyone else (live), isn't in a stage tagged human, and whose predecessors
+ * are all done or cancelled. A ticket you already hold that matches comes first (it is
+ * renewed). With a remote: pulls first, then pushes the claim. The push decides a race:
+ * when it is refused and the pull shows someone else's live claim on the same ticket,
+ * this claim is released (handing the ticket to theirs, see tix_claim) and the next
+ * candidate is tried (up to 5 tries).
+ * RETURNS TIX_ERR_NOT_FOUND when there is no work; transport errors from sync.
+ */
+tix_status tix_claim_next(tix_repo *r, const tix_claim_query *q, tix_oid *out, tix_error *err);
+
+/* RETURNS true if every predecessor of t is done or cancelled (an unknown one counts as
+ * not done). */
+bool tix_ticket_deps_done(tix_repo *r, const tix_entity *t);
 
 /* ---- planning (architecture §5) --------------------------------------------- */
 

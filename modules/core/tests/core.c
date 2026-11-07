@@ -30,6 +30,7 @@ typedef struct flaky {
 	tix_store base;
 	tix_store *inner;
 	int fail, cas_calls;
+	int stale_fetches; /* the next N remote fetches see nothing new */
 } flaky;
 
 static tix_store *inner(tix_store *s) { return ((flaky *)s)->inner; }
@@ -50,7 +51,15 @@ static tix_status f_cas(tix_store *s, const char *n, const tix_oid *old, const t
 	}
 	return tix_store_ref_cas(f->inner, n, old, new_oid, er);
 }
-static tix_status f_rf(tix_store *s, const char *r, tix_error *er) { return tix_store_remote_fetch(inner(s), r, er); }
+static tix_status f_rf(tix_store *s, const char *r, tix_error *er)
+{
+	flaky *f = (flaky *)s;
+	if (f->stale_fetches > 0) {
+		f->stale_fetches--;
+		return TIX_OK;
+	}
+	return tix_store_remote_fetch(inner(s), r, er);
+}
 static tix_status f_rp(tix_store *s, const char *r, const char *const *refs, size_t n, tix_error *er) { return tix_store_remote_push(inner(s), r, refs, n, er); }
 static void f_refresh(tix_store *s) { tix_store_refresh(inner(s)); }
 static tix_status f_cv(tix_store *s, const tix_oid *o, const tix_sig_key *k, size_t n, tix_sig_status *st, size_t *w,
@@ -196,7 +205,7 @@ static void test_resolve(void)
 static void test_retry(void)
 {
 	fake_env env = {1700000000, 3};
-	flaky f = {{&flaky_vt, TIX_HASH_SHA1}, tix_store_mem_new(TIX_HASH_SHA1), 0, 0};
+	flaky f = {{&flaky_vt, TIX_HASH_SHA1}, tix_store_mem_new(TIX_HASH_SHA1), 0, 0, 0};
 	tix_repo *r = open_repo(&f.base, &env, NULL);
 	tix_oid me, t;
 	TK_OK(tix_identity_create(r, "Ada", "a@x", &me, &e), &e);
@@ -1157,8 +1166,193 @@ static void test_stages(void)
 	tix_store_destroy(s);
 }
 
+/* Is t claimed by who (NULL: by nobody)? */
+static bool held_by(tix_repo *r, const tix_oid *t, const tix_oid *who)
+{
+	tix_entity *x = load_ticket(r, t);
+	bool yes = x && (who ? tix_oid_eq(&x->u.ticket.claim.identity, who) : tix_oid_is_null(&x->u.ticket.claim.identity));
+	tix_entity_free(x);
+	return yes;
+}
+
+/* §15.3 in one repository: who gets what, deps, human stages, own claims first, rules. */
+static void test_claims_local(void)
+{
+	fake_env env = {1700000000, 21};
+	tix_store *s = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_repo *r = open_repo(s, &env, NULL);
+	tix_oid ada, bob, root, t1, t2, t3, got;
+	TK_OK(tix_identity_create(r, "Ada", "a@x", &ada, &e), &e);
+	TK_OK(tix_identity_create(r, "Bob", "b@x", &bob, &e), &e);
+	TK_OK(tix_repo_set_identity(r, &ada, &e), &e);
+	TK_OK(tix_ticket_create(r, "Root", "", NULL, &root, &e), &e);
+	tix_op list[] = {tix_op_stage_add("draft", TIX_TICKET_OPEN, true, 10), tix_op_stage_add("ready", TIX_TICKET_OPEN, false, 20)};
+	TK_OK(tix_entity_apply(r, TIX_ENTITY_TICKET, &root, list, 2, &e), &e);
+	tix_op_free(&list[0]);
+	tix_op_free(&list[1]);
+	TK_OK(tix_ticket_create(r, "One", "", NULL, &t1, &e), &e);
+	TK_OK(tix_ticket_create(r, "Two", "", NULL, &t2, &e), &e);
+	TK_OK(tix_ticket_create(r, "Three", "", NULL, &t3, &e), &e);
+	place(r, &t1, &root, TIX_RANK_LAST, NULL);
+	place(r, &t2, &root, TIX_RANK_LAST, NULL);
+	place(r, &t3, &root, TIX_RANK_LAST, NULL);
+	TK_OK(apply_one(r, &t1, tix_op_set_state(TIX_TICKET_OPEN, "ready")), &e);
+	TK_OK(apply_one(r, &t2, tix_op_set_state(TIX_TICKET_OPEN, "ready")), &e);
+	TK_OK(apply_one(r, &t3, tix_op_set_state(TIX_TICKET_OPEN, "draft")), &e); /* waits for a person */
+	TK_OK(apply_one(r, &t2, tix_op_dep_add(&t1, TIX_DEP_FS, 0)), &e);     /* t2 waits on t1 */
+	TK_OK(apply_one(r, &root, tix_op_set_status(TIX_TICKET_DONE)), &e);   /* the root itself isn't work */
+
+	tix_ticket_state ready = {TIX_TICKET_OPEN, "ready"};
+	tix_claim_query q = {.states = &ready, .nstates = 1, .lease = 1800};
+	TK_OK(tix_claim_next(r, &q, &got, &e), &e);
+	TK_CHECK(tix_oid_eq(&got, &t1) && held_by(r, &t1, &ada));
+	TK_OK(tix_claim_next(r, &q, &got, &e), &e); /* my own comes back first (renewed) */
+	TK_CHECK(tix_oid_eq(&got, &t1));
+
+	TK_OK(tix_repo_set_identity(r, &bob, &e), &e);
+	/* t1 is Ada's, t2 waits on t1, t3 waits for a person: nothing for Bob */
+	TK_STATUS(tix_claim_next(r, &q, &got, &e), TIX_ERR_NOT_FOUND, &e);
+	TK_STATUS(apply_one(r, &t1, tix_op_claim(env.now + 600)), TIX_ERR_CONFLICT, &e);
+	TK_CHECK(strstr(e.msg, "claimed by") != NULL);
+	TK_STATUS(apply_one(r, &t1, tix_op_release()), TIX_ERR_CONFLICT, &e);
+	TK_STATUS(apply_one(r, &t2, tix_op_release()), TIX_ERR_NOT_FOUND, &e);
+	TK_STATUS(apply_one(r, &t2, tix_op_claim(env.now + 2 * TIX_CLAIM_MAX_SECS)), TIX_ERR_INVALID, &e);
+	TK_STATUS(apply_one(r, &t2, tix_op_claim(1)), TIX_ERR_INVALID, &e);
+	q.lease = 0;
+	TK_STATUS(tix_claim_next(r, &q, &got, &e), TIX_ERR_INVALID, &e);
+	q.lease = 1800;
+
+	/* t1 done: t2's predecessor is satisfied, so Bob gets t2 */
+	TK_OK(tix_repo_set_identity(r, &ada, &e), &e);
+	TK_OK(apply_one(r, &t1, tix_op_set_status(TIX_TICKET_DONE)), &e);
+	TK_OK(apply_one(r, &t1, tix_op_release()), &e);
+	TK_CHECK(held_by(r, &t1, NULL));
+	TK_OK(tix_repo_set_identity(r, &bob, &e), &e);
+	TK_OK(tix_claim_next(r, &q, &got, &e), &e);
+	TK_CHECK(tix_oid_eq(&got, &t2) && held_by(r, &t2, &bob));
+	/* the default states (open, in-progress) still skip the human stage */
+	TK_OK(tix_repo_set_identity(r, &ada, &e), &e);
+	tix_claim_query any = {.lease = 1800};
+	TK_STATUS(tix_claim_next(r, &any, &got, &e), TIX_ERR_NOT_FOUND, &e);
+	/* "" = no stage: a plain open ticket */
+	tix_oid t4;
+	TK_OK(tix_ticket_create(r, "Four", "", NULL, &t4, &e), &e);
+	tix_ticket_state plain = {TIX_TICKET_OPEN, ""};
+	tix_claim_query qp = {.states = &plain, .nstates = 1, .lease = 600};
+	TK_OK(tix_claim_next(r, &qp, &got, &e), &e);
+	TK_CHECK(tix_oid_eq(&got, &t4));
+	tix_repo_close(r);
+	tix_store_destroy(s);
+}
+
+/* §15.3 across clones: the push decides a race, and the loser yields to the winner. */
+static void test_claims_race(void)
+{
+	tix_store *server = tix_store_mem_new(TIX_HASH_SHA1);
+	clone a, b;
+	tix_oid ada, bob, x, y, got;
+	tix_sync_report rep = {0};
+	clone_open(&a, server, 31);
+	clone_open(&b, server, 32);
+	TK_OK(tix_identity_create(a.r, "Ada", "a@x", &ada, &e), &e);
+	TK_OK(tix_repo_set_identity(a.r, &ada, &e), &e);
+	TK_OK(tix_ticket_create(a.r, "X", "", NULL, &x, &e), &e);
+	TK_OK(tix_ticket_create(a.r, "Y", "", NULL, &y, &e), &e);
+	place(a.r, &x, NULL, TIX_RANK_LAST, NULL);
+	place(a.r, &y, NULL, TIX_RANK_LAST, NULL);
+	TK_OK(tix_sync(a.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_pull(b.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_identity_create(b.r, "Bob", "b@x", &bob, &e), &e);
+	TK_OK(tix_repo_set_identity(b.r, &bob, &e), &e);
+
+	/* Ada claims X but hasn't pushed; Bob claims X too and pushes first: Bob's */
+	apply1(&a, &x, tix_op_claim(a.env.now + 3600));
+	tix_claim_query q = {.lease = 3600, .remote = "origin"};
+	TK_OK(tix_claim_next(b.r, &q, &got, &e), &e);
+	TK_CHECK(tix_oid_eq(&got, &x));
+	/* Ada's next claim pulls, sees the contest on X, yields it, and gets Y instead */
+	TK_OK(tix_claim_next(a.r, &q, &got, &e), &e);
+	TK_CHECK(tix_oid_eq(&got, &y));
+	TK_OK(tix_pull(b.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	TK_CHECK(held_by(a.r, &x, &bob) && held_by(b.r, &x, &bob));
+	TK_CHECK(held_by(a.r, &y, &ada) && held_by(b.r, &y, &ada));
+
+	/* a push-time race: both pick the same new ticket from the same state */
+	tix_oid z;
+	TK_OK(tix_ticket_create(a.r, "Z", "", NULL, &z, &e), &e);
+	TK_OK(tix_sync(a.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_pull(b.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	apply1(&b, &z, tix_op_claim(b.env.now + 3600)); /* Bob's claim, unpushed */
+	tix_ticket_state plain = {TIX_TICKET_OPEN, NULL};
+	tix_claim_query qz = {.states = &plain, .nstates = 1, .lease = 3600, .remote = "origin"};
+	TK_OK(tix_claim_next(a.r, &qz, &got, &e), &e); /* Ada already holds Y: renewed first */
+	TK_CHECK(tix_oid_eq(&got, &y));
+	TK_OK(apply_one(a.r, &y, tix_op_set_status(TIX_TICKET_DONE)), &e);
+	TK_OK(apply_one(a.r, &y, tix_op_release()), &e);
+	TK_OK(tix_claim_next(a.r, &qz, &got, &e), &e); /* Ada pushes Z first */
+	TK_CHECK(tix_oid_eq(&got, &z));
+	/* Bob's pull shows Ada's claim on Z next to his unpushed one: he yields Z, and gets
+	 * back X, which he still holds */
+	tix_claim_query qb = {.states = &plain, .nstates = 1, .lease = 3600, .remote = "origin"};
+	TK_OK(tix_claim_next(b.r, &qb, &got, &e), &e);
+	TK_CHECK(tix_oid_eq(&got, &x));
+	TK_OK(tix_pull(a.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	TK_CHECK(held_by(a.r, &z, &ada) && held_by(b.r, &z, &ada));
+	tix_buf sa = TIX_BUF_INIT, sb = TIX_BUF_INIT;
+	snapshot(&a, &z, &sa);
+	snapshot(&b, &z, &sb);
+	TK_STR_EQ(tix_buf_cstr(&sa), tix_buf_cstr(&sb));
+	tix_buf_free(&sa);
+	tix_buf_free(&sb);
+
+	/* the refused-push path: Cid's first fetch misses Ada's claim on W, so Cid claims W
+	 * too; Cid's push is refused, the pull shows Ada's, and Cid yields W */
+	flaky cf = {{&flaky_vt, TIX_HASH_SHA1}, tix_store_mem_new(TIX_HASH_SHA1), 0, 0, 0};
+	tix_store_mem_add_remote(cf.inner, "origin", server);
+	fake_env cenv = {1700000000, 33};
+	tix_repo *cr = open_repo(&cf.base, &cenv, NULL);
+	tix_oid cid, w;
+	TK_OK(tix_pull(cr, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_identity_create(cr, "Cid", "c@x", &cid, &e), &e);
+	TK_OK(tix_repo_set_identity(cr, &cid, &e), &e);
+	TK_OK(tix_ticket_create(a.r, "W", "", NULL, &w, &e), &e);
+	place(a.r, &w, NULL, TIX_RANK_FIRST, NULL);
+	TK_OK(tix_sync(a.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_pull(cr, "origin", &rep, &e), &e); /* Cid sees W, unclaimed */
+	tix_sync_report_free(&rep);
+	TK_OK(tix_claim_next(a.r, &qz, &got, &e), &e); /* Ada: Z first (hers), not W */
+	TK_OK(apply_one(a.r, &z, tix_op_set_status(TIX_TICKET_DONE)), &e);
+	TK_OK(apply_one(a.r, &z, tix_op_release()), &e);
+	TK_OK(tix_claim_next(a.r, &qz, &got, &e), &e); /* now W, pushed */
+	TK_CHECK(tix_oid_eq(&got, &w));
+	cf.stale_fetches = 1;
+	tix_ticket_state wst = {TIX_TICKET_OPEN, NULL};
+	tix_claim_query qc = {.states = &wst, .nstates = 1, .lease = 3600, .remote = "origin"};
+	/* lost W at push time; nothing else is free */
+	TK_STATUS(tix_claim_next(cr, &qc, &got, &e), TIX_ERR_NOT_FOUND, &e);
+	TK_CHECK(cf.stale_fetches == 0);
+	TK_OK(tix_pull(a.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	TK_CHECK(held_by(a.r, &w, &ada) && held_by(cr, &w, &ada));
+	tix_repo_close(cr);
+	tix_store_destroy(cf.inner);
+	clone_close(&a);
+	clone_close(&b);
+	tix_store_destroy(server);
+}
+
 int main(void)
 {
+	test_claims_local();
+	test_claims_race();
 	test_stages();
 	test_signatures();
 	test_sort();

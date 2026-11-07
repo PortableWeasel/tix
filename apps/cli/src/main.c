@@ -29,6 +29,12 @@ static const char usage_text[] =
 	"  stage ls [ID]                        the stage list that applies to a ticket (or every list)\n"
 	"  stage add ID NAME --phase P [--human] [--rank N]   stage rm ID NAME\n"
 	"\n"
+	"claims (who works on what; leases end by themselves)\n"
+	"  claim ID [--for 30m] | claim ID --renew [--for D] | claim ID --release\n"
+	"  claim --next [--status S]... [--under ID] [--for 30m] [--remote R | --local]\n"
+	"        first free ticket in WBS order whose predecessors are done and whose stage\n"
+	"        doesn't wait for a person; syncs through the remote; exit 3 = no work\n"
+	"\n"
 	"planning options (new, edit; 'none' clears a value)\n"
 	"  --parent ID   --rank first|last|before:ID|after:ID   --kind task|milestone\n"
 	"  --calendar CAL   --mode auto|manual   --duration 3d   --effort 16h   --progress 40\n"
@@ -242,6 +248,7 @@ int main(int argc, char **argv)
 		{"unassign", cmd_unassign}, {"res", cmd_res}, {"cal", cmd_cal},
 		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"export", cmd_export}, {"index", cmd_index},
 		{"baseline", cmd_baseline}, {"verify", cmd_verify}, {"bridge", cmd_bridge}, {"stage", cmd_stage},
+		{"claim", cmd_claim},
 	};
 	int (*fn)(cli *, int, char **) = NULL;
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(*cmds); i++)

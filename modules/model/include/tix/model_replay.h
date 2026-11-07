@@ -94,6 +94,26 @@ typedef struct tix_stage_def {
 	int32_t rank;
 } tix_stage_def;
 
+/*
+ * Who is working on a ticket (architecture §15.3). Empty when identity is null.
+ * Replayed in total order:
+ *   claim by A at pack time T: A holds it when it is free, A's own (a renewal) or
+ *     expired at T; otherwise A waits (in arrival order; a renewal updates its until).
+ *   release by A at T: drops A's waiting claim; if A holds it (or the hold expired at
+ *     T), it is freed and the first waiting claim still live at T takes over.
+ * So a claim never takes over someone's live one, concurrent claims resolve the same
+ * everywhere, and a loser that releases hands the ticket to the waiting winner.
+ * Liveness for display compares until with a "now" the caller passes in.
+ */
+typedef struct tix_claim {
+	tix_oid identity;
+	int64_t since; /* pack time it was taken (renewals keep it) */
+	int64_t until;
+} tix_claim;
+
+/* RETURNS true if c is held by someone and hasn't expired at now. */
+bool tix_claim_live(const tix_claim *c, int64_t now);
+
 typedef struct tix_ticket {
 	tix_oid author; /* creator */
 	char *title;
@@ -102,6 +122,9 @@ typedef struct tix_ticket {
 	char *stage;              /* NULL = none; set-status clears it, set-state sets both (§15.1) */
 	tix_stage_def *stages;    /* this ticket's own stage list, sorted by (phase, rank, name) */
 	size_t nstages;
+	tix_claim claim;
+	tix_claim *waiting; /* concurrent claims queued behind the holder, in arrival order */
+	size_t nwaiting;
 	tix_strs labels;
 	tix_comment *comments;
 	size_t ncomments;
@@ -203,7 +226,7 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out);
  * TIX_ENTITY_CODEC_VERSION whenever tix_entity or the replay rules change, so
  * stale cache entries miss instead of lying.
  */
-#define TIX_ENTITY_CODEC_VERSION 5
+#define TIX_ENTITY_CODEC_VERSION 6
 
 void tix_entity_encode(const tix_entity *e, tix_buf *out);
 /* Checks every field (types, ranges, UTF-8, id algo). RETURNS TIX_ERR_INVALID for

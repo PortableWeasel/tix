@@ -42,6 +42,8 @@ static const op_name op_names[] = {
 	{TIX_ENTITY_TICKET, TIX_OP_SET_STATE, "set-state"},
 	{TIX_ENTITY_TICKET, TIX_OP_STAGE_ADD, "stage-add"},
 	{TIX_ENTITY_TICKET, TIX_OP_STAGE_REMOVE, "stage-remove"},
+	{TIX_ENTITY_TICKET, TIX_OP_CLAIM, "claim"},
+	{TIX_ENTITY_TICKET, TIX_OP_RELEASE, "release"},
 };
 
 /* Set-field ops, by (type, name). */
@@ -364,6 +366,12 @@ static tix_status check_op(tix_entity_type type, const tix_op *op, tix_error *er
 		if (!tix_stage_valid(op->u.stage_remove.name))
 			return tix_error_set(err, TIX_ERR_INVALID, "bad stage name");
 		return TIX_OK;
+	case TIX_OP_CLAIM:
+		if (op->u.claim.until < 0 || op->u.claim.until > (int64_t)TIX_LAMPORT_MAX)
+			return tix_error_set(err, TIX_ERR_INVALID, "claim until out of range");
+		return TIX_OK;
+	case TIX_OP_RELEASE:
+		return TIX_OK;
 	case TIX_OP_SET_FIELD:
 	case TIX_OP_UNKNOWN:
 		break;
@@ -597,6 +605,11 @@ static void encode_op(const tix_op *op, tix_buf *out)
 		tix_jw_int(&w, op->u.stage_add.rank);
 		break;
 	case TIX_OP_STAGE_REMOVE: put_kv(&w, "name", op->u.stage_remove.name); break;
+	case TIX_OP_CLAIM:
+		tix_jw_key(&w, "until");
+		tix_jw_int(&w, op->u.claim.until);
+		break;
+	case TIX_OP_RELEASE: break;
 	case TIX_OP_UNKNOWN: TIX_REQUIRE(!"unknown op"); break;
 	}
 	tix_jw_obj_end(&w);
@@ -1006,6 +1019,11 @@ static tix_status fill_op(const cJSON *j, tix_op *op, tix_hash_algo algo, tix_er
 		return TIX_OK;
 	}
 	case TIX_OP_STAGE_REMOVE: op->u.stage_remove.name = dup_str(j, "name"); return TIX_OK;
+	case TIX_OP_CLAIM:
+		return get_int(j, "until", 0, (int64_t)TIX_LAMPORT_MAX, &op->u.claim.until)
+			       ? TIX_OK
+			       : tix_error_set(err, TIX_ERR_INVALID, "bad claim");
+	case TIX_OP_RELEASE: return TIX_OK;
 	case TIX_OP_UNKNOWN: break;
 	}
 	return tix_error_set(err, TIX_ERR_INVALID, "unhandled op");

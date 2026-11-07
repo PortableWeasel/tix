@@ -69,6 +69,36 @@ void h_status(html *h, tix_ticket_status s)
 	HL(h, "</span>");
 }
 
+int64_t web_now(web_ctx *x)
+{
+	return x->app->cfg.now ? x->app->cfg.now(x->app->cfg.now_ctx) : (int64_t)time(NULL);
+}
+
+void h_claim(web_ctx *x, const tix_ticket *t)
+{
+	html *h = &x->h;
+	if (tix_oid_is_null(&t->claim.identity))
+		return;
+	int64_t now = web_now(x);
+	HL(h, "<span class=\"claim\">claimed by ");
+	h_who(x, &t->claim.identity);
+	if (tix_claim_live(&t->claim, now)) {
+		HL(h, ", ");
+		h_int(h, (t->claim.until - now + 59) / 60);
+		HL(h, " min left");
+	} else {
+		HL(h, " (lapsed)");
+	}
+	for (size_t i = 0; i < t->nwaiting; i++) {
+		if (i)
+			HL(h, ", ");
+		else
+			HL(h, "; waiting: ");
+		h_who(x, &t->waiting[i].identity);
+	}
+	HL(h, "</span>");
+}
+
 void h_state(html *h, tix_ticket_status s, const char *stage)
 {
 	char st[TIX_STATE_STR];

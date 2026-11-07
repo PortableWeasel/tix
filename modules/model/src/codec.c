@@ -62,6 +62,19 @@ static void encode_ticket(tix_jw *w, const tix_ticket *t)
 	e_str(w, "body", t->body);
 	e_int(w, "status", t->status);
 	e_str(w, "stage", t->stage);
+	e_id(w, "claim", &t->claim.identity);
+	e_int(w, "claim_since", t->claim.since);
+	e_int(w, "claim_until", t->claim.until);
+	tix_jw_key(w, "waiting");
+	tix_jw_arr_begin(w);
+	for (size_t i = 0; i < t->nwaiting; i++) {
+		tix_jw_obj_begin(w);
+		e_id(w, "identity", &t->waiting[i].identity);
+		e_int(w, "since", t->waiting[i].since);
+		e_int(w, "until", t->waiting[i].until);
+		tix_jw_obj_end(w);
+	}
+	tix_jw_arr_end(w);
 	tix_jw_key(w, "stages");
 	tix_jw_arr_begin(w);
 	for (size_t i = 0; i < t->nstages; i++) {
@@ -353,6 +366,19 @@ static void decode_ticket(dec *d, const cJSON *o, tix_ticket *t)
 	t->body = d_str(d, o, "body", false);
 	t->status = (tix_ticket_status)d_int(d, o, "status", 0, TIX_TICKET_CANCELLED);
 	t->stage = d_str(d, o, "stage", true);
+	t->claim.identity = d_id(d, o, "claim");
+	t->claim.since = d_int(d, o, "claim_since", 0, (int64_t)TIX_LAMPORT_MAX);
+	t->claim.until = d_int(d, o, "claim_until", 0, (int64_t)TIX_LAMPORT_MAX);
+	if ((a = d_arr(d, o, "waiting", MAX_ITEMS, &n)) && n) {
+		t->waiting = tix_xcalloc(n, sizeof(tix_claim));
+		cJSON_ArrayForEach(it, a)
+		{
+			tix_claim *x = &t->waiting[t->nwaiting++];
+			x->identity = d_id(d, it, "identity");
+			x->since = d_int(d, it, "since", 0, (int64_t)TIX_LAMPORT_MAX);
+			x->until = d_int(d, it, "until", 0, (int64_t)TIX_LAMPORT_MAX);
+		}
+	}
 	if (t->stage && !tix_stage_valid(t->stage))
 		d->bad = true;
 	if ((a = d_arr(d, o, "stages", MAX_ITEMS, &n)) && n) {

@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static int need_value(int i, int argc, const char *opt)
 {
@@ -197,6 +198,10 @@ int cmd_ls(cli *c, int argc, char **argv)
 		const tix_ticket *t = &l.v[i]->u.ticket;
 		char s[16];
 		printf("%s  %-*s  %s", cli_short(&l.v[i]->id, s), w, tix_state_str(t->status, t->stage, state), t->title);
+		if (tix_claim_live(&t->claim, (int64_t)time(NULL))) {
+			char who[300];
+			printf("  @%s", cli_who(c, &t->claim.identity, who, sizeof(who)));
+		}
 		print_labels(&t->labels);
 		putchar('\n');
 	}
@@ -317,6 +322,14 @@ int cmd_show(cli *c, int argc, char **argv)
 			printf("%s%s", i ? ", " : "", t->labels.v[i]);
 		putchar('\n');
 	}
+	if (!tix_oid_is_null(&t->claim.identity)) {
+		int64_t now = (int64_t)time(NULL);
+		printf("claimed:  %s until %s%s\n", cli_who(c, &t->claim.identity, who, sizeof(who)),
+		       cli_time(t->claim.until, when), tix_claim_live(&t->claim, now) ? "" : " (expired)");
+	}
+	for (size_t i = 0; i < t->nwaiting; i++)
+		printf("waiting:  %s (until %s)\n", cli_who(c, &t->waiting[i].identity, who, sizeof(who)),
+		       cli_time(t->waiting[i].until, when));
 	show_plan(c, t);
 	if (t->nstages) {
 		fputs("stages:   ", stdout);

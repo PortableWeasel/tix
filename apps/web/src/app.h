@@ -48,6 +48,8 @@ typedef struct web_app_config {
 	void *random_ctx;
 	tix_date (*today)(void *ctx);
 	void *today_ctx;
+	int64_t (*now)(void *ctx); /* unix seconds, for claim liveness; NULL = the system clock */
+	void *now_ctx;
 	bool read_only;
 	const char *remote; /* for sync: git config tix.remote, else "origin" */
 	const web_hosted *hosted; /* NULL: local mode (loopback, login token) */
@@ -125,6 +127,9 @@ bool page_plan(web_ctx *x, const tix_oid *root, tix_plan_result *out);
 /* "2026-11-06 14:03 UTC" */
 void h_time(html *h, int64_t t);
 void h_status(html *h, tix_ticket_status s);
+int64_t web_now(web_ctx *x);
+/* "claimed by NAME, N min left" (or "lapsed"), plus anyone waiting (§15.3); nothing when unclaimed. */
+void h_claim(web_ctx *x, const tix_ticket *t);
 /* "phase/stage" with the phase's class (§15.1); stage NULL = none. */
 void h_state(html *h, tix_ticket_status s, const char *stage);
 /* <option>s for a status select: each phase, then its stages from the list that applies
