@@ -28,6 +28,7 @@ expect 2 "$TIX" frobnicate; has "unknown command"
 expect 0 "$TIX" --version; has "tix 0."; has "(git.git 2.47.3)"
 expect 0 "$TIX" web --help; has "--read-only"   # execs tix-web next to tix
 expect 2 "$TIX" web --listen 0.0.0.0:7480; has "hosted mode"
+expect 2 "$TIX" tui </dev/null; has "needs a terminal"   # execs tix-tui next to tix
 expect 2 "$TIX" web --listen 192.168.1.5:80; has "hosted mode"
 expect 1 "$TIX" new -t "No identity yet"; has "tix id new"
 

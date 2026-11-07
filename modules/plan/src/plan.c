@@ -1013,9 +1013,12 @@ tix_status tix_plan_compute(const tix_plan_input *in, tix_schedule **out, tix_er
 	if (pe != TIX_DATE_NONE)
 		backward(&p, order, norder, pe);
 	for (size_t i = 0; i < n; i++) {
-		p.tasks.v[i].effort = -1;
-		if (!p.tasks.v[i].summary)
+		tix_plan_task *t = &p.tasks.v[i];
+		t->effort = -1;
+		if (!t->summary)
 			fill_leaf(&p, i);
+		else /* until a scheduled child gives it dates (rollup) */
+			t->start = t->finish = t->late_start = t->late_finish = TIX_DATE_NONE;
 	}
 	rollup(&p);
 	costs(&p);

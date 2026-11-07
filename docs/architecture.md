@@ -551,7 +551,7 @@ Also installed as `git-tix`, so `git tix …` works.
 8. ✅ **M7 web UI enhancements** (done 2026-11-07, §13.4): search as you type, Gantt editing,
    live refresh.
 9. **After v1** (approved 2026-11-07, §14): MS Project XML export ✅, plan baselines ✅, commit
-   signature enforcement ✅, Forgejo issue bridge ✅, TUI, hosted web mode.
+   signature enforcement ✅, Forgejo issue bridge ✅, TUI ✅, hosted web mode.
 
 ## 12. Resolved decisions (2026-11-06)
 
@@ -1012,4 +1012,37 @@ step: title, body, open/closed, labels, and new comments both ways.
   and label, comment out, close and edit flowing back, an idle second run, and a conflict
   that overwrote nothing. (The tokens in pass lack `write:issue`, so the production
   instance wasn't used.)
+
+### 14.5 Terminal UI ✅
+
+`tix tui` (the binary `tix-tui`, exec'd like `tix-web`) browses and edits in the terminal:
+the ticket list with a live id/title filter, one ticket (fields, planning, body, comments),
+the WBS, and a Gantt chart. A composition root like the CLI: lists come from
+`tix_ticket_list`/`tix_plan`, every edit is an op through `tix_entity_apply`, and the
+parent goes through `tix/input.h` exactly as `tix edit --parent` does. No rule lives here.
+
+- **Keys**: `1`/`2`/`3` (or `t`/`w`/`g`) switch views; `j`/`k`, arrows, PgUp/PgDn, Home/End
+  move; Enter opens, Esc/`q` goes back; `/` filters as you type, `a` toggles done
+  tickets; `s` status, `e` title, `l` labels (+add -remove), `c` a one-line comment, `C` a
+  comment and `E` the body in `$EDITOR`, `n` a new ticket (a subtask from inside a
+  ticket), `p` parent; `h`/`l` scroll the Gantt by a week; `?` help.
+- **Live**: every second without a key, it refreshes and compares `tix_repo_stamp`, so
+  changes from the CLI, the web UI or a sync appear by themselves.
+- **Terminal safety**: curses lives only in `src/term_curses.c` (configure-time
+  quarantine). Everything drawn passes through it: invalid UTF-8, C0/C1 controls, line
+  separators and bidi overrides become '?', so text synced from other clones can't move
+  the cursor, retitle the terminal or reorder what you read. Text is clipped and wrapped
+  by display width (wide characters count two).
+- **`$EDITOR`**: the round trip moved to `apps/common` (shared with the CLI); curses is
+  suspended around it.
+- `typeahead(-1)`: ncurses abandons a redraw while input is pending, which left half-drawn
+  screens when keys came in a burst (a paste, fast typing); found by the pty test.
+- **Tested** (`tui.pty`): the real binary in a pseudo-terminal, read back through a
+  terminal emulator (pexpect + pyte under uv), every edit checked with the CLI: list,
+  live filter, open, status, comment, title, labels, body via `$EDITOR` (a `sed` command),
+  done tickets, new ticket and subtask, WBS, Gantt, help, a CLI change appearing by
+  itself, a bidi override drawn as '?', clean quit. The test uses `TERM=vt220` because
+  pyte doesn't implement `CSI n S/T`, which ncurses uses for scrolling with xterm. Also
+  found and fixed in `plan`: a summary whose children are all unscheduled had dates of day
+  0 (1970-01-01) instead of none (golden case added).
 

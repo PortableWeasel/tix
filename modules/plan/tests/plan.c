@@ -420,6 +420,20 @@ static void rate(tix_entity *r, int64_t minor_per_hour, const char *currency)
 }
 
 /* Cost: hours x hourly rate per rated assignment; summaries sum one currency. */
+/* A summary whose children are all unscheduled has no dates (not day 0, 1970-01-01). */
+static void test_unscheduled_summary(void)
+{
+	world w = {0};
+	tix_entity *top = add(&w, task(1, "Top", -1)), *kid = add(&w, task(2, "Kid", -1));
+	kid->u.ticket.plan.parent = top->id;
+	tix_schedule *s = run(&w, NULL, "2026-11-09");
+	const tix_plan_task *t = get(s, top);
+	TK_CHECK(t->summary && !t->scheduled && t->start == TIX_DATE_NONE && t->finish == TIX_DATE_NONE &&
+		 t->late_start == TIX_DATE_NONE && t->late_finish == TIX_DATE_NONE);
+	tix_schedule_free(s);
+	world_free(&w);
+}
+
 static void test_costs(void)
 {
 	world w = {0};
@@ -582,6 +596,7 @@ int main(void)
 	test_manual_actuals_deadline();
 	test_fixed_span_without_duration();
 	test_fixed_dates_on_non_working_days();
+	test_unscheduled_summary();
 	test_costs();
 	test_compare();
 	test_effort_and_load();

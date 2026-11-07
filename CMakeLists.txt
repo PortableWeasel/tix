@@ -40,5 +40,7 @@ add_subdirectory(modules/store_libgit)
 add_subdirectory(modules/bridge)
 add_subdirectory(modules/bridge_forgejo)
 
+add_subdirectory(apps/common)
 add_subdirectory(apps/cli)
 add_subdirectory(apps/web)
+add_subdirectory(apps/tui)

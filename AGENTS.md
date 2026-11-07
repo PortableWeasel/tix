@@ -52,6 +52,8 @@ modules/<name>/         libraries: include/tix/<name>*.h, src/, tests/
                         testkit, sim, store_contract, index_contract are test-only
 apps/cli/               the `tix` / `git-tix` frontend; tests/cli.sh is the end-to-end test
 apps/web/               `tix-web`, the web UI (M6); src/web_http.h is its view of HTTP
+apps/tui/               `tix-tui`, the terminal UI (§14.5); src/term.h is its view of the terminal
+apps/common/            small pieces the frontends share ($EDITOR round trip); no business logic
 spikes/                 throwaway proofs, deleted once the real module exists (none now)
 third_party/git/        git.git submodule, pinned at v2.47.3 (do not edit)
 third_party/mongoose/   Cesanta Mongoose submodule, pinned at 7.23 (do not edit); cmake/Mongoose.cmake
@@ -70,7 +72,7 @@ cmake --preset release && cmake --build --preset release
   before you commit. Report failures honestly, with the output. Don't weaken a test to
   make it pass.
 - The first build compiles git.git (about 35 s). Later builds reuse it.
-- Requirements: CMake ≥ 3.28, Ninja, GCC 14 / Clang, GNU make, zlib, cJSON (`libcjson-dev`), SQLite 3 (`libsqlite3-dev`) and libcurl (`libcurl4-openssl-dev`) headers.
+- Requirements: CMake ≥ 3.28, Ninja, GCC 14 / Clang, GNU make, zlib, cJSON (`libcjson-dev`), SQLite 3 (`libsqlite3-dev`) and libcurl (`libcurl4-openssl-dev`) and ncursesw (`libncurses-dev`) headers.
 - Use `uv run` for any Python helper. Never call the system Python directly.
 
 ## Architecture rules (hard constraints)
@@ -92,7 +94,8 @@ cmake --preset release && cmake --build --preset release
    listing and SSI stay compiled out. Bump the pin only after reading its advisories.
    Likewise **libcurl**: only `modules/bridge_forgejo/src/` includes `curl/curl.h`
    (`cmake/Quarantine.cmake`); it never follows redirects and sends tokens to the
-   configured host only.
+   configured host only. And **curses**: only `apps/tui/src/term_curses.c`, which must
+   keep replacing control characters and bidi overrides in everything it draws.
 6. **Frontends hold no business logic.** `apps/*` parse arguments, call `core`/`export`,
    and format output. If a CLI command needs a rule, the rule belongs in `core`, `model`
    or `plan`.
@@ -190,6 +193,8 @@ cmake --preset release && cmake --build --preset release
   a real browser with the CSP on. Extend it with every enhancement. `app.js` may only
   make requests a form or link can also make, and places server data with
   `textContent`.
+- TUI behaviour is covered by `apps/tui/tests/pty.py` (the binary in a pty, read back with
+  pyte; edits checked with the CLI). Extend it with every new key.
 - CLI behaviour is covered by `apps/cli/tests/cli.sh` (real repos, editor flow, clone
   round trip, a corrupt ref). Extend it with every new command or flag.
 - **Convergence tests**: for any op set, every merge order and DAG shape must produce a

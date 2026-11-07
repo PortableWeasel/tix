@@ -61,8 +61,9 @@ static const char usage_text[] =
 	"  push [REMOTE]    send yours (never forced)\n"
 	"  sync [REMOTE]    pull, then push; repeats if the remote moved meanwhile\n"
 	"\n"
-	"web\n"
+	"web and terminal\n"
 	"  web [--listen 127.0.0.1:7480] [--read-only] [--no-open]   browser UI for this repository\n"
+	"  tui                              tickets, WBS and Gantt in the terminal (? for keys)\n"
 	"\n"
 	"cache\n"
 	"  index status | index clear      $GIT_DIR/tix/index.db (disposable; TIX_NO_INDEX=1 disables)\n"
@@ -184,15 +185,18 @@ int cmd_index(cli *c, int argc, char **argv)
 	return EXIT_OK;
 }
 
-/* `tix web ...` runs tix-web from this executable's directory, else from PATH (argv only). */
-static int exec_web(int argc, char **argv)
+/* `tix web` / `tix tui`: exec tix-<name> from this executable's directory, else from PATH
+ * (argv only). */
+static int exec_sibling(const char *name, int argc, char **argv)
 {
 	char self[4096], path[4200];
 	ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
 	char **args = calloc((size_t)argc + 1, sizeof(char *));
 	if (!args)
 		return EXIT_ERR;
-	args[0] = "tix-web";
+	char prog[32];
+	snprintf(prog, sizeof(prog), "tix-%s", name);
+	args[0] = prog;
 	for (int i = 2; i < argc; i++)
 		args[i - 1] = argv[i];
 	if (n > 0) {
@@ -200,12 +204,12 @@ static int exec_web(int argc, char **argv)
 		char *slash = strrchr(self, '/');
 		if (slash) {
 			*slash = '\0';
-			snprintf(path, sizeof(path), "%s/tix-web", self);
+			snprintf(path, sizeof(path), "%s/%s", self, prog);
 			execv(path, args);
 		}
 	}
-	execvp("tix-web", args);
-	fprintf(stderr, "tix: can't run tix-web (installed next to tix?)\n");
+	execvp(prog, args);
+	fprintf(stderr, "tix: can't run %s (installed next to tix?)\n", prog);
 	free(args);
 	return EXIT_ERR;
 }
@@ -213,8 +217,8 @@ static int exec_web(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	cli c = {0};
-	if (argc >= 2 && !strcmp(argv[1], "web"))
-		return exec_web(argc, argv);
+	if (argc >= 2 && (!strcmp(argv[1], "web") || !strcmp(argv[1], "tui")))
+		return exec_sibling(argv[1], argc, argv);
 	if (argc == 2 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "version"))) {
 		printf("tix %s (git.git %s)\n", TIX_VERSION, tix_store_libgit_git_version());
 		return EXIT_OK;
