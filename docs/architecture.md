@@ -1153,7 +1153,7 @@ stage, and `--status open/ready` matches one stage.
   selectable), pages show `phase/stage`, and `/api/tickets` and `export --format json`
   carry `"stage"`. The TUI shows it; its `s` key still sets bare phases.
 
-### 15.2 Identity kind
+### 15.2 Identity kind ✅
 
 Identities gain `kind`: `human` (default) or `agent`. It's an LWW field, protected like the
 rest of an identity (only the identity itself may write it). The kind is what the guard
@@ -1161,6 +1161,11 @@ rest of an identity (only the identity itself may write it). The kind is what th
 
 It is self-declared, so it prevents accidents, not malice. Commit signatures (§14.3) prove
 who wrote an op, but not what kind of author they are.
+
+Stored as the identity scalar `set-kind` (`{"op":"set-kind","kind":"agent"}`, the field
+table's `TIX_F_ID_KIND`; older readers skip it). CLI: `tix id new --kind agent`, `tix id
+edit --kind human|agent`, shown by `id show` and marked in `id ls`; the web UI puts an
+"agent" badge after an agent's name, the TUI "(agent)".
 
 ### 15.3 Claims
 

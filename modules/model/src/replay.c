@@ -617,9 +617,12 @@ static int cmp_key(const void *a, const void *b)
 static void fold_identity(const ctx *c, const op_ref *ops, size_t n, tix_identity *id)
 {
 	or_vec adds = {0}, rems = {0};
+	lww f[TIX_F_COUNT];
+	memset(f, 0, sizeof(f));
 	for (size_t i = 0; i < n; i++) {
 		const tix_op *op = ops[i].op;
 		switch (op->kind) {
+		case TIX_OP_SET_FIELD: fold_field(c, &ops[i], f); break;
 		case TIX_OP_IDENTITY_CREATE:
 			id->name = tix_xstrdup(op->u.identity_create.name);
 			id->email = tix_xstrdup(op->u.identity_create.email);
@@ -642,6 +645,7 @@ static void fold_identity(const ctx *c, const op_ref *ops, size_t n, tix_identit
 			break;
 		}
 	}
+	id->kind = (tix_identity_kind)lww_int(&f[TIX_F_ID_KIND], TIX_ID_HUMAN);
 	tix_strs seen = {0};
 	TIX_VEC(tix_key) keys = {0};
 	for (size_t a = 0; a < adds.n; a++) {
@@ -1043,6 +1047,7 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out)
 		tix_jw_str(&w, id->name);
 		tix_jw_key(&w, "email");
 		tix_jw_str(&w, id->email);
+		snap_str(&w, "kind", tix_field_get(TIX_F_ID_KIND)->enums[id->kind]);
 		tix_jw_key(&w, "keys");
 		tix_jw_arr_begin(&w);
 		for (size_t i = 0; i < id->nkeys; i++) {

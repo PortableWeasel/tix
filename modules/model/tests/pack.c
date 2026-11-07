@@ -466,6 +466,15 @@ static void test_workflow_ops(void)
 			tix_pack_free(&d);
 	}
 
+	tix_op id[] = {tix_op_set(TIX_F_ID_KIND, tix_value_int(TIX_V_ENUM, TIX_ID_AGENT))};
+	round_trip(TIX_ENTITY_IDENTITY, id, 1,
+		"{\"tix\":1,\"type\":\"identity\",\"author\":\"" A40 "\",\"lamport\":3,\"time\":9}\n"
+		"{\"op\":\"set-kind\",\"kind\":\"agent\"}\n");
+	tix_pack bad;
+	tix_error be = TIX_ERROR_INIT;
+	const char *robot = IHDR "{\"op\":\"set-kind\",\"kind\":\"robot\"}\n";
+	TK_STATUS(tix_pack_decode(robot, strlen(robot), TIX_HASH_SHA1, &bad, &be), TIX_ERR_INVALID, &be);
+
 	char stage[TIX_STAGE_MAX + 1];
 	tix_ticket_status ph;
 	TK_CHECK(tix_state_parse("open", &ph, stage) && ph == TIX_TICKET_OPEN && !stage[0]);

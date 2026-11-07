@@ -1012,7 +1012,15 @@ static void test_stages(void)
 	snprintf(target, sizeof(target), "/t/%s/edit", hex);
 	TK_CHECK(call(&c, "GET", target, NULL) == 200);
 	HAS(&c, "<option selected>open/ready</option>");
-	/* a new ticket under root is offered root's stages */
+	/* identity kind badge (§15.2) */
+	HASNT(&c, "badge agent");
+	tix_oid me;
+	TK_CHECK(tix_repo_identity(w.repo, &me));
+	apply1(&w, TIX_ENTITY_IDENTITY, &me, tix_op_set(TIX_F_ID_KIND, tix_value_int(TIX_V_ENUM, TIX_ID_AGENT)));
+	snprintf(target, sizeof(target), "/t/%s", tix_oid_hex(&t, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "<span class=\"badge agent\"");
+		/* a new ticket under root is offered root's stages */
 	snprintf(target, sizeof(target), "/new?parent=%s", tix_oid_hex(&root, hex));
 	TK_CHECK(call(&c, "GET", target, NULL) == 200);
 	HAS(&c, "<option>in-progress/review</option>");

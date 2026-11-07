@@ -153,6 +153,7 @@ void tix_entity_encode(const tix_entity *e, tix_buf *out)
 		const tix_identity *id = &e->u.identity;
 		e_str(&w, "name", id->name);
 		e_str(&w, "email", id->email);
+		e_int(&w, "kind", id->kind);
 		tix_jw_key(&w, "keys");
 		tix_jw_arr_begin(&w);
 		for (size_t i = 0; i < id->nkeys; i++) {
@@ -465,6 +466,7 @@ tix_status tix_entity_decode(const char *data, size_t len, tix_hash_algo algo, t
 		tix_identity *id = &e->u.identity;
 		id->name = d_str(&d, o, "name", false);
 		id->email = d_str(&d, o, "email", false);
+		id->kind = (tix_identity_kind)d_int(&d, o, "kind", 0, TIX_ID_AGENT);
 		if ((a = d_arr(&d, o, "keys", MAX_ITEMS, &n)) && n) {
 			id->keys = tix_xcalloc(n, sizeof(tix_key));
 			cJSON_ArrayForEach(it, a)

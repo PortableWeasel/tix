@@ -143,7 +143,7 @@ static const char *who(tui *t, const tix_oid *id, char *buf, size_t n)
 {
 	tix_entity *e;
 	if (!tix_entity_load(t->cfg->repo, TIX_ENTITY_IDENTITY, id, &e, NULL)) {
-		snprintf(buf, n, "%s", e->u.identity.name);
+		snprintf(buf, n, "%s%s", e->u.identity.name, e->u.identity.kind == TIX_ID_AGENT ? " (agent)" : "");
 		tix_entity_free(e);
 	} else {
 		short_id(id, buf);

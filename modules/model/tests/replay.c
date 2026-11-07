@@ -183,6 +183,16 @@ static void test_identity_rules(void)
 	TK_CHECK(ent->u.identity.nkeys == 1);
 	tix_entity_free(ent);
 
+	/* kind: human by default, agent once set (§15.2), visible on other clones */
+	TK_CHECK((ent = load(&b, TIX_ENTITY_IDENTITY, &a.me)) && ent->u.identity.kind == TIX_ID_HUMAN);
+	tix_entity_free(ent);
+	op = tix_op_set(TIX_F_ID_KIND, tix_value_int(TIX_V_ENUM, TIX_ID_AGENT));
+	TK_OK(tix_sim_apply(&a, TIX_ENTITY_IDENTITY, &a.me, &op, 1, &e), &e);
+	tix_op_free(&op);
+	sync_both(&a, &b);
+	TK_CHECK((ent = load(&b, TIX_ENTITY_IDENTITY, &a.me)) && ent->u.identity.kind == TIX_ID_AGENT);
+	tix_entity_free(ent);
+
 	/* Bob forges an edit of Ada's identity: Bob's own copy no longer validates,
 	 * and Ada refuses it on sync. */
 	op = tix_op_text(TIX_OP_SET_NAME, "Mallory");

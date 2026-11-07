@@ -24,6 +24,7 @@ button{cursor:pointer}
 .ok{color:var(--ok)}
 .crit{color:var(--crit)}
 .status{display:inline-block;padding:0 .4rem;border-radius:.6rem;background:var(--soft);font-size:.85em}
+.badge{display:inline-block;padding:0 .35rem;border-radius:.3rem;font-size:.75em;background:var(--soft);border:1px solid var(--line)}
 .label{display:inline-block;padding:0 .4rem;border:1px solid var(--line);border-radius:.6rem;font-size:.85em;margin-right:.2rem}
 .comment{border-left:3px solid var(--line);padding:.2rem .8rem;margin:.8rem 0}
 .body{white-space:pre-wrap}

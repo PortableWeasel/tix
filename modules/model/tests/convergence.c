@@ -94,9 +94,10 @@ static tix_op random_identity_op(uint64_t *rng)
 {
 	static const char *const names[] = {"Ada", "Ada L.", "A. Lovelace"};
 	static const char *const fprs[] = {"SHA256:k1", "SHA256:k2"};
-	switch (tk_rand_below(rng, 3)) {
+	switch (tk_rand_below(rng, 4)) {
 	case 0: return tix_op_text(TIX_OP_SET_NAME, pick(rng, names, 3));
 	case 1: return tix_op_key_add("ssh", pick(rng, fprs, 2), pick(rng, names, 3));
+	case 3: return tix_op_set(TIX_F_ID_KIND, tix_value_int(TIX_V_ENUM, (int64_t)tk_rand_below(rng, 2)));
 	default: return tix_op_key_remove(pick(rng, fprs, 2));
 	}
 }

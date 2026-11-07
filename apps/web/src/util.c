@@ -162,6 +162,8 @@ void h_named(web_ctx *x, tix_entity_type t, const tix_oid *id, const tix_entity_
 	}
 	if (t != TIX_ENTITY_IDENTITY)
 		HL(h, "</a>");
+	else if (e && e->u.identity.kind == TIX_ID_AGENT)
+		HL(h, " <span class=\"badge agent\" title=\"an AI agent (self-declared)\">agent</span>");
 	tix_entity_free(loaded);
 }
 

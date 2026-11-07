@@ -271,6 +271,20 @@ expect 1 "$TIX" cal edit "$cal" --clear 2026-12-01; has "no such exception"
 git fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || fail "plan repo fsck"
 unset TIX_TODAY
 
+# ---- identity kind (§15.2) ----------------------------------------------------------
+cd "$T/a"
+expect 0 "$TIX" id show; has "kind:   human"
+expect 2 "$TIX" id edit --kind robot; has "--kind is human or agent"
+expect 0 "$TIX" id edit --kind agent
+expect 0 "$TIX" id show; has "kind:   agent"
+expect 0 "$TIX" id ls; has "(agent)"
+expect 0 "$TIX" id edit --kind human
+expect 0 "$TIX" id ls; hasnt "(agent)"
+expect 0 "$TIX" id new --name "Bot" --email bot@example.invalid --kind agent; has "Created identity"
+bot=$(sed -n 's/^Created identity \([0-9a-f]*\).*/\1/p' <<<"$out")
+expect 0 "$TIX" id show "$bot"; has "kind:   agent"
+expect 2 "$TIX" id new --kind robot; has "--kind is human or agent"
+
 # ---- workflow stages (§15.1): phase/stage, stage lists inherited down the WBS ---------
 cd "$T/a"
 expect 0 "$TIX" new -t "Workflow root"; wr=$(sed -n 's/^Created ticket //p' <<<"$out")

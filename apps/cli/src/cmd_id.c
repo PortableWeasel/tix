@@ -19,6 +19,7 @@ static void print_identity(const tix_entity *e, bool current)
 	const tix_identity *id = &e->u.identity;
 	printf("id:     %s%s\n", tix_oid_hex(&e->id, hex), current ? "  (you)" : "");
 	printf("name:   %s\nemail:  %s\n", id->name, id->email);
+	printf("kind:   %s\n", tix_field_get(TIX_F_ID_KIND)->enums[id->kind]);
 	for (size_t i = 0; i < id->nkeys; i++)
 		printf("key:    %s %s\n", id->keys[i].kind, id->keys[i].fingerprint);
 }
@@ -35,9 +36,12 @@ static int use_identity(cli *c, const tix_oid *id)
 static int id_new(cli *c, int argc, char **argv)
 {
 	tix_buf name = TIX_BUF_INIT, email = TIX_BUF_INIT;
-	int rc = EXIT_OK;
+	int rc = EXIT_OK, kind = TIX_ID_HUMAN;
 	for (int i = 1; i < argc && rc == EXIT_OK; i++) {
-		if (!strcmp(argv[i], "--name") && need_value(i, argc, argv[i]))
+		if (!strcmp(argv[i], "--kind") && need_value(i, argc, argv[i])) {
+			if ((kind = tix_field_enum(TIX_F_ID_KIND, argv[++i])) < 0)
+				rc = cli_usage("id new: --kind is human or agent");
+		} else if (!strcmp(argv[i], "--name") && need_value(i, argc, argv[i]))
 			tix_buf_adds(&name, argv[++i]);
 		else if (!strcmp(argv[i], "--email") && need_value(i, argc, argv[i]))
 			tix_buf_adds(&email, argv[++i]);
@@ -51,7 +55,11 @@ static int id_new(cli *c, int argc, char **argv)
 	tix_oid id, cur;
 	char s[16];
 	if (rc == EXIT_OK) {
-		tix_status st = tix_identity_create(c->repo, name.data, email.data, &id, &c->err);
+		tix_op ops[2] = {tix_op_identity_create(NULL, name.data, email.data),
+				 tix_op_set(TIX_F_ID_KIND, tix_value_int(TIX_V_ENUM, kind))};
+		tix_status st = tix_entity_create(c->repo, TIX_ENTITY_IDENTITY, ops, kind == TIX_ID_HUMAN ? 1 : 2, &id, &c->err);
+		tix_op_free(&ops[0]);
+		tix_op_free(&ops[1]);
 		if (st)
 			rc = cli_fail(c, st);
 	}
@@ -82,8 +90,8 @@ static int id_ls(cli *c)
 		return cli_fail(c, st);
 	for (size_t i = 0; i < l.n; i++) {
 		const tix_entity *e = l.v[i];
-		printf("%c %s  %s <%s>\n", have && tix_oid_eq(&cur, &e->id) ? '*' : ' ', cli_short(&e->id, s),
-		       e->u.identity.name, e->u.identity.email);
+		printf("%c %s  %s <%s>%s\n", have && tix_oid_eq(&cur, &e->id) ? '*' : ' ', cli_short(&e->id, s),
+		       e->u.identity.name, e->u.identity.email, e->u.identity.kind == TIX_ID_AGENT ? "  (agent)" : "");
 	}
 	if (l.nbroken)
 		fprintf(stderr, "tix: skipped %zu invalid identit%s\n", l.nbroken, l.nbroken == 1 ? "y" : "ies");
@@ -126,6 +134,12 @@ static int id_edit(cli *c, int argc, char **argv)
 			TIX_VEC_PUSH(&ops, tix_op_text(TIX_OP_SET_NAME, argv[++i]));
 		} else if (!strcmp(argv[i], "--email") && need_value(i, argc, argv[i])) {
 			TIX_VEC_PUSH(&ops, tix_op_text(TIX_OP_SET_EMAIL, argv[++i]));
+		} else if (!strcmp(argv[i], "--kind") && need_value(i, argc, argv[i])) {
+			int k = tix_field_enum(TIX_F_ID_KIND, argv[++i]);
+			if (k < 0)
+				rc = cli_usage("id edit: --kind is human or agent");
+			else
+				TIX_VEC_PUSH(&ops, tix_op_set(TIX_F_ID_KIND, tix_value_int(TIX_V_ENUM, k)));
 		} else if (!strcmp(argv[i], "--add-key")) {
 			if (i + 3 >= argc)
 				rc = cli_usage("--add-key needs KIND FINGERPRINT PUBKEY");

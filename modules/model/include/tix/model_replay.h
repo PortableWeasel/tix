@@ -115,6 +115,7 @@ typedef struct tix_key {
 typedef struct tix_identity {
 	char *name;
 	char *email;
+	tix_identity_kind kind; /* self-declared (§15.2): guards accidents, not malice */
 	tix_key *keys; /* sorted by fingerprint */
 	size_t nkeys;
 } tix_identity;
@@ -202,7 +203,7 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out);
  * TIX_ENTITY_CODEC_VERSION whenever tix_entity or the replay rules change, so
  * stale cache entries miss instead of lying.
  */
-#define TIX_ENTITY_CODEC_VERSION 4
+#define TIX_ENTITY_CODEC_VERSION 5
 
 void tix_entity_encode(const tix_entity *e, tix_buf *out);
 /* Checks every field (types, ranges, UTF-8, id algo). RETURNS TIX_ERR_INVALID for

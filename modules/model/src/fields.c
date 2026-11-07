@@ -7,10 +7,12 @@
 static const char *const kind_names[] = {"task", "milestone", NULL};
 static const char *const mode_names[] = {"auto", "manual", NULL};
 static const char *const res_kind_names[] = {"person", "role", "equipment", NULL};
+static const char *const id_kind_names[] = {"human", "agent", NULL};
 
 #define T TIX_ENTITY_TICKET
 #define R TIX_ENTITY_RESOURCE
 #define C TIX_ENTITY_CALENDAR
+#define I TIX_ENTITY_IDENTITY
 
 /* Indexed by tix_field. Changing a row is a format change. */
 static const tix_field_info fields[TIX_F_COUNT] = {
@@ -42,6 +44,7 @@ static const tix_field_info fields[TIX_F_COUNT] = {
 	[TIX_F_HOURS] = {C, "set-hours", "hours", TIX_V_INT, false, 1, 24, NULL},
 
 	[TIX_F_EXTERNAL] = {T, "set-external", "external", TIX_V_STR, true, 1, TIX_EXTERNAL_MAX, NULL},
+	[TIX_F_ID_KIND] = {I, "set-kind", "kind", TIX_V_ENUM, false, 0, 0, id_kind_names},
 };
 
 #undef T

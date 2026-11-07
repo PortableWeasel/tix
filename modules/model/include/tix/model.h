@@ -120,6 +120,8 @@ typedef enum tix_field {
 	TIX_F_CAL_NAME, TIX_F_WEEKDAYS, TIX_F_HOURS,
 	/* ticket: link to an issue in another tracker (after v1, §14.4) */
 	TIX_F_EXTERNAL,
+	/* identity: human or agent (§15.2) */
+	TIX_F_ID_KIND,
 	TIX_F_COUNT
 } tix_field;
 
@@ -167,6 +169,7 @@ tix_value tix_value_id(const tix_oid *id);
 typedef enum tix_ticket_kind { TIX_KIND_TASK = 0, TIX_KIND_MILESTONE } tix_ticket_kind;
 typedef enum tix_sched_mode { TIX_MODE_AUTO = 0, TIX_MODE_MANUAL } tix_sched_mode;
 typedef enum tix_resource_kind { TIX_RES_PERSON = 0, TIX_RES_ROLE, TIX_RES_EQUIPMENT } tix_resource_kind;
+typedef enum tix_identity_kind { TIX_ID_HUMAN = 0, TIX_ID_AGENT } tix_identity_kind;
 
 /* Weekday mask: bit 0 = Monday ... bit 6 = Sunday. */
 #define TIX_WEEKDAYS_MON_FRI 0x1f
