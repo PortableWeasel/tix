@@ -384,6 +384,29 @@ static void test_fixed_span_without_duration(void)
 	world_free(&w);
 }
 
+/* Work recorded on a weekend (found dogfooding on a Saturday): fixed dates stay put. */
+static void test_fixed_dates_on_non_working_days(void)
+{
+	world w = {0};
+	tix_entity *sat = add(&w, task(1, "Done on Saturday", -1)), *wknd = add(&w, task(2, "Sat to Mon", -1));
+	tix_entity *man = add(&w, task(3, "Manual from Sunday", -1));
+	sat->u.ticket.plan.actual_start = sat->u.ticket.plan.actual_finish = D("2026-11-07");
+	wknd->u.ticket.plan.actual_start = D("2026-11-07");
+	wknd->u.ticket.plan.actual_finish = D("2026-11-09");
+	man->u.ticket.plan.mode = TIX_MODE_MANUAL;
+	man->u.ticket.plan.start = D("2026-11-08");
+	man->u.ticket.plan.finish = D("2026-11-10");
+	tix_schedule *s = run(&w, NULL, "2026-11-09");
+	char buf[64];
+	TK_STR_EQ(line(s, sat, buf), "2026-11-07..2026-11-07 f2"); /* Mon, Tue to the end */
+	TK_STR_EQ(line(s, wknd, buf), "2026-11-07..2026-11-09 f1");
+	TK_CHECK(get(s, wknd)->duration == 1); /* Monday is its one working day */
+	TK_STR_EQ(line(s, man, buf), "2026-11-08..2026-11-10 f0*");
+	TK_CHECK(!has_diag(s, "finish before start"));
+	tix_schedule_free(s);
+	world_free(&w);
+}
+
 static void test_effort_and_load(void)
 {
 	world w = {0};
@@ -472,6 +495,7 @@ int main(void)
 	test_cycles();
 	test_manual_actuals_deadline();
 	test_fixed_span_without_duration();
+	test_fixed_dates_on_non_working_days();
 	test_effort_and_load();
 	test_determinism();
 	return tk_finish();

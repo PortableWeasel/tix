@@ -628,7 +628,9 @@ static void forward(plan *p, const size_t *order, size_t n, tix_date ps)
 				}
 			}
 		}
-		if (L->d > 0 || !by_finish)
+		/* a computed start moves to a working day; a fixed one (actual dates, a manual
+		 * start) happened or was drawn there, so it stays, even on a weekend */
+		if (fixed_start == TIX_DATE_NONE && (L->d > 0 || !by_finish))
 			es = next_work(c, es);
 		L->es = es;
 		L->finish_driven = L->d == 0 && by_finish;

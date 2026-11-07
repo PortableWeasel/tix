@@ -277,7 +277,9 @@ per-resource daily load, diagnostics).
 4. **CPM forward/backward pass** on working-day calendars (✅ whole working days in v1; hours only for effort) (the task's inherited calendar)
    gives early/late start and finish, total float and the critical path. Inputs are
    FS/SS/FF/SF dependencies with lag, `start` (start-no-earlier-than) and the parent's start.
-   Manual tasks are fixed points. Summary tasks span min(child start) to max(child finish).
+   Manual tasks are fixed points. A computed start moves to the next working day; a fixed
+   start (actual dates, a manual start) stays on the date given, even on a non-working day,
+   because work recorded on a Saturday happened then (found dogfooding, v0.6). Summary tasks span min(child start) to max(child finish).
    Their effort is summed and their progress is effort-weighted.
 5. **Resource load.** Per resource per working day, Σ units assigned compared to capacity,
    giving an over-allocation report. No automatic levelling in v1.
