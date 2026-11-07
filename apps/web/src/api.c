@@ -246,7 +246,7 @@ void web_hook_forgejo(web_ctx *x)
 	uint8_t want[TIX_SHA256_LEN], got[TIX_SHA256_LEN];
 	bool ok = req->json && req->signature && strlen(req->signature) == 2 * TIX_SHA256_LEN;
 	for (size_t i = 0; ok && i < TIX_SHA256_LEN; i++) {
-		unsigned v;
+		unsigned v = 0;
 		char two[3] = {req->signature[2 * i], req->signature[2 * i + 1], 0};
 		ok = strspn(two, "0123456789abcdefABCDEF") == 2 && sscanf(two, "%2x", &v) == 1;
 		got[i] = (uint8_t)v;
