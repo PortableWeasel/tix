@@ -39,9 +39,12 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
   --url https://host/owner/repo`), a terminal UI (`tix tui`), and a hosted web mode behind
   an SSO proxy (`tix web --trust-proxy X-authentik-username --public-url https://... --users
   FILE`; see docs/architecture.md §14.6).
-- **Agent workflow (§15), in progress**: phase/stage statuses, claims with leases, typed
-  comments, an autonomy switch with a human-stage guard, and agent/live interfaces, so a
-  person and AI agents can hand tickets back and forth (docs/architecture.md §15).
+- **Agent workflow (§15) done**: phase/stage statuses (`--status open/ready`, `tix stage`),
+  claims with leases (`tix claim --next`), typed comments (`tix note`), an autonomy switch
+  with a human-stage guard (`tix autonomy`), `--json`, `tix log` and `tix watch`, and in the
+  web UI an inbox, an activity page, answer forms, live per-ticket events, timed pulls and a
+  Forgejo push hook. The policy agents follow is docs/agent-workflow.md; contrib/night.py
+  runs agents through an autonomous night.
 
 tix tracks its own work: `tix pull && tix wbs` in a clone of this repo.
 

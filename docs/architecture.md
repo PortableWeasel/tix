@@ -1076,7 +1076,7 @@ people in (Authentik's proxy outpost sends `X-authentik-username`).
   login), and the CLI's flag rules.
 
 
-## 15. Agent workflow (approved 2026-11-07)
+## 15. Agent workflow (approved and done 2026-11-07)
 
 Goal: let a person and AI agents hand tickets back and forth through tix: the person writes
 a ticket, an agent refines it, asks questions or declares it ready, another agent
@@ -1361,6 +1361,10 @@ Review rounds are counted from `review` comments by the skill. These all live in
 
 Time budgets per ticket, the abort-rate circuit breaker and how many agents run belong to
 the runner.
+
+The runner exists as `contrib/night.py` (a role per clone, budgets, the breaker; `ctest`
+`contrib.night` drives it with a fake agent). Scheduling it (Hermes cron or similar) is an
+operations decision left to the owner.
 
 ### 15.8 Testing
 

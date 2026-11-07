@@ -25,7 +25,7 @@ change and say why. Never let the code and the doc drift apart silently.
 | M6: web UI without JavaScript (`input`, Mongoose, `tix web`, §13) | ✅ done |
 | M7: web UI JavaScript enhancements (§13.4) | ✅ done |
 | After v1 (§14): MSPDI export, baselines, signatures, Forgejo bridge, TUI, hosted web mode | ✅ done |
-| Agent workflow (§15): phase/stage, claims, typed comments, autonomy guard, agent and live interfaces | 🚧 approved 2026-11-07, in progress |
+| Agent workflow (§15): phase/stage, claims, typed comments, autonomy guard, agent and live interfaces, skill (docs/agent-workflow.md), night runner (contrib/) | ✅ done |
 
 Work on the current milestone unless asked otherwise. Don't build ahead into later
 milestones "while you're there".
@@ -59,6 +59,8 @@ spikes/                 throwaway proofs, deleted once the real module exists (n
 third_party/git/        git.git submodule, pinned at v2.47.3 (do not edit)
 third_party/mongoose/   Cesanta Mongoose submodule, pinned at 7.23 (do not edit); cmake/Mongoose.cmake
 docs/architecture.md    the design
+docs/agent-workflow.md  the agent workflow skill (policy on top of §15's mechanisms)
+contrib/                not part of tix: contrib/night.py, the reference night runner (tests: contrib/tests)
 ```
 
 ## Build and test

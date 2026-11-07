@@ -206,6 +206,23 @@ The runner is whatever starts agents overnight (Hermes cron, a loop script).
   wrong (a broken build, an expired token, a bad early assumption).
 - It never turns autonomy on or off. That is a person's call.
 
+`contrib/night.py` is a reference runner that does all of this (tested by `contrib.night` in
+`ctest`). Give each role its own clone, set to that role's agent identity:
+
+```bash
+uv run contrib/night.py --root ROOT \
+    --worker refine:/srv/night/refiner --worker implement:/srv/night/impl --worker review:/srv/night/review \
+    --agent 'hermes -z {prompt_q} --skills tix,tix-agent-workflow --in {clone_q}' \
+    --log /srv/night/night.log
+```
+
+It runs while ROOT is autonomous. It claims for each worker in turn, starts the agent with a
+prompt naming the ticket, and renews the claim while the agent works (`--budget` 120 min,
+`--lease` 30 min). It aborts a ticket the agent overran (`budget-exceeded`) or left where it
+was, releases claims an agent kept after handing on, and halts autonomy when the circuit
+breaker trips (exit 2). `--until-idle` stops once nobody finds work. Start it from cron
+shortly after a person switches autonomy on; it exits by itself when autonomy ends.
+
 ## The morning
 
 `/activity` in `tix web` (or `tix log --since 10h --under ROOT`) shows what happened since

@@ -44,3 +44,12 @@ add_subdirectory(apps/common)
 add_subdirectory(apps/cli)
 add_subdirectory(apps/web)
 add_subdirectory(apps/tui)
+
+# contrib/night.py, the reference night runner (architecture §15.7): end to end with real tix
+# clones and a fake agent. Needs uv (no packages).
+find_program(TIX_UV uv)
+if(TIX_UV)
+  add_test(NAME contrib.night COMMAND ${TIX_UV} run --quiet python ${CMAKE_SOURCE_DIR}/contrib/tests/night_test.py
+    $<TARGET_FILE:tix>)
+  set_tests_properties(contrib.night PROPERTIES LABELS contrib TIMEOUT 300)
+endif()
