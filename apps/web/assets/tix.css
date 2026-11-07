@@ -75,3 +75,4 @@ svg.gantt a.task:focus .bar,svg.gantt a.task:focus .ms{stroke:var(--warn);stroke
 svg.gantt .link-h{fill:var(--bg);stroke:var(--accent);stroke-width:1.5;opacity:0;cursor:crosshair}
 svg.gantt a.task:hover .link-h,svg.gantt a.task:focus .link-h{opacity:1}
 svg.gantt .link-tmp{stroke:var(--accent);stroke-width:1.5;stroke-dasharray:4 3}
+svg.gantt .base{fill:var(--muted);opacity:.8}

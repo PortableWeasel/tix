@@ -39,6 +39,8 @@
 #define TIX_LAG_MAX 10000     /* +- working days */
 #define TIX_UNITS_MAX 100000  /* percent of a resource's capacity */
 #define TIX_EXCEPTION_MAX_DAYS 3660
+#define TIX_COST_MAX (1ll << 50) /* minor currency units */
+#define TIX_CURRENCY_MAX 8      /* letters */
 
 /* ---- entity types -------------------------------------------------------- */
 typedef enum tix_entity_type {
@@ -46,13 +48,14 @@ typedef enum tix_entity_type {
 	TIX_ENTITY_TICKET = 2,
 	TIX_ENTITY_RESOURCE = 3,
 	TIX_ENTITY_CALENDAR = 4,
+	TIX_ENTITY_BASELINE = 5, /* a plan snapshot (after v1, architecture §14.2) */
 } tix_entity_type;
 
-/* Every type, in ref-namespace order (identities, tickets, resources, calendars). */
-extern const tix_entity_type tix_entity_types[4];
-#define TIX_ENTITY_NTYPES 4
+/* Every type, in sync order (identities first: other packs name their authors). */
+extern const tix_entity_type tix_entity_types[5];
+#define TIX_ENTITY_NTYPES 5
 
-/* RETURNS "identity" / "ticket" / "resource" / "calendar". */
+/* RETURNS "identity" / "ticket" / "resource" / "calendar" / "baseline". */
 const char *tix_entity_type_name(tix_entity_type t);
 /* RETURNS the ref namespace, e.g. "refs/tix/tickets/" (with trailing slash). */
 const char *tix_entity_ref_prefix(tix_entity_type t);
@@ -187,7 +190,19 @@ typedef enum tix_op_kind {
 	TIX_OP_CALENDAR_CREATE, /* "create": nonce, name */
 	TIX_OP_EXCEPTION_ADD,   /* "exception-add": from, to, working, note */
 	TIX_OP_EXCEPTION_REMOVE, /* "exception-remove": from, to */
+	/* baseline (after v1) */
+	TIX_OP_BASELINE_CREATE,   /* "create": nonce, name, taken, root|null */
+	TIX_OP_BASELINE_SET_NAME, /* "set-name": name */
+	TIX_OP_BASELINE_TASK,     /* "task": ticket, start, finish, duration, effort, cost, currency (null = unknown) */
 } tix_op_kind;
+
+/* "task" op of a baseline: one planned task as it was when the snapshot was taken. */
+typedef struct tix_baseline_task_op {
+	tix_oid ticket;
+	tix_date start, finish;         /* TIX_DATE_NONE = unscheduled */
+	int64_t duration, effort, cost; /* -1 = unknown */
+	char *currency;                 /* NULL = none (no cost, or mixed currencies) */
+} tix_baseline_task_op;
 
 /*
  * One operation. OWNS every string/array member; free with tix_op_free.
@@ -215,6 +230,8 @@ typedef struct tix_op {
 		struct { char *nonce, *name; } calendar_create;
 		struct { tix_date from, to; bool working; char *note; } exception_add;
 		struct { tix_date from, to; } exception_remove;
+		struct { char *nonce, *name; tix_date taken; tix_oid root; /* null = whole plan */ } baseline_create;
+		tix_baseline_task_op baseline_task;
 		struct { char *name, *raw; } unknown; /* op name + original line */
 	} u;
 } tix_op;
@@ -234,7 +251,7 @@ tix_op_kind tix_create_kind(tix_entity_type t);
  * A NULL nonce is allowed here so core can fill in fresh randomness. */
 tix_op tix_op_ticket_create(const char *nonce, const char *title, const char *body, const tix_strs *labels);
 tix_op tix_op_identity_create(const char *nonce, const char *name, const char *email);
-/* kind: SET_TITLE, SET_BODY, COMMENT, SET_NAME or SET_EMAIL */
+/* kind: SET_TITLE, SET_BODY, COMMENT, SET_NAME, SET_EMAIL or BASELINE_SET_NAME */
 tix_op tix_op_text(tix_op_kind kind, const char *value);
 tix_op tix_op_set_status(tix_ticket_status s);
 tix_op tix_op_label(const tix_strs *add, const tix_strs *remove);
@@ -251,6 +268,9 @@ tix_op tix_op_resource_create(const char *nonce, const char *name, tix_resource_
 tix_op tix_op_calendar_create(const char *nonce, const char *name);
 tix_op tix_op_exception_add(tix_date from, tix_date to, bool working, const char *note);
 tix_op tix_op_exception_remove(tix_date from, tix_date to);
+tix_op tix_op_baseline_create(const char *nonce, const char *name, tix_date taken, const tix_oid *root);
+tix_op tix_op_baseline_task(const tix_oid *ticket, tix_date start, tix_date finish, int64_t duration, int64_t effort,
+			    int64_t cost, const char *currency);
 
 /* ---- op-packs ------------------------------------------------------------ */
 typedef struct tix_pack {

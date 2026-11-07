@@ -5,6 +5,6 @@
 #include "tix/export.h"
 
 /* MS Project XML (mspdi.c). */
-void tix_export_mspdi(const tix_schedule *s, const char *title, tix_buf *out);
+void tix_export_mspdi(const tix_schedule *s, const char *title, const tix_plan_variance *v, tix_buf *out);
 
 #endif

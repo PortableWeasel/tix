@@ -211,7 +211,7 @@ static long long days_to_hours(int64_t days)
 	return days < 0 ? 0 : (long long)days * (MIN_PER_DAY / 60);
 }
 
-static void task(tix_buf *out, const tix_schedule *s, size_t i)
+static void task(tix_buf *out, const tix_schedule *s, size_t i, const char *currency, const tix_plan_variance *v)
 {
 	const tix_plan_task *t = &s->tasks[i];
 	const tix_ticket *tk = &t->ticket->u.ticket;
@@ -255,6 +255,8 @@ static void task(tix_buf *out, const tix_schedule *s, size_t i)
 		el_i(out, "TotalSlack", (long long)t->total_float * LAG_UNITS_PER_DAY);
 	}
 	el_i(out, "PercentComplete", t->progress);
+	if (t->cost >= 0 && currency && !strcmp(t->currency, currency))
+		el_i(out, "Cost", t->cost); /* MSPDI costs are hundredths of the currency: tix's minor units */
 	if (t->actual_start != TIX_DATE_NONE)
 		el_dt(out, "ActualStart", t->actual_start, "08:00:00");
 	if (t->actual_finish != TIX_DATE_NONE)
@@ -282,6 +284,22 @@ static void task(tix_buf *out, const tix_schedule *s, size_t i)
 		el_i(out, "LagFormat", 7);
 		tix_buf_adds(out, "</PredecessorLink>");
 	}
+	if (v && v->baselined) {
+		tix_buf_adds(out, "<Baseline><Number>0</Number>");
+		if (v->start != TIX_DATE_NONE) {
+			el_dt(out, "Start", v->start, t->milestone ? end : "08:00:00");
+			el_dt(out, "Finish", v->finish, end);
+		}
+		if (v->duration >= 0) {
+			el_hours(out, "Duration", days_to_hours(v->duration));
+			el_i(out, "DurationFormat", 7);
+		}
+		if (v->effort >= 0)
+			el_hours(out, "Work", v->effort);
+		if (v->cost >= 0 && v->currency && currency && !strcmp(v->currency, currency))
+			el_i(out, "Cost", v->cost);
+		tix_buf_adds(out, "</Baseline>");
+	}
 	if (manual && !t->summary && t->scheduled) {
 		el_dt(out, "ManualStart", t->start, "08:00:00");
 		el_dt(out, "ManualFinish", t->finish, end);
@@ -305,7 +323,7 @@ static const char *common_currency(const tix_schedule *s)
 	return cur;
 }
 
-void tix_export_mspdi(const tix_schedule *s, const char *title, tix_buf *out)
+void tix_export_mspdi(const tix_schedule *s, const char *title, const tix_plan_variance *v, tix_buf *out)
 {
 	const char *name = title ? title : "tix plan";
 	tix_buf_adds(out, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
@@ -346,7 +364,7 @@ void tix_export_mspdi(const tix_schedule *s, const char *title, tix_buf *out)
 	}
 	tix_buf_adds(out, "<Summary>1</Summary></Task>\n");
 	for (size_t i = 0; i < s->ntasks; i++) {
-		task(out, s, i);
+		task(out, s, i, currency, v ? &v[i] : NULL);
 		tix_buf_addc(out, '\n');
 	}
 	tix_buf_adds(out, "</Tasks>\n<Resources>");

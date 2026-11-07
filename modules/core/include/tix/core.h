@@ -163,6 +163,19 @@ typedef enum tix_rank_pos { TIX_RANK_FIRST, TIX_RANK_LAST, TIX_RANK_BEFORE, TIX_
 tix_status tix_ticket_rank(tix_repo *r, const tix_oid *parent, const tix_oid *self, tix_rank_pos pos,
 			   const tix_oid *anchor, tix_buf *out, tix_error *err);
 
+/*
+ * Baselines (architecture §14.2): snapshots of the computed plan that sync like tickets.
+ * tix_baseline_take plans from root (NULL = everything) as of today and stores every
+ * task's dates, duration, effort and cost. Large plans span several packs, written as a
+ * chain and published with one ref update. *ntasks (optional) receives the task count.
+ * RETURNS TIX_ERR_NOT_FOUND without an identity or for an unknown root.
+ * Rename with tix_entity_apply(TIX_ENTITY_BASELINE, ..., tix_op_text(TIX_OP_BASELINE_SET_NAME, ..)).
+ */
+tix_status tix_baseline_take(tix_repo *r, const char *name, const tix_oid *root, tix_date today, tix_oid *out,
+			     size_t *ntasks, tix_error *err);
+/* All baselines, newest first (taken date, then creation time, then id). */
+tix_status tix_baseline_list(tix_repo *r, tix_entity_list *out, tix_error *err);
+
 /* A schedule plus the entities it borrows. Free with tix_plan_result_free. */
 typedef struct tix_plan_result {
 	tix_schedule *schedule;

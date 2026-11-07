@@ -36,9 +36,9 @@ static tix_entity *task(int n, const char *title, int64_t duration)
 static const char *const task_order[] = {
 	"UID", "ID", "Name", "Active", "Manual", "Type", "IsNull", "WBS", "OutlineNumber", "OutlineLevel", "Priority",
 	"Start", "Finish", "Duration", "DurationFormat", "Work", "EffortDriven", "Estimated", "Milestone", "Summary",
-	"Critical", "EarlyStart", "EarlyFinish", "LateStart", "LateFinish", "TotalSlack", "PercentComplete",
+	"Critical", "EarlyStart", "EarlyFinish", "LateStart", "LateFinish", "TotalSlack", "PercentComplete", "Cost",
 	"ActualStart", "ActualFinish", "ConstraintType", "CalendarUID", "ConstraintDate", "Deadline", "Notes",
-	"PredecessorLink", "ManualStart", "ManualFinish", "ManualDuration", NULL};
+	"PredecessorLink", "Baseline", "ManualStart", "ManualFinish", "ManualDuration", NULL};
 
 static int order_of(const char *name, size_t n)
 {
@@ -62,6 +62,8 @@ static void check_task_order(const char *xml)
 			const char *close = strstr(p, "</");
 			if (!strncmp(p + 1, "PredecessorLink", 15)) /* skip its children */
 				close = strstr(p, "</PredecessorLink>");
+			else if (!strncmp(p + 1, "Baseline", 8))
+				close = strstr(p, "</Baseline>");
 			p = close ? strchr(close, '>') : NULL;
 			if (p)
 				p++;
@@ -184,14 +186,14 @@ int main(void)
 	tix_export(s, TIX_EXPORT_CSV, NULL, &b);
 	TK_STR_EQ(tix_buf_cstr(&b),
 		  "wbs,id,title,kind,status,start,finish,duration_days,effort_hours,progress,total_float,critical,"
-		  "late_start,late_finish,deadline,actual_start,actual_finish,assignments\r\n"
+		  "late_start,late_finish,deadline,actual_start,actual_finish,assignments,cost,currency\r\n"
 		  "1,0100000000000000000000000000000000000000,Build: phase #1,summary,open,2026-11-12,2026-11-13,2,8,0,0,yes,"
-		  "2026-11-12,2026-11-13,,,,\r\n"
+		  "2026-11-12,2026-11-13,,,,,,\r\n"
 		  "1.1,0200000000000000000000000000000000000000,\"'=SUM(A1)\",task,in-progress,2026-11-12,2026-11-13,2,8,0,0,yes,"
-		  "2026-11-12,2026-11-13,,,,Ada:50%\r\n"
+		  "2026-11-12,2026-11-13,,,,Ada:50%,,\r\n"
 		  "1.2,0300000000000000000000000000000000000000,\"Done, \"\"really\"\"\",milestone,open,2026-11-13,2026-11-13,0,,0,0,yes,"
-		  "2026-11-13,2026-11-13,,,,\r\n"
-		  "2,0400000000000000000000000000000000000000,Someday,task,open,,,,,0,,,,,,,,\r\n");
+		  "2026-11-13,2026-11-13,,,,,,\r\n"
+		  "2,0400000000000000000000000000000000000000,Someday,task,open,,,,,0,,,,,,,,,,\r\n");
 
 	tix_buf_reset(&b);
 	tix_export(s, TIX_EXPORT_JSON, NULL, &b);
@@ -229,6 +231,32 @@ int main(void)
 	TK_CHECK(strstr(x, "</Assignments>\n</Project>\n"));
 	check_task_order(x);
 	TK_CHECK(tix_utf8_valid(b.data, b.len));
+
+	/* with a baseline comparison: task 1.1 ('a') was baselined a day earlier */
+	tix_date b0, b1;
+	TIX_REQUIRE(tix_date_parse("2026-11-11", &b0) && tix_date_parse("2026-11-12", &b1));
+	tix_baseline_task bt[1] = {{a->id, b0, b1, 2, 8, -1, NULL}};
+	tix_baseline bl = {.name = "v1", .taken = b0, .tasks = bt, .ntasks = 1};
+	tix_plan_variance var[4];
+	TK_CHECK(tix_plan_compare(s, &bl, var) == 0);
+	tix_buf_reset(&b);
+	tix_export_compare(s, TIX_EXPORT_CSV, NULL, var, &b);
+	TK_CHECK(strstr(b.data, ",cost,currency,baseline_start,baseline_finish,start_slip_days,finish_slip_days,"
+				"duration_delta_days,effort_delta_hours,cost_delta\r\n"));
+	TK_CHECK(strstr(b.data, "Ada:50%,,,2026-11-11,2026-11-12,1,1,0,0,\r\n"));
+	TK_CHECK(strstr(b.data, "Someday,task,open,,,,,0" ",,,,,,,,,," ",,,,,,,\r\n")); /* not baselined: empty */
+	tix_buf_reset(&b);
+	tix_export_compare(s, TIX_EXPORT_JSON, NULL, var, &b);
+	TK_CHECK(strstr(b.data, "\"baseline\":{\"start\":\"2026-11-11\",\"finish\":\"2026-11-12\",\"duration\":2,\"effort\":8,"
+				"\"cost\":null,\"start_slip\":1,\"finish_slip\":1,\"duration_delta\":0,\"effort_delta\":0,"
+				"\"cost_delta\":null}"));
+	TK_CHECK(strstr(b.data, "\"title\":\"Someday\"") && strstr(strstr(b.data, "\"title\":\"Someday\""), "\"baseline\":null"));
+	tix_buf_reset(&b);
+	tix_export_compare(s, TIX_EXPORT_MSPDI, NULL, var, &b);
+	TK_CHECK(strstr(b.data, "<Baseline><Number>0</Number><Start>2026-11-11T08:00:00</Start><Finish>2026-11-12T17:00:00"
+				"</Finish><Duration>PT16H0M0S</Duration><DurationFormat>7</DurationFormat><Work>PT8H0M0S</Work>"
+				"</Baseline>"));
+	check_task_order(b.data);
 	tix_buf_free(&b);
 	tix_schedule_free(s);
 	tix_entity_free(proj);

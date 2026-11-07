@@ -365,8 +365,67 @@ static void test_planning_rejects(void)
 	}
 }
 
+#define BHDR "{\"tix\":1,\"type\":\"baseline\",\"author\":\"" A40 "\",\"lamport\":3,\"time\":9}\n"
+#define NONCE "\"nonce\":\"0123456789abcdef0123456789abcdef\""
+
+static void test_baseline_ops(void)
+{
+	tix_date d1, d2;
+	TIX_REQUIRE(tix_date_parse("2026-11-09", &d1) && tix_date_parse("2026-11-12", &d2));
+	tix_oid b = oid_of(B40), none;
+	memset(&none, 0, sizeof(none));
+	tix_op ops[] = {
+		tix_op_baseline_create("0123456789abcdef0123456789abcdef", "Plan of record", d1, &b),
+		tix_op_text(TIX_OP_BASELINE_SET_NAME, "Q4 plan"),
+		tix_op_baseline_task(&b, d1, d2, 4, 32, 304000, "EUR"),
+		tix_op_baseline_task(&b, TIX_DATE_NONE, TIX_DATE_NONE, -1, -1, -1, NULL),
+	};
+	round_trip(TIX_ENTITY_BASELINE, ops, sizeof(ops) / sizeof(*ops), BHDR
+		"{\"op\":\"create\"," NONCE ",\"name\":\"Plan of record\",\"taken\":\"2026-11-09\",\"root\":\"" B40 "\"}\n"
+		"{\"op\":\"set-name\",\"name\":\"Q4 plan\"}\n"
+		"{\"op\":\"task\",\"ticket\":\"" B40 "\",\"start\":\"2026-11-09\",\"finish\":\"2026-11-12\",\"duration\":4,"
+		"\"effort\":32,\"cost\":304000,\"currency\":\"EUR\"}\n"
+		"{\"op\":\"task\",\"ticket\":\"" B40 "\",\"start\":null,\"finish\":null,\"duration\":null,\"effort\":null,"
+		"\"cost\":null,\"currency\":null}\n");
+	tix_op whole[] = {tix_op_baseline_create("0123456789abcdef0123456789abcdef", "All", d1, &none)};
+	round_trip(TIX_ENTITY_BASELINE, whole, 1, BHDR
+		"{\"op\":\"create\"," NONCE ",\"name\":\"All\",\"taken\":\"2026-11-09\",\"root\":null}\n");
+
+	static const bad_case cases[] = {
+		{"no taken", BHDR "{\"op\":\"create\"," NONCE ",\"name\":\"x\",\"root\":null}\n", TIX_ERR_INVALID},
+		{"empty name", BHDR "{\"op\":\"create\"," NONCE ",\"name\":\"\",\"taken\":\"2026-11-09\",\"root\":null}\n", TIX_ERR_INVALID},
+		{"one date", BHDR "{\"op\":\"task\",\"ticket\":\"" B40 "\",\"start\":\"2026-11-09\",\"finish\":null,\"duration\":null,"
+			     "\"effort\":null,\"cost\":null,\"currency\":null}\n", TIX_ERR_INVALID},
+		{"reversed", BHDR "{\"op\":\"task\",\"ticket\":\"" B40 "\",\"start\":\"2026-11-12\",\"finish\":\"2026-11-09\","
+			     "\"duration\":null,\"effort\":null,\"cost\":null,\"currency\":null}\n", TIX_ERR_INVALID},
+		{"cost without currency", BHDR "{\"op\":\"task\",\"ticket\":\"" B40 "\",\"start\":null,\"finish\":null,"
+			     "\"duration\":null,\"effort\":null,\"cost\":5,\"currency\":null}\n", TIX_ERR_INVALID},
+		{"currency without cost", BHDR "{\"op\":\"task\",\"ticket\":\"" B40 "\",\"start\":null,\"finish\":null,"
+			     "\"duration\":null,\"effort\":null,\"cost\":null,\"currency\":\"EUR\"}\n", TIX_ERR_INVALID},
+		{"currency digits", BHDR "{\"op\":\"task\",\"ticket\":\"" B40 "\",\"start\":null,\"finish\":null,"
+			     "\"duration\":null,\"effort\":null,\"cost\":5,\"currency\":\"E1\"}\n", TIX_ERR_INVALID},
+		{"negative effort", BHDR "{\"op\":\"task\",\"ticket\":\"" B40 "\",\"start\":null,\"finish\":null,"
+			     "\"duration\":null,\"effort\":-3,\"cost\":null,\"currency\":null}\n", TIX_ERR_INVALID},
+		{"missing key", BHDR "{\"op\":\"task\",\"ticket\":\"" B40 "\",\"start\":null,\"finish\":null}\n", TIX_ERR_INVALID},
+		{"ticket op on baseline", BHDR "{\"op\":\"set-title\",\"title\":\"x\"}\n", TIX_ERR_UNKNOWN_OK},
+	};
+	for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+		tix_error e = TIX_ERROR_INIT;
+		tix_pack d;
+		tix_status st = tix_pack_decode(cases[i].pack, strlen(cases[i].pack), TIX_HASH_SHA1, &d, &e);
+		tix_status want = cases[i].want == TIX_ERR_UNKNOWN_OK ? TIX_OK : cases[i].want;
+		tk_checks++;
+		if (st != want)
+			tk_fail(__FILE__, __LINE__, "case '%s': got %s (want %s) %s", cases[i].what,
+				tix_status_name(st), tix_status_name(want), e.msg);
+		if (!st)
+			tix_pack_free(&d);
+	}
+}
+
 int main(void)
 {
+	test_baseline_ops();
 	test_round_trip();
 	test_identity_and_unknown();
 	test_rejects();

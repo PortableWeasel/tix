@@ -379,6 +379,7 @@ static char **create_nonce(tix_op *op)
 	case TIX_OP_IDENTITY_CREATE: return &op->u.identity_create.nonce;
 	case TIX_OP_RESOURCE_CREATE: return &op->u.resource_create.nonce;
 	case TIX_OP_CALENDAR_CREATE: return &op->u.calendar_create.nonce;
+	case TIX_OP_BASELINE_CREATE: return &op->u.baseline_create.nonce;
 	default: TIX_REQUIRE(!"not a create op"); return NULL;
 	}
 }
@@ -964,3 +965,75 @@ tix_status tix_calendar_create(tix_repo *r, const char *name, tix_oid *out, tix_
 	tix_op_free(&op);
 	return st;
 }
+
+/* ---- baselines (architecture §14.2) ------------------------------------------------- */
+
+tix_status tix_baseline_take(tix_repo *r, const char *name, const tix_oid *root, tix_date today, tix_oid *out,
+			     size_t *ntasks, tix_error *err)
+{
+	TIX_REQUIRE(r && name && out && tix_date_valid(today));
+	if (tix_oid_is_null(&r->identity))
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no identity configured (create one with `tix id new`)");
+	tix_plan_result pr;
+	tix_status st = tix_plan(r, root, today, &pr, err);
+	if (st)
+		return st;
+	const tix_schedule *s = pr.schedule;
+	size_t n = s->ntasks + 1;
+	tix_op *ops = tix_xcalloc(n, sizeof(*ops));
+	ops[0] = tix_op_baseline_create(NULL, name, today, root);
+	fill_nonce(r, create_nonce(&ops[0]));
+	for (size_t i = 0; i < s->ntasks; i++) {
+		const tix_plan_task *t = &s->tasks[i];
+		ops[i + 1] = tix_op_baseline_task(&t->ticket->id, t->scheduled ? t->start : TIX_DATE_NONE,
+						  t->scheduled ? t->finish : TIX_DATE_NONE, t->duration, t->effort,
+						  t->currency ? t->cost : -1, t->currency);
+	}
+	/* a chain of packs (TIX_PACK_MAX_OPS each), then one ref update: all or nothing */
+	tix_oid prev, head;
+	uint64_t lamport;
+	for (size_t at = 0; at < n && !st; at += TIX_PACK_MAX_OPS) {
+		size_t k = n - at < TIX_PACK_MAX_OPS ? n - at : TIX_PACK_MAX_OPS;
+		st = core_write_pack(r, TIX_ENTITY_BASELINE, &r->identity, at ? &prev : NULL, at ? 1 : 0, ops + at, k,
+				     &head, &lamport, err);
+		if (!st) {
+			if (!at)
+				*out = head;
+			prev = head;
+			core_clock_see(r, lamport);
+		}
+	}
+	if (!st) {
+		char ref[128];
+		core_ref_of(TIX_ENTITY_BASELINE, out, ref, sizeof(ref));
+		st = tix_store_ref_cas(r->store, ref, NULL, &head, err);
+	}
+	if (!st)
+		st = core_clock_save(r, err);
+	if (!st && ntasks)
+		*ntasks = s->ntasks;
+	for (size_t i = 0; i < n; i++)
+		tix_op_free(&ops[i]);
+	free(ops);
+	tix_plan_result_free(&pr);
+	return st;
+}
+
+static int cmp_baseline(const void *pa, const void *pb)
+{
+	const tix_entity *a = *(tix_entity *const *)pa, *b = *(tix_entity *const *)pb;
+	if (a->u.baseline.taken != b->u.baseline.taken)
+		return a->u.baseline.taken > b->u.baseline.taken ? -1 : 1;
+	if (a->created != b->created)
+		return a->created > b->created ? -1 : 1;
+	return tix_oid_cmp(&a->id, &b->id);
+}
+
+tix_status tix_baseline_list(tix_repo *r, tix_entity_list *out, tix_error *err)
+{
+	tix_status st = list_all(r, TIX_ENTITY_BASELINE, out, err);
+	if (!st && out->n)
+		qsort(out->v, out->n, sizeof(*out->v), cmp_baseline);
+	return st;
+}
+

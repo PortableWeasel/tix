@@ -616,11 +616,82 @@ static void fold_identity(const ctx *c, const op_ref *ops, size_t n, tix_identit
 	free(rems.v);
 }
 
+static int cmp_baseline_task(const void *pa, const void *pb)
+{
+	return tix_oid_cmp(&((const tix_baseline_task *)pa)->ticket, &((const tix_baseline_task *)pb)->ticket);
+}
+
+static const tix_baseline_task *order_ctx; /* qsort context; single-threaded */
+
+static int cmp_task_index(const void *pa, const void *pb)
+{
+	size_t a = *(const size_t *)pa, b = *(const size_t *)pb;
+	int c = tix_oid_cmp(&order_ctx[a].ticket, &order_ctx[b].ticket);
+	return c ? c : (a > b) - (a < b);
+}
+
+/* ops arrive in total order, so a later "task" op for a ticket replaces an earlier one. */
+static void fold_baseline(const op_ref *ops, size_t n, tix_baseline *b)
+{
+	TIX_VEC(tix_baseline_task) v = {0};
+	for (size_t i = 0; i < n; i++) {
+		const tix_op *op = ops[i].op;
+		switch (op->kind) {
+		case TIX_OP_BASELINE_CREATE:
+			b->name = tix_xstrdup(op->u.baseline_create.name);
+			b->taken = op->u.baseline_create.taken;
+			b->root = op->u.baseline_create.root;
+			break;
+		case TIX_OP_BASELINE_SET_NAME:
+			free(b->name);
+			b->name = tix_xstrdup(op->u.text.value);
+			break;
+		case TIX_OP_BASELINE_TASK: {
+			const tix_baseline_task_op *t = &op->u.baseline_task;
+			tix_baseline_task x = {t->ticket, t->start, t->finish, t->duration, t->effort, t->cost,
+					       t->currency ? tix_xstrdup(t->currency) : NULL};
+			TIX_VEC_PUSH(&v, x);
+			break;
+		}
+		default:
+			break;
+		}
+	}
+	/* by ticket, then by position in total order (qsort isn't stable); keep the last */
+	order_ctx = v.v;
+	size_t *idx = tix_xcalloc(v.n ? v.n : 1, sizeof(*idx));
+	for (size_t i = 0; i < v.n; i++)
+		idx[i] = i;
+	if (v.n)
+		qsort(idx, v.n, sizeof(*idx), cmp_task_index);
+	tix_baseline_task *out = tix_xcalloc(v.n ? v.n : 1, sizeof(*out));
+	size_t keep = 0;
+	for (size_t k = 0; k < v.n; k++) {
+		tix_baseline_task *t = &v.v[idx[k]];
+		if (keep && tix_oid_eq(&out[keep - 1].ticket, &t->ticket)) {
+			free(out[keep - 1].currency);
+			out[keep - 1] = *t;
+		} else {
+			out[keep++] = *t;
+		}
+	}
+	free(idx);
+	free(v.v);
+	b->tasks = out;
+	b->ntasks = keep;
+}
+
+const tix_baseline_task *tix_baseline_find(const tix_baseline *b, const tix_oid *ticket)
+{
+	tix_baseline_task key = {.ticket = *ticket};
+	return b->ntasks ? bsearch(&key, b->tasks, b->ntasks, sizeof(*b->tasks), cmp_baseline_task) : NULL;
+}
+
 tix_status tix_replay(tix_entity_type type, const tix_dag_node *nodes, size_t n, tix_entity **out,
 		      tix_error *err)
 {
 	TIX_REQUIRE(out && (nodes || !n));
-	TIX_REQUIRE(type >= TIX_ENTITY_IDENTITY && type <= TIX_ENTITY_CALENDAR);
+	TIX_REQUIRE(type >= TIX_ENTITY_IDENTITY && type <= TIX_ENTITY_BASELINE);
 	*out = NULL;
 	if (n == 0 || n > TIX_ENTITY_MAX_COMMITS)
 		return tix_error_set(err, TIX_ERR_INVALID, "entity has %zu commits", n);
@@ -675,6 +746,7 @@ tix_status tix_replay(tix_entity_type type, const tix_dag_node *nodes, size_t n,
 	case TIX_ENTITY_IDENTITY: fold_identity(&c, ops.v, ops.n, &e->u.identity); break;
 	case TIX_ENTITY_RESOURCE: fold_resource(&c, ops.v, ops.n, &e->u.resource); break;
 	case TIX_ENTITY_CALENDAR: fold_calendar(&c, ops.v, ops.n, &e->u.calendar); break;
+	case TIX_ENTITY_BASELINE: fold_baseline(ops.v, ops.n, &e->u.baseline); break;
 	}
 	free(ops.v);
 	ctx_free(&c);
@@ -705,6 +777,11 @@ void tix_entity_free(tix_entity *e)
 		for (size_t i = 0; i < e->u.calendar.nexceptions; i++)
 			free(e->u.calendar.exceptions[i].note);
 		free(e->u.calendar.exceptions);
+	} else if (e->type == TIX_ENTITY_BASELINE) {
+		free(e->u.baseline.name);
+		for (size_t i = 0; i < e->u.baseline.ntasks; i++)
+			free(e->u.baseline.tasks[i].currency);
+		free(e->u.baseline.tasks);
 	} else {
 		tix_identity *id = &e->u.identity;
 		free(id->name);
@@ -870,6 +947,26 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out)
 			tix_jw_key(&w, "working");
 			tix_jw_bool(&w, cal->exceptions[i].working);
 			snap_str(&w, "note", cal->exceptions[i].note);
+			tix_jw_obj_end(&w);
+		}
+		tix_jw_arr_end(&w);
+	} else if (e->type == TIX_ENTITY_BASELINE) {
+		const tix_baseline *b = &e->u.baseline;
+		snap_str(&w, "name", b->name);
+		snap_date(&w, "taken", b->taken);
+		snap_id(&w, "root", &b->root);
+		tix_jw_key(&w, "tasks");
+		tix_jw_arr_begin(&w);
+		for (size_t i = 0; i < b->ntasks; i++) {
+			const tix_baseline_task *t = &b->tasks[i];
+			tix_jw_obj_begin(&w);
+			snap_id(&w, "ticket", &t->ticket);
+			snap_date(&w, "start", t->start);
+			snap_date(&w, "finish", t->finish);
+			snap_int(&w, "duration", t->duration);
+			snap_int(&w, "effort", t->effort);
+			snap_int(&w, "cost", t->cost);
+			snap_str(&w, "currency", t->currency);
 			tix_jw_obj_end(&w);
 		}
 		tix_jw_arr_end(&w);

@@ -61,6 +61,8 @@ typedef struct tix_plan_task {
 	int64_t effort;                   /* hours (summaries: rolled up), -1 unknown */
 	int progress;                     /* percent (summaries: effort-weighted) */
 	tix_date actual_start, actual_finish; /* explicit, else derived from status changes */
+	int64_t cost;          /* minor currency units from rated assignments (summaries: summed); -1 unknown */
+	const char *currency;  /* of cost (BORROWED from a resource); NULL when unknown or mixed */
 } tix_plan_task;
 
 typedef struct tix_plan_diag {
@@ -98,6 +100,25 @@ typedef struct tix_schedule {
  */
 tix_status tix_plan_compute(const tix_plan_input *in, tix_schedule **out, tix_error *err);
 void tix_schedule_free(tix_schedule *s);
+
+/* How a task moved since a baseline (architecture §14.2). Slips are in the task's
+ * working days, positive = later than baselined. */
+typedef struct tix_plan_variance {
+	bool baselined;      /* the baseline has this task (false: added since) */
+	bool dates;          /* both were scheduled: the slips are valid */
+	int32_t start_slip, finish_slip;
+	tix_date start, finish;     /* the baseline's dates (TIX_DATE_NONE if it had none) */
+	int64_t duration, effort, cost; /* the baseline's values (-1 unknown) */
+	const char *currency;           /* the baseline's (BORROWED from it) */
+	bool has_duration, has_effort, has_cost; /* both sides known (cost: same currency) */
+	int64_t duration_delta, effort_delta, cost_delta;
+} tix_plan_variance;
+
+/*
+ * Compares s with baseline b: out[i] describes s->tasks[i] (REQUIRES out has s->ntasks
+ * entries). RETURNS how many baselined tasks are no longer in the plan. Pure.
+ */
+size_t tix_plan_compare(const tix_schedule *s, const tix_baseline *b, tix_plan_variance *out);
 
 /* Working-day test for a calendar entity (NULL = built-in Mon-Fri). Later
  * exceptions win where they overlap. */

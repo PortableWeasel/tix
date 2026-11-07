@@ -530,8 +530,73 @@ static void test_rank(void)
 	tix_buf_free(&b);
 }
 
+/* Baselines: snapshots that sync; for one ticket the last task op in total order wins,
+ * and every clone ends up with the same snapshot after merging. */
+static void test_baseline(void)
+{
+	tix_sim_clone a, b;
+	new_clone(&a, "a", "Ada");
+	new_clone(&b, "b", "Bob");
+	tix_oid t1 = new_ticket(&a, "One", NULL), t2 = new_ticket(&a, "Two", NULL), bl;
+	tix_date d1, d2;
+	TIX_REQUIRE(tix_date_parse("2026-11-09", &d1) && tix_date_parse("2026-11-12", &d2));
+	char nonce[TIX_NONCE_HEX + 1];
+	tix_op ops[] = {
+		tix_op_baseline_create(tix_sim_nonce(&a, nonce), "v1", d1, NULL),
+		tix_op_baseline_task(&t2, d1, d2, 4, 32, 1000, "EUR"),
+		tix_op_baseline_task(&t1, d1, d1, 1, -1, -1, NULL),
+	};
+	TK_OK(tix_sim_create(&a, TIX_ENTITY_BASELINE, ops, 3, &bl, &e), &e);
+	for (int i = 0; i < 3; i++)
+		tix_op_free(&ops[i]);
+	sync_both(&a, &b);
+	/* concurrently: a corrects t1, b renames; then a later correction from b wins for t1 */
+	tix_op fix = tix_op_baseline_task(&t1, d1, d2, 4, -1, -1, NULL);
+	TK_OK(tix_sim_apply(&a, TIX_ENTITY_BASELINE, &bl, &fix, 1, &e), &e);
+	tix_op_free(&fix);
+	tix_op ren = tix_op_text(TIX_OP_BASELINE_SET_NAME, "v1 (approved)");
+	TK_OK(tix_sim_apply(&b, TIX_ENTITY_BASELINE, &bl, &ren, 1, &e), &e);
+	tix_op_free(&ren);
+	tix_op later = tix_op_baseline_task(&t1, d2, d2, 1, -1, -1, NULL);
+	TK_OK(tix_sim_apply(&b, TIX_ENTITY_BASELINE, &bl, &later, 1, &e), &e);
+	tix_op_free(&later);
+	sync_both(&a, &b);
+	tix_entity *ea = load(&a, TIX_ENTITY_BASELINE, &bl), *eb = load(&b, TIX_ENTITY_BASELINE, &bl);
+	TK_CHECK(ea && eb);
+	if (ea && eb) {
+		const tix_baseline *x = &ea->u.baseline;
+		TK_STR_EQ(x->name, "v1 (approved)");
+		TK_CHECK(x->taken == d1 && tix_oid_is_null(&x->root) && x->ntasks == 2);
+		const tix_baseline_task *k1 = tix_baseline_find(x, &t1), *k2 = tix_baseline_find(x, &t2);
+		TK_CHECK(k1 && k1->start == d2 && k1->duration == 1); /* b's later op */
+		TK_CHECK(k2 && k2->cost == 1000 && !strcmp(k2->currency, "EUR") && k2->effort == 32);
+		tix_buf sa = TIX_BUF_INIT, sb = TIX_BUF_INIT;
+		tix_entity_snapshot(ea, &sa);
+		tix_entity_snapshot(eb, &sb);
+		TK_STR_EQ(tix_buf_cstr(&sa), tix_buf_cstr(&sb));
+		/* the cache codec round-trips it */
+		tix_buf enc = TIX_BUF_INIT, sc = TIX_BUF_INIT;
+		tix_entity *dec = NULL;
+		tix_entity_encode(ea, &enc);
+		TK_OK(tix_entity_decode(enc.data, enc.len, TIX_HASH_SHA1, &dec, &e), &e);
+		if (dec)
+			tix_entity_snapshot(dec, &sc);
+		TK_STR_EQ(tix_buf_cstr(&sc), tix_buf_cstr(&sa));
+		tix_entity_free(dec);
+		tix_buf_free(&enc);
+		tix_buf_free(&sc);
+		tix_buf_free(&sa);
+		tix_buf_free(&sb);
+	}
+	tix_entity_free(ea);
+	tix_entity_free(eb);
+	tix_sim_clone_free(&a);
+	tix_sim_clone_free(&b);
+}
+
 int main(void)
 {
+	test_baseline();
 	test_lifecycle();
 	test_concurrent_lww();
 	test_or_set();

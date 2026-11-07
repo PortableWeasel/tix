@@ -36,6 +36,9 @@ static const op_name op_names[] = {
 	{TIX_ENTITY_CALENDAR, TIX_OP_CALENDAR_CREATE, "create"},
 	{TIX_ENTITY_CALENDAR, TIX_OP_EXCEPTION_ADD, "exception-add"},
 	{TIX_ENTITY_CALENDAR, TIX_OP_EXCEPTION_REMOVE, "exception-remove"},
+	{TIX_ENTITY_BASELINE, TIX_OP_BASELINE_CREATE, "create"},
+	{TIX_ENTITY_BASELINE, TIX_OP_BASELINE_SET_NAME, "set-name"},
+	{TIX_ENTITY_BASELINE, TIX_OP_BASELINE_TASK, "task"},
 };
 
 /* Set-field ops, by (type, name). */
@@ -306,6 +309,40 @@ static tix_status check_op(tix_entity_type type, const tix_op *op, tix_error *er
 			return check_str("note", op->u.exception_add.note, 0, TIX_TITLE_MAX, false, err);
 		return TIX_OK;
 	}
+	case TIX_OP_BASELINE_CREATE:
+		if ((st = check_nonce(op->u.baseline_create.nonce, err)) ||
+		    (st = check_str("name", op->u.baseline_create.name, 1, TIX_NAME_MAX, false, err)))
+			return st;
+		if (!tix_date_valid(op->u.baseline_create.taken))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad baseline date");
+		return TIX_OK;
+	case TIX_OP_BASELINE_SET_NAME:
+		return check_str("name", op->u.text.value, 1, TIX_NAME_MAX, false, err);
+	case TIX_OP_BASELINE_TASK: {
+		const tix_baseline_task_op *b = &op->u.baseline_task;
+		if ((st = check_id("ticket", &b->ticket, err)))
+			return st;
+		if ((b->start != TIX_DATE_NONE && !tix_date_valid(b->start)) ||
+		    (b->finish != TIX_DATE_NONE && !tix_date_valid(b->finish)) ||
+		    (b->start == TIX_DATE_NONE) != (b->finish == TIX_DATE_NONE) ||
+		    (b->start != TIX_DATE_NONE && b->finish < b->start))
+			return tix_error_set(err, TIX_ERR_INVALID, "baseline task dates must both be set, start <= finish");
+		if (b->duration < -1 || b->duration > TIX_DURATION_MAX || b->effort < -1 || b->effort > TIX_EFFORT_MAX ||
+		    b->cost < -1 || b->cost > TIX_COST_MAX)
+			return tix_error_set(err, TIX_ERR_INVALID, "baseline task number out of range");
+		if (b->currency) {
+			size_t len = strlen(b->currency);
+			if (!len || len > TIX_CURRENCY_MAX)
+				return tix_error_set(err, TIX_ERR_INVALID, "bad currency");
+			for (size_t i = 0; i < len; i++)
+				if (!((b->currency[i] >= 'A' && b->currency[i] <= 'Z') ||
+				      (b->currency[i] >= 'a' && b->currency[i] <= 'z')))
+					return tix_error_set(err, TIX_ERR_INVALID, "bad currency");
+		}
+		if ((b->cost < 0) != !b->currency)
+			return tix_error_set(err, TIX_ERR_INVALID, "a baseline cost needs a currency, and only a cost");
+		return TIX_OK;
+	}
 	case TIX_OP_SET_FIELD:
 	case TIX_OP_UNKNOWN:
 		break;
@@ -315,7 +352,7 @@ static tix_status check_op(tix_entity_type type, const tix_op *op, tix_error *er
 
 static tix_status check_header(const tix_pack *p, tix_error *err)
 {
-	if (p->type < TIX_ENTITY_IDENTITY || p->type > TIX_ENTITY_CALENDAR)
+	if (p->type < TIX_ENTITY_IDENTITY || p->type > TIX_ENTITY_BASELINE)
 		return tix_error_set(err, TIX_ERR_INVALID, "bad entity type");
 	if (p->lamport < 1 || p->lamport > TIX_LAMPORT_MAX)
 		return tix_error_set(err, TIX_ERR_INVALID, "lamport out of range");
@@ -375,6 +412,35 @@ static void put_date(tix_jw *w, const char *k, tix_date d)
 {
 	char s[TIX_DATE_STR];
 	put_kv(w, k, tix_date_str(d, s));
+}
+
+static void put_id_or_null(tix_jw *w, const char *k, const tix_oid *id)
+{
+	if (tix_oid_is_null(id)) {
+		tix_jw_key(w, k);
+		tix_jw_null(w);
+	} else {
+		put_id(w, k, id);
+	}
+}
+
+static void put_date_or_null(tix_jw *w, const char *k, tix_date d)
+{
+	if (d == TIX_DATE_NONE) {
+		tix_jw_key(w, k);
+		tix_jw_null(w);
+	} else {
+		put_date(w, k, d);
+	}
+}
+
+static void put_int_or_null(tix_jw *w, const char *k, int64_t v)
+{
+	tix_jw_key(w, k);
+	if (v < 0)
+		tix_jw_null(w);
+	else
+		tix_jw_int(w, v);
 }
 
 static void put_value(tix_jw *w, tix_field f, const tix_value *v)
@@ -472,6 +538,26 @@ static void encode_op(const tix_op *op, tix_buf *out)
 	case TIX_OP_EXCEPTION_REMOVE:
 		put_date(&w, "from", op->u.exception_remove.from);
 		put_date(&w, "to", op->u.exception_remove.to);
+		break;
+	case TIX_OP_BASELINE_CREATE:
+		put_kv(&w, "nonce", op->u.baseline_create.nonce);
+		put_kv(&w, "name", op->u.baseline_create.name);
+		put_date(&w, "taken", op->u.baseline_create.taken);
+		put_id_or_null(&w, "root", &op->u.baseline_create.root);
+		break;
+	case TIX_OP_BASELINE_SET_NAME: put_kv(&w, "name", op->u.text.value); break;
+	case TIX_OP_BASELINE_TASK:
+		put_id(&w, "ticket", &op->u.baseline_task.ticket);
+		put_date_or_null(&w, "start", op->u.baseline_task.start);
+		put_date_or_null(&w, "finish", op->u.baseline_task.finish);
+		put_int_or_null(&w, "duration", op->u.baseline_task.duration);
+		put_int_or_null(&w, "effort", op->u.baseline_task.effort);
+		put_int_or_null(&w, "cost", op->u.baseline_task.cost);
+		tix_jw_key(&w, "currency");
+		if (op->u.baseline_task.currency)
+			tix_jw_str(&w, op->u.baseline_task.currency);
+		else
+			tix_jw_null(&w);
 		break;
 	case TIX_OP_UNKNOWN: TIX_REQUIRE(!"unknown op"); break;
 	}
@@ -600,6 +686,34 @@ static bool get_date(const cJSON *o, const char *key, tix_date *out)
 {
 	const char *s = get_str(o, key);
 	return s && tix_date_parse(s, out);
+}
+
+/* null -> null oid / TIX_DATE_NONE / -1; anything else must parse. */
+static bool get_id_or_null(const cJSON *o, const char *key, tix_hash_algo algo, tix_oid *out)
+{
+	if (cJSON_IsNull(cJSON_GetObjectItemCaseSensitive(o, key))) {
+		memset(out, 0, sizeof(*out));
+		return true;
+	}
+	return get_id(o, key, algo, out);
+}
+
+static bool get_date_or_null(const cJSON *o, const char *key, tix_date *out)
+{
+	if (cJSON_IsNull(cJSON_GetObjectItemCaseSensitive(o, key))) {
+		*out = TIX_DATE_NONE;
+		return true;
+	}
+	return get_date(o, key, out);
+}
+
+static bool get_int_or_null(const cJSON *o, const char *key, int64_t max, int64_t *out)
+{
+	if (cJSON_IsNull(cJSON_GetObjectItemCaseSensitive(o, key))) {
+		*out = -1;
+		return true;
+	}
+	return get_int(o, key, 0, max, out);
 }
 
 /* Reads field f's value; the canonical check afterwards rejects any other form. */
@@ -813,6 +927,26 @@ static tix_status fill_op(const cJSON *j, tix_op *op, tix_hash_algo algo, tix_er
 		if (!get_date(j, "from", &op->u.exception_remove.from) || !get_date(j, "to", &op->u.exception_remove.to))
 			return tix_error_set(err, TIX_ERR_INVALID, "bad exception");
 		return TIX_OK;
+	case TIX_OP_BASELINE_CREATE:
+		op->u.baseline_create.nonce = dup_str(j, "nonce");
+		op->u.baseline_create.name = dup_str(j, "name");
+		if (!get_date(j, "taken", &op->u.baseline_create.taken) ||
+		    !get_id_or_null(j, "root", algo, &op->u.baseline_create.root))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad baseline");
+		return TIX_OK;
+	case TIX_OP_BASELINE_SET_NAME: op->u.text.value = dup_str(j, "name"); return TIX_OK;
+	case TIX_OP_BASELINE_TASK: {
+		tix_baseline_task_op *b = &op->u.baseline_task;
+		const cJSON *cur = cJSON_GetObjectItemCaseSensitive(j, "currency");
+		if (!get_id(j, "ticket", algo, &b->ticket) || !get_date_or_null(j, "start", &b->start) ||
+		    !get_date_or_null(j, "finish", &b->finish) ||
+		    !get_int_or_null(j, "duration", TIX_DURATION_MAX, &b->duration) ||
+		    !get_int_or_null(j, "effort", TIX_EFFORT_MAX, &b->effort) ||
+		    !get_int_or_null(j, "cost", TIX_COST_MAX, &b->cost) || !(cJSON_IsNull(cur) || cJSON_IsString(cur)))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad baseline task");
+		b->currency = cJSON_IsString(cur) ? tix_xstrdup(cur->valuestring) : NULL;
+		return TIX_OK;
+	}
 	case TIX_OP_UNKNOWN: break;
 	}
 	return tix_error_set(err, TIX_ERR_INVALID, "unhandled op");

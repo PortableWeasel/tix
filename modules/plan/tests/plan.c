@@ -407,6 +407,92 @@ static void test_fixed_dates_on_non_working_days(void)
 	world_free(&w);
 }
 
+static int cmp_bt(const void *x, const void *y)
+{
+	return tix_oid_cmp(&((const tix_baseline_task *)x)->ticket, &((const tix_baseline_task *)y)->ticket);
+}
+
+static void rate(tix_entity *r, int64_t minor_per_hour, const char *currency)
+{
+	r->u.resource.rate = minor_per_hour;
+	free(r->u.resource.currency);
+	r->u.resource.currency = tix_xstrdup(currency);
+}
+
+/* Cost: hours x hourly rate per rated assignment; summaries sum one currency. */
+static void test_costs(void)
+{
+	world w = {0};
+	tix_entity *dev = add(&w, resource(200, "Dev", 100)), *crew = add(&w, resource(201, "Crew", 300));
+	tix_entity *free_res = add(&w, resource(202, "Volunteer", 100)), *usd = add(&w, resource(203, "Contractor", 100));
+	rate(dev, 8000, "EUR");   /* 80.00/h */
+	rate(crew, 5000, "EUR");  /* per person-hour: capacity 300% is three people */
+	rate(usd, 10000, "USD");
+	tix_entity *root = add(&w, task(1, "Project", -1)), *a = add(&w, task(2, "By duration", 3));
+	tix_entity *b = add(&w, task(3, "By effort, shared", -1)), *c = add(&w, task(4, "Unrated only", 2));
+	tix_entity *d = add(&w, task(5, "Two currencies", 1)), *other = add(&w, task(6, "Other root", 2));
+	a->u.ticket.plan.parent = b->u.ticket.plan.parent = c->u.ticket.plan.parent = root->id;
+	assign(a, dev, 50);                /* 3 d x 8 h x 50% = 12 h x 80 = 960.00 */
+	b->u.ticket.plan.effort = 40;
+	assign(b, dev, 100);               /* weight 100x100 */
+	assign(b, crew, 100);              /* weight 100x300: 30 h x 50 = 1500.00; dev 10 h = 800.00 */
+	assign(c, free_res, 100);
+	d->u.ticket.plan.parent = other->id;
+	assign(d, dev, 100);
+	assign(d, usd, 100);
+	tix_entity *e2 = add(&w, task(7, "USD only", 1));
+	e2->u.ticket.plan.parent = other->id;
+	assign(e2, usd, 100);
+	tix_schedule *s = run(&w, NULL, "2026-11-09");
+	TK_CHECK(get(s, a)->cost == 96000 && !strcmp(get(s, a)->currency, "EUR"));
+	TK_CHECK(get(s, b)->cost == 230000);
+	TK_CHECK(get(s, c)->cost == -1 && !get(s, c)->currency);  /* nothing rated */
+	TK_CHECK(get(s, root)->cost == 326000 && !strcmp(get(s, root)->currency, "EUR"));
+	TK_CHECK(get(s, d)->cost == -1 && !get(s, d)->currency);  /* EUR + USD on one task */
+	TK_CHECK(get(s, e2)->cost == 80000 && !strcmp(get(s, e2)->currency, "USD"));
+	TK_CHECK(get(s, other)->cost == -1);                       /* a mixed child: unknown */
+	tix_schedule_free(s);
+	world_free(&w);
+}
+
+/* Variance against a baseline: working-day slips, deltas, added and removed tasks. */
+static void test_compare(void)
+{
+	world w = {0};
+	tix_entity *dev = add(&w, resource(200, "Dev", 100));
+	rate(dev, 1000, "EUR");
+	tix_entity *a = add(&w, task(1, "A", 3)), *b = add(&w, task(2, "B", 2)), *n = add(&w, task(3, "New", 1));
+	dep(b, a, TIX_DEP_FS, 0);
+	assign(a, dev, 100);
+	tix_schedule *s = run(&w, NULL, "2026-11-09"); /* A Mon-Wed, B Thu-Fri */
+	tix_baseline bl = {.name = "v1", .taken = D("2026-11-02")};
+	tix_baseline_task tasks[3] = {
+		{a->id, D("2026-11-09"), D("2026-11-10"), 2, -1, 16000, "EUR"},  /* A was 2 days */
+		{b->id, D("2026-11-11"), D("2026-11-12"), 2, -1, -1, NULL},
+		{oid(99), D("2026-11-09"), D("2026-11-09"), 1, -1, -1, NULL},    /* since deleted */
+	};
+	/* the baseline's tasks are sorted by ticket id, as replay leaves them */
+	qsort(tasks, 3, sizeof(*tasks), cmp_bt);
+	bl.tasks = tasks;
+	bl.ntasks = 3;
+	tix_plan_variance v[3];
+	TK_CHECK(tix_plan_compare(s, &bl, v) == 1);
+	size_t ia = tix_schedule_find(s, &a->id), ib = tix_schedule_find(s, &b->id), in = tix_schedule_find(s, &n->id);
+	TK_CHECK(v[ia].baselined && v[ia].dates && v[ia].start_slip == 0 && v[ia].finish_slip == 1);
+	TK_CHECK(v[ia].has_duration && v[ia].duration_delta == 1);
+	TK_CHECK(v[ia].has_cost && v[ia].cost_delta == 24000 - 16000);
+	TK_CHECK(v[ib].start_slip == 1 && v[ib].finish_slip == 1 && !v[ib].has_cost);
+	TK_CHECK(!v[in].baselined && !v[in].dates);
+	/* across a weekend: Fri -> Mon is one working day, not three */
+	tasks[0].start = tasks[0].finish = D("2026-11-06");
+	qsort(tasks, 3, sizeof(*tasks), cmp_bt);
+	TK_CHECK(tix_plan_compare(s, &bl, v) == 1);
+	ia = tix_schedule_find(s, &a->id);
+	TK_CHECK(v[ia].start_slip == 1);
+	tix_schedule_free(s);
+	world_free(&w);
+}
+
 static void test_effort_and_load(void)
 {
 	world w = {0};
@@ -496,6 +582,8 @@ int main(void)
 	test_manual_actuals_deadline();
 	test_fixed_span_without_duration();
 	test_fixed_dates_on_non_working_days();
+	test_costs();
+	test_compare();
 	test_effort_and_load();
 	test_determinism();
 	return tk_finish();

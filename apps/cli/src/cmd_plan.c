@@ -71,6 +71,7 @@ typedef struct plan_args {
 	tix_date today;
 	bool gantt, critical, load;
 	const char *format;
+	const char *baseline;
 } plan_args;
 
 static int parse_plan_args(int argc, char **argv, plan_args *a, bool allow_views, bool want_format)
@@ -89,6 +90,8 @@ static int parse_plan_args(int argc, char **argv, plan_args *a, bool allow_views
 			a->load = true;
 		} else if (want_format && !strcmp(argv[i], "--format") && need_value(i, argc, argv[i])) {
 			a->format = argv[++i];
+		} else if (!strcmp(argv[i], "--baseline") && need_value(i, argc, argv[i])) {
+			a->baseline = argv[++i];
 		} else if (argv[i][0] != '-' && !a->root) {
 			a->root = argv[i];
 		} else {
@@ -108,6 +111,65 @@ static int run_plan(cli *c, const plan_args *a, tix_plan_result *out)
 	}
 	tix_status st = tix_plan(c->repo, a->root ? &root : NULL, a->today, out, &c->err);
 	return st ? cli_fail(c, st) : EXIT_OK;
+}
+
+/* --baseline B: the comparison, one entry per task (*v NULL without --baseline). */
+typedef struct compare {
+	tix_entity *baseline;
+	tix_plan_variance *v;
+	size_t removed;
+} compare;
+
+static int load_compare(cli *c, const plan_args *a, const tix_schedule *s, compare *cmp)
+{
+	memset(cmp, 0, sizeof(*cmp));
+	if (!a->baseline)
+		return EXIT_OK;
+	tix_oid id;
+	int rc = cli_resolve(c, TIX_ENTITY_BASELINE, a->baseline, &id);
+	if (rc)
+		return rc;
+	tix_status st = tix_entity_load(c->repo, TIX_ENTITY_BASELINE, &id, &cmp->baseline, &c->err);
+	if (st)
+		return cli_fail(c, st);
+	cmp->v = tix_xcalloc(s->ntasks ? s->ntasks : 1, sizeof(*cmp->v));
+	cmp->removed = tix_plan_compare(s, &cmp->baseline->u.baseline, cmp->v);
+	return EXIT_OK;
+}
+
+static void compare_free(compare *cmp)
+{
+	tix_entity_free(cmp->baseline);
+	free(cmp->v);
+}
+
+/* "+2", "-1", "0"; "new" when not baselined; "-" without dates. */
+static const char *slip_text(const tix_plan_variance *v, char *buf)
+{
+	if (!v->baselined)
+		return "new";
+	if (!v->dates)
+		return "-";
+	snprintf(buf, 16, v->finish_slip > 0 ? "+%d" : "%d", (int)v->finish_slip);
+	return buf;
+}
+
+static void compare_summary(const tix_schedule *s, const compare *cmp)
+{
+	size_t later = 0, earlier = 0, added = 0;
+	for (size_t i = 0; i < s->ntasks; i++) {
+		const tix_plan_variance *v = &cmp->v[i];
+		if (!v->baselined)
+			added++;
+		else if (v->dates && v->finish_slip > 0)
+			later++;
+		else if (v->dates && v->finish_slip < 0)
+			earlier++;
+	}
+	char d[TIX_DATE_STR];
+	const tix_baseline *b = &cmp->baseline->u.baseline;
+	printf("baseline \"%s\" (%s): %zu finish later, %zu earlier, %zu new, %zu removed since\n", b->name,
+	       tix_date_str(b->taken, d), later, earlier, added, cmp->removed);
 }
 
 static void print_diags(const tix_schedule *s)
@@ -158,7 +220,12 @@ int cmd_wbs(cli *c, int argc, char **argv)
 	if (rc || (rc = run_plan(c, &a, &pr)))
 		return rc;
 	const tix_schedule *s = pr.schedule;
-	char id[16], d1[TIX_DATE_STR], d2[TIX_DATE_STR];
+	compare cmp;
+	if ((rc = load_compare(c, &a, s, &cmp))) {
+		tix_plan_result_free(&pr);
+		return rc;
+	}
+	char id[16], d1[TIX_DATE_STR], d2[TIX_DATE_STR], sl[16];
 	for (size_t i = 0; i < s->ntasks; i++) {
 		const tix_plan_task *t = &s->tasks[i];
 		printf("%-10s %s  ", t->wbs, cli_short(&t->ticket->id, id));
@@ -171,19 +238,27 @@ int cmd_wbs(cli *c, int argc, char **argv)
 		printf("  %3d%%", t->progress);
 		if (t->effort >= 0)
 			printf("  %lldh", (long long)t->effort);
+		if (cmp.v)
+			printf("  slip %s", slip_text(&cmp.v[i], sl));
 		putchar('\n');
 	}
+	if (cmp.v)
+		compare_summary(s, &cmp);
 	print_diags(s);
+	compare_free(&cmp);
 	tix_plan_result_free(&pr);
 	return EXIT_OK;
 }
 
 /* ---- plan ----------------------------------------------------------------------------- */
 
-static void plan_table(const tix_schedule *s, bool critical_only)
+static void plan_table(const tix_schedule *s, bool critical_only, const compare *cmp)
 {
-	char id[16], d1[TIX_DATE_STR], d2[TIX_DATE_STR];
-	printf("%-10s %-7s  %-30s  %-10s  %-10s  %5s  %5s\n", "WBS", "ID", "TITLE", "START", "FINISH", "DAYS", "FLOAT");
+	char id[16], d1[TIX_DATE_STR], d2[TIX_DATE_STR], d3[TIX_DATE_STR], sl[16];
+	printf("%-10s %-7s  %-30s  %-10s  %-10s  %5s  %5s", "WBS", "ID", "TITLE", "START", "FINISH", "DAYS", "FLOAT");
+	if (cmp->v)
+		printf("  %-10s  %4s", "BASE FIN", "SLIP");
+	putchar('\n');
 	for (size_t i = 0; i < s->ntasks; i++) {
 		const tix_plan_task *t = &s->tasks[i];
 		if (critical_only && (!t->critical || t->summary))
@@ -191,15 +266,22 @@ static void plan_table(const tix_schedule *s, bool critical_only)
 		printf("%-10s %s  ", t->wbs, cli_short(&t->ticket->id, id));
 		print_title(t, 30, !critical_only);
 		if (!t->scheduled) {
-			printf("  (unscheduled)\n");
+			printf("  (unscheduled)");
+			if (cmp->v)
+				printf("  %-10s  %4s", date_or_dash(cmp->v[i].finish, d3), slip_text(&cmp->v[i], sl));
+			putchar('\n');
 			continue;
 		}
-		printf("  %s  %s  %5lld  %5d%s%s%s\n", date_or_dash(t->start, d1), date_or_dash(t->finish, d2),
-		       (long long)t->duration, (int)t->total_float, t->critical ? "  critical" : "",
-		       t->milestone ? "  milestone" : "", t->late ? "  LATE" : "");
+		printf("  %s  %s  %5lld  %5d", date_or_dash(t->start, d1), date_or_dash(t->finish, d2),
+		       (long long)t->duration, (int)t->total_float);
+		if (cmp->v)
+			printf("  %-10s  %4s", date_or_dash(cmp->v[i].finish, d3), slip_text(&cmp->v[i], sl));
+		printf("%s%s%s\n", t->critical ? "  critical" : "", t->milestone ? "  milestone" : "", t->late ? "  LATE" : "");
 	}
 	if (s->start != TIX_DATE_NONE)
 		printf("\nplan: %s..%s\n", tix_date_str(s->start, d1), tix_date_str(s->finish, d2));
+	if (cmp->v)
+		compare_summary(s, cmp);
 }
 
 /* One column per day (or per week for long plans). */
@@ -280,6 +362,11 @@ int cmd_plan(cli *c, int argc, char **argv)
 	if (rc || (rc = run_plan(c, &a, &pr)))
 		return rc;
 	const tix_schedule *s = pr.schedule;
+	compare cmp;
+	if ((rc = load_compare(c, &a, s, &cmp))) {
+		tix_plan_result_free(&pr);
+		return rc;
+	}
 	if (a.gantt)
 		gantt(s);
 	if (a.load) {
@@ -288,12 +375,13 @@ int cmd_plan(cli *c, int argc, char **argv)
 		load_view(s);
 	}
 	if (!a.gantt && !a.load)
-		plan_table(s, a.critical);
+		plan_table(s, a.critical, &cmp);
 	else if (a.critical) {
 		putchar('\n');
-		plan_table(s, true);
+		plan_table(s, true, &cmp);
 	}
 	print_diags(s);
+	compare_free(&cmp);
 	tix_plan_result_free(&pr);
 	return EXIT_OK;
 }
@@ -312,13 +400,19 @@ int cmd_export(cli *c, int argc, char **argv)
 		return cli_usage("export: --format mermaid|csv|json|mspdi is required");
 	if ((rc = run_plan(c, &a, &pr)))
 		return rc;
+	compare cmp;
+	if ((rc = load_compare(c, &a, pr.schedule, &cmp))) {
+		tix_plan_result_free(&pr);
+		return rc;
+	}
 	tix_buf out = TIX_BUF_INIT;
 	const char *title = NULL;
 	if (a.root && pr.schedule->ntasks)
 		title = pr.schedule->tasks[0].ticket->u.ticket.title;
-	tix_export(pr.schedule, f, title, &out);
+	tix_export_compare(pr.schedule, f, title, cmp.v, &out);
 	fwrite(out.data ? out.data : "", 1, out.len, stdout);
 	print_diags(pr.schedule);
+	compare_free(&cmp);
 	tix_buf_free(&out);
 	tix_plan_result_free(&pr);
 	return EXIT_OK;

@@ -317,5 +317,39 @@ expect 0 "$TIX" edit "$t" --status in-progress
 expect 0 "$TIX" ls --all; first=$(head -1 <<<"$out"); [[ $first == *"in-progress"* ]] || fail "ls: in-progress not first: $out"
 expect 0 "$TIX" ls --all --sort newest; has "$t3"   # order itself: core test_sort (times here share a second)
 
+# ---- baselines: take, compare, export, sync ------------------------------------------
+git init -q "$T/bl" && cd "$T/bl"
+export TIX_TODAY=2026-11-09
+mk() { sed -n 's/^Created [a-z]* //p' <<<"$out"; }
+expect 0 "$TIX" id new --name Ada --email ada@example.org
+expect 0 "$TIX" res new Dev --rate "100.00 EUR"; dev=$(mk)
+expect 0 "$TIX" new -t Proj; proj=$(mk)
+expect 0 "$TIX" new -t Build --parent "$proj" --rank last --duration 3d; build=$(mk)
+expect 0 "$TIX" assign "$build" "$dev"
+expect 0 "$TIX" new -t Ship --parent "$proj" --rank last --duration 1d --dep "+$build"; ship=$(mk)
+expect 2 "$TIX" baseline; has "usage: tix baseline"
+expect 0 "$TIX" baseline take "Plan of record"; has 'Took baseline'; has '"Plan of record": 3 tasks'
+bl=$(sed -n 's/^Took baseline \([0-9a-f]*\) .*/\1/p' <<<"$out")
+expect 0 "$TIX" baseline take "Build only" "$build"; has ": 1 task"
+expect 0 "$TIX" baseline ls; has "$bl  2026-11-09  Plan of record  (3 tasks)"; has "Build only  (1 task, from $build)"
+expect 0 "$TIX" baseline show "$bl"; has "taken:    2026-11-09"; has "$build  2026-11-09..2026-11-11      3        -     2400.00 EUR"
+expect 0 "$TIX" baseline rename "$bl" "Approved"; expect 0 "$TIX" baseline ls; has "Approved"
+expect 0 "$TIX" edit "$build" --duration 5d
+expect 0 "$TIX" new -t Docs --parent "$proj" --rank last --duration 1d
+expect 0 "$TIX" plan --baseline "$bl"; has "BASE FIN    SLIP"
+has "Build                         2026-11-09  2026-11-13      5      0  2026-11-11    +2  critical"
+has "Ship                          2026-11-16  2026-11-16      1      0  2026-11-12    +2"; has "  new"
+has 'baseline "Approved" (2026-11-09): 3 finish later, 0 earlier, 1 new, 0 removed since'
+expect 0 "$TIX" wbs --baseline "$bl"; has "slip +2"; has "slip new"
+expect 0 "$TIX" export --format csv --baseline "$bl"; has "Dev:100%,4000.00,EUR,2026-11-09,2026-11-11,0,2,2,,1600.00"
+expect 0 "$TIX" export --format json --baseline "$bl"; has '"baseline":{"start":"2026-11-09","finish":"2026-11-11"'
+expect 0 "$TIX" export --format mspdi --baseline "$bl"; has "<Baseline><Number>0</Number>"; has "<Cost>400000</Cost>"
+expect 1 "$TIX" plan --baseline "$build"; has "no baseline"
+git init -q --bare "$T/bl.git" && git remote add origin "$T/bl.git"
+expect 0 "$TIX" push
+git clone -q "$T/bl.git" "$T/bl2" 2>/dev/null && cd "$T/bl2"
+expect 0 "$TIX" pull; expect 0 "$TIX" baseline ls; has "Approved"; has "Build only"
+expect 0 "$TIX" baseline show "$bl"; has "2400.00 EUR"
+
 if [ $fails -gt 0 ]; then echo "$fails failure(s)"; exit 1; fi
 echo "cli end-to-end OK"

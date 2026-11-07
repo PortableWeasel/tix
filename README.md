@@ -32,9 +32,10 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
   Gantt editing (drag to move, drag the end to resize, drag the handle to link, arrow
   keys), inline status changes, keyboard shortcuts (`?` lists them) and live refresh when
   the CLI or a sync changes something. Everything still works without it.
-- After v1: MS Project XML export (`tix export --format mspdi`) is done; plan baselines,
-  commit signature enforcement, a Forgejo issue bridge, a TUI and a hosted web mode behind
-  SSO are in progress.
+- After v1, done: MS Project XML export (`tix export --format mspdi`) and plan baselines
+  (`tix baseline take`, then `tix plan --baseline B` shows what slipped; also on the web).
+  In progress: commit signature enforcement, a Forgejo issue bridge, a TUI and a hosted web
+  mode behind SSO.
 
 tix tracks its own work: `tix pull && tix wbs` in a clone of this repo.
 

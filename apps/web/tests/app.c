@@ -880,8 +880,71 @@ static void test_api(void)
 	world_close(&w);
 }
 
+/* §14.2: take, list, compare, export and rename baselines through the forms. */
+static void test_baselines(void)
+{
+	world w;
+	world_open(&w, false);
+	tix_oid t;
+	TK_OK(tix_ticket_create(w.repo, "Task", "", NULL, &t, &e), &e);
+	field(&w, TIX_ENTITY_TICKET, &t, "duration", "3d");
+	client c = new_client(&w);
+	login(&c);
+	TK_CHECK(call(&c, "GET", "/baselines", NULL) == 200);
+	HAS(&c, "No baselines yet.");
+	HAS(&c, "Take a baseline");
+	TK_CHECK(call(&c, "POST", "/baselines", form(&c, "name", "", NULL)) == 422);
+	TK_CHECK(call(&c, "POST", "/baselines", form(&c, "name", "v1 <script>", "root", "nosuch", NULL)) == 422);
+	TK_CHECK(call(&c, "POST", "/baselines", form(&c, "name", "v1 <script>alert(1)</script>", NULL)) == 303);
+	TK_CHECK(!strncmp(c.loc, "/plan?baseline=", 15));
+	char target[300];
+	snprintf(target, sizeof(target), "%s", c.loc);
+	TK_CHECK(call(&c, "GET", "/baselines", NULL) == 200);
+	clean(&c, "/baselines");
+	HAS(&c, "v1 &lt;script&gt;alert(1)&lt;/script&gt;");
+	/* the plan slips by two days, then the comparison shows it */
+	field(&w, TIX_ENTITY_TICKET, &t, "duration", "5d");
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, target);
+	HAS(&c, "<th>Baseline finish</th><th class=\"num\">Slip</th>");
+	HAS(&c, "<td class=\"num crit\">+2d</td>");
+	HAS(&c, "<rect class=\"base\"");
+	HAS(&c, "1 finish later, 0 earlier, 0 new, 0 removed since");
+	HAS(&c, "&amp;baseline=");
+	HAS(&c, " selected>v1 &lt;script&gt;");
+	char csvq[300];
+	snprintf(csvq, sizeof(csvq), "/export?format=csv&%s", strstr(target, "baseline="));
+	TK_CHECK(call(&c, "GET", csvq, NULL) == 200);
+	HAS(&c, ",baseline_start,baseline_finish,");
+	TK_CHECK(call(&c, "GET", "/plan?baseline=deadbeef", NULL) == 404);
+	/* rename */
+	tix_entity_list l;
+	TK_OK(tix_baseline_list(w.repo, &l, &e), &e);
+	TK_CHECK(l.n == 1);
+	char hex[TIX_OID_MAX_HEX + 1];
+	snprintf(target, sizeof(target), "/baselines/%s", l.n ? tix_oid_hex(&l.v[0]->id, hex) : "x");
+	tix_entity_list_free(&l);
+	TK_CHECK(call(&c, "POST", target, form(&c, "name", "Approved", NULL)) == 303);
+	TK_CHECK(call(&c, "GET", "/baselines", NULL) == 200);
+	HAS(&c, ">Approved</a>");
+	c.origin = "http://evil.example";
+	TK_CHECK(call(&c, "POST", target, form(&c, "name", "x", NULL)) == 403);
+	web_response_free(&c.res);
+	world_close(&w);
+
+	world_open(&w, true);
+	client r = new_client(&w);
+	login(&r);
+	TK_CHECK(call(&r, "GET", "/baselines", NULL) == 200);
+	HASNT(&r, "Take a baseline");
+	TK_CHECK(call(&r, "POST", "/baselines", form(&r, "name", "x", NULL)) == 405);
+	web_response_free(&r.res);
+	world_close(&w);
+}
+
 int main(void)
 {
+	test_baselines();
 	test_api();
 	test_checks();
 	test_read_only();

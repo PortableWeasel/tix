@@ -42,6 +42,10 @@ static const char usage_text[] =
 	"  wbs [ROOT]                            tree with WBS codes, dates and rollups\n"
 	"  plan [ROOT] [--gantt] [--critical] [--load]\n"
 	"  export [ROOT] --format mermaid|csv|json|mspdi   (mspdi: MS Project XML)\n"
+	"  (wbs, plan and export take --baseline B: slips and deltas against a baseline)\n"
+	"\n"
+	"baselines (snapshots of the plan that sync)\n"
+	"  baseline take NAME [ROOT] [--today D]   baseline ls | show B | rename B NAME\n"
 	"\n"
 	"sync (REMOTE defaults to git config tix.remote, else origin)\n"
 	"  pull [REMOTE]    fetch, validate and merge the remote's tickets and identities\n"
@@ -219,6 +223,7 @@ int main(int argc, char **argv)
 		{"push", cmd_push}, {"sync", cmd_sync}, {"assign", cmd_assign},
 		{"unassign", cmd_unassign}, {"res", cmd_res}, {"cal", cmd_cal},
 		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"export", cmd_export}, {"index", cmd_index},
+		{"baseline", cmd_baseline},
 	};
 	int (*fn)(cli *, int, char **) = NULL;
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(*cmds); i++)

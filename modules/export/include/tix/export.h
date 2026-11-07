@@ -23,5 +23,10 @@ bool tix_export_format_parse(const char *s, tix_export_format *out);
 
 /* Appends the rendering to out. title: Mermaid chart / MSPDI project title (NULL = "tix plan"). */
 void tix_export(const tix_schedule *s, tix_export_format f, const char *title, tix_buf *out);
+/* The same with a baseline comparison (tix_plan_compare's out[], one per task; NULL =
+ * none): csv adds variance columns, json a "baseline" object per task, mspdi a <Baseline>
+ * per task; mermaid ignores it. */
+void tix_export_compare(const tix_schedule *s, tix_export_format f, const char *title, const tix_plan_variance *v,
+			tix_buf *out);
 
 #endif

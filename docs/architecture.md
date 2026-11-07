@@ -81,6 +81,7 @@ refs/tix/identities/<id>      identity entity
 refs/tix/tickets/<id>         ticket entity (issues, tasks, milestones, WBS nodes)
 refs/tix/resources/<id>       resource entity (person, role, equipment)
 refs/tix/calendars/<id>       working-time calendar entity
+refs/tix/baselines/<id>       plan snapshot (after v1, §14.2)
 refs/tix-remotes/<remote>/…  fetched copies; merged into refs/tix/* by `tix pull`
 ```
 
@@ -549,7 +550,7 @@ Also installed as `git-tix`, so `git tix …` works.
    adapter, pages, forms, SVG Gantt, `tix web`.
 8. ✅ **M7 web UI enhancements** (done 2026-11-07, §13.4): search as you type, Gantt editing,
    live refresh.
-9. **After v1** (approved 2026-11-07, §14): MS Project XML export ✅, plan baselines, commit
+9. **After v1** (approved 2026-11-07, §14): MS Project XML export ✅, plan baselines ✅, commit
    signature enforcement, Forgejo issue bridge, TUI, hosted web mode.
 
 ## 12. Resolved decisions (2026-11-06)
@@ -872,4 +873,43 @@ plan's calendars (sorted by id, like resources).
   scratch directory): calendars and exceptions, outline, constraints, deadline, notes,
   links with lags, the manual task, the milestone, actuals, rates, units and work all came
   back as written. 5,100 tasks export in 2 s (debug build) and read back whole.
+
+### 14.2 Plan baselines ✅
+
+A baseline is a snapshot of the computed plan, stored as a fifth entity type,
+`refs/tix/baselines/<id>`, so it syncs, merges and validates like everything else. Older
+clients see an unknown kind and ignore it (§6).
+
+- **Ops**: `create` {nonce, name, taken (date), root (id or null = whole plan)},
+  `set-name`, and one `task` op per planned task {ticket, start, finish, duration, effort,
+  cost, currency}; `null` means unknown or unscheduled. Dates come in pairs with
+  start ≤ finish; a cost needs a currency and vice versa. For a ticket, the last `task` op
+  in total order wins, so a correction is just another op. Nothing else changes after
+  creation.
+- **Taking one** (`tix_baseline_take`): core plans from the root as of today and writes the
+  ops as a chain of packs (≤ `TIX_PACK_MAX_OPS` each), then moves the ref once, so a
+  5,000-task plan is still one atomic snapshot.
+- **Cost** (new in `plan`): per task, Σ assignment hours × the resource's hourly rate, in
+  hundredths of the currency. Hours are the assignment's effort, else its share of the
+  task's effort (by units × capacity), else duration × calendar hours × units × capacity.
+  Unrated resources cost nothing. Two currencies on one task, or under one summary, make the
+  cost unknown rather than a meaningless sum. Summaries add their children.
+- **Comparing** (`tix_plan_compare`, pure): per task, whether it was baselined, start and
+  finish slip in the task's working days (positive = later; Fri→Mon is 1), and duration,
+  effort and cost deltas when both sides are known (cost only in the same currency); plus
+  how many baselined tasks have left the plan.
+- **Frontends**:
+  - CLI: `tix baseline take NAME [ROOT] | ls | show B | rename B NAME`, and `--baseline B` on
+    `wbs`, `plan` (BASE FIN and SLIP columns, a summary line) and `export`.
+  - Exports: CSV gains `cost,currency` always and seven variance columns with a baseline
+    (money as decimals); JSON gains `cost`/`currency` and a `baseline` object per task
+    (money in hundredths); MSPDI gains `<Cost>` and a `<Baseline>` (Number 0) per task.
+  - Web: `/baselines` lists them, takes one and renames; the plan page has a baseline
+    picker, "Baseline finish" and "Slip" columns, and draws the baseline as a thin bar under
+    each Gantt bar; export links carry the baseline.
+- `TIX_ENTITY_CODEC_VERSION` is 2 (the cache learns the new type).
+- **Verified**: model round trips and rejects, last-wins and convergence on two clones,
+  the cache codec, a 1,100-task chain under one ref in core, golden cost and slip cases in
+  plan, the CLI end to end including a clone that pulls the baselines, web handler tests
+  with a hostile name, and MPXJ reading the MSPDI baseline and cost fields back.
 

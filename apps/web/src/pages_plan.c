@@ -2,10 +2,39 @@
 #include "app.h"
 #include "tix/export.h"
 
+#include <stdlib.h>
 #include <string.h>
 
+/* The baseline picker (plan page): every baseline, newest first. */
+static void baseline_select(web_ctx *x, const tix_oid *current)
+{
+	html *h = &x->h;
+	tix_entity_list l;
+	if (tix_baseline_list(x->app->cfg.repo, &l, NULL) || !l.n) {
+		if (!l.n)
+			tix_entity_list_free(&l);
+		return;
+	}
+	HL(h, " <label>Baseline <select name=\"baseline\"><option value=\"\">none</option>");
+	for (size_t i = 0; i < l.n; i++) {
+		HL(h, "<option value=\"");
+		h_id(h, &l.v[i]->id);
+		HL(h, "\"");
+		if (current && tix_oid_eq(current, &l.v[i]->id))
+			HL(h, " selected");
+		HL(h, ">");
+		h_text(h, l.v[i]->u.baseline.name);
+		HL(h, " (");
+		h_date(h, l.v[i]->u.baseline.taken);
+		HL(h, ")</option>");
+	}
+	HL(h, "</select></label>");
+	tix_entity_list_free(&l);
+}
+
 /* The root picker shared by the three pages. */
-static void root_form(web_ctx *x, const char *action_lit_path, const tix_oid *root, bool with_views)
+static void root_form(web_ctx *x, const char *action_lit_path, const tix_oid *root, bool with_views,
+		      const tix_oid *baseline)
 {
 	html *h = &x->h;
 	HL(h, "<form method=\"get\" class=\"filters\" action=\"");
@@ -21,8 +50,50 @@ static void root_form(web_ctx *x, const char *action_lit_path, const tix_oid *ro
 		if (web_kvs_get(&x->req->query, "critical"))
 			HL(h, " checked");
 		HL(h, "> critical path only</label>");
+		baseline_select(x, baseline);
 	}
 	HL(h, " <button>Show</button></form>\n");
+}
+
+/* <a href="/export?format=F[&root=R][&baseline=B]">label</a>, then a space. */
+static void export_link(web_ctx *x, const char *fmt, const char *label, const tix_oid *root, const tix_oid *bl)
+{
+	html *h = &x->h;
+	HL(h, "<a href=\"/export?format=");
+	h_text(h, fmt);
+	if (root) {
+		HL(h, "&amp;root=");
+		h_id(h, root);
+	}
+	if (bl) {
+		HL(h, "&amp;baseline=");
+		h_id(h, bl);
+	}
+	HL(h, "\">");
+	h_text(h, label);
+	HL(h, "</a> ");
+}
+
+/* ?baseline=ID: loads it and compares (all left NULL without the parameter). RETURNS false
+ * after an error page. */
+static bool load_variance(web_ctx *x, const tix_schedule *s, tix_oid *bid, tix_entity **bl,
+			  tix_plan_variance **v, size_t *removed)
+{
+	bool have;
+	*bl = NULL;
+	*v = NULL;
+	*removed = 0;
+	if (!query_id(x, "baseline", TIX_ENTITY_BASELINE, bid, &have))
+		return false;
+	if (!have)
+		return true;
+	if (tix_entity_load(x->app->cfg.repo, TIX_ENTITY_BASELINE, bid, bl, &x->app->err)) {
+		page_error(x, 404, "Not found", x->app->err.msg);
+		return false;
+	}
+	*v = tix_xcalloc(s->ntasks ? s->ntasks : 1, sizeof(**v));
+	*removed = tix_plan_compare(s, &(*bl)->u.baseline, *v);
+	return true;
 }
 
 static void diagnostics(web_ctx *x, const tix_schedule *s)
@@ -95,7 +166,7 @@ void page_wbs(web_ctx *x)
 	if (!begin(x, "Work breakdown", &root, &have, &pr))
 		return;
 	html *h = &x->h;
-	root_form(x, "/wbs", have ? &root : NULL, false);
+	root_form(x, "/wbs", have ? &root : NULL, false, NULL);
 	const tix_schedule *s = pr.schedule;
 	HL(h, "<table class=\"plan\"><thead><tr><th>WBS</th><th>ID</th><th>Title</th><th>Status</th><th>Start</th>"
 	      "<th>Finish</th><th class=\"num\">Duration</th><th class=\"num\">Effort</th>"
@@ -125,8 +196,16 @@ void page_plan_view(web_ctx *x)
 		return;
 	html *h = &x->h;
 	bool critical = web_kvs_get(&x->req->query, "critical") != NULL;
-	root_form(x, "/plan", have ? &root : NULL, true);
 	const tix_schedule *s = pr.schedule;
+	tix_oid bid;
+	tix_entity *bl = NULL;
+	tix_plan_variance *v = NULL;
+	size_t removed = 0;
+	if (!load_variance(x, s, &bid, &bl, &v, &removed)) {
+		tix_plan_result_free(&pr);
+		return;
+	}
+	root_form(x, "/plan", have ? &root : NULL, true, bl ? &bid : NULL);
 	if (s->start != TIX_DATE_NONE) {
 		HL(h, "<p>");
 		h_date(h, s->start);
@@ -137,31 +216,48 @@ void page_plan_view(web_ctx *x)
 			HL(h, "?root=");
 			h_id(h, &root);
 		}
-		HL(h, "\">resource load</a> &middot; export <a href=\"/export?format=csv");
-		if (have) {
-			HL(h, "&amp;root=");
-			h_id(h, &root);
+		HL(h, "\">resource load</a> &middot; export ");
+		export_link(x, "csv", "CSV", have ? &root : NULL, bl ? &bid : NULL);
+		export_link(x, "json", "JSON", have ? &root : NULL, bl ? &bid : NULL);
+		export_link(x, "mermaid", "Mermaid", have ? &root : NULL, bl ? &bid : NULL);
+		export_link(x, "mspdi", "MS Project", have ? &root : NULL, bl ? &bid : NULL);
+		if (bl) {
+			HL(h, " (the downloads compare with <b>");
+			h_text(h, bl->u.baseline.name);
+			HL(h, "</b>)");
 		}
-		HL(h, "\">CSV</a> <a href=\"/export?format=json");
-		if (have) {
-			HL(h, "&amp;root=");
-			h_id(h, &root);
-		}
-		HL(h, "\">JSON</a> <a href=\"/export?format=mermaid");
-		if (have) {
-			HL(h, "&amp;root=");
-			h_id(h, &root);
-		}
-		HL(h, "\">Mermaid</a> <a href=\"/export?format=mspdi");
-		if (have) {
-			HL(h, "&amp;root=");
-			h_id(h, &root);
-		}
-		HL(h, "\">MS Project</a></p>\n");
+		HL(h, "</p>\n");
 	}
-	h_gantt(x, s, page_today(x), critical);
+	if (bl) {
+		size_t later = 0, earlier = 0, added = 0;
+		for (size_t i = 0; i < s->ntasks; i++) {
+			if (!v[i].baselined)
+				added++;
+			else if (v[i].dates && v[i].finish_slip > 0)
+				later++;
+			else if (v[i].dates && v[i].finish_slip < 0)
+				earlier++;
+		}
+		HL(h, "<p class=\"note\">Against baseline <b>");
+		h_text(h, bl->u.baseline.name);
+		HL(h, "</b> (");
+		h_date(h, bl->u.baseline.taken);
+		HL(h, "): ");
+		h_int(h, (long long)later);
+		HL(h, " finish later, ");
+		h_int(h, (long long)earlier);
+		HL(h, " earlier, ");
+		h_int(h, (long long)added);
+		HL(h, " new, ");
+		h_int(h, (long long)removed);
+		HL(h, " removed since. Thin bars in the chart are the baseline.</p>\n");
+	}
+	h_gantt(x, s, page_today(x), critical, v);
 	HL(h, "<table class=\"plan\"><thead><tr><th>WBS</th><th>ID</th><th>Title</th><th>Status</th><th>Start</th>"
-	      "<th>Finish</th><th class=\"num\">Duration</th><th class=\"num\">Float</th><th></th></tr></thead><tbody>\n");
+	      "<th>Finish</th><th class=\"num\">Duration</th><th class=\"num\">Float</th>");
+	if (v)
+		HL(h, "<th>Baseline finish</th><th class=\"num\">Slip</th>");
+	HL(h, "<th></th></tr></thead><tbody>\n");
 	for (size_t i = 0; i < s->ntasks; i++) {
 		const tix_plan_task *t = &s->tasks[i];
 		if (critical && !t->critical)
@@ -173,7 +269,26 @@ void page_plan_view(web_ctx *x)
 			h_int(h, t->total_float);
 			HL(h, "d");
 		}
-		HL(h, "</td><td>");
+		HL(h, "</td>");
+		if (v) {
+			HL(h, "<td>");
+			if (!v[i].baselined)
+				HL(h, "<span class=\"note\">new</span>");
+			else
+				h_date(h, v[i].finish);
+			HL(h, "</td><td class=\"num");
+			if (v[i].dates && v[i].finish_slip > 0)
+				HL(h, " crit");
+			HL(h, "\">");
+			if (v[i].dates) {
+				if (v[i].finish_slip > 0)
+					HL(h, "+");
+				h_int(h, v[i].finish_slip);
+				HL(h, "d");
+			}
+			HL(h, "</td>");
+		}
+		HL(h, "<td>");
 		if (t->critical)
 			HL(h, "<span class=\"crit\">critical</span> ");
 		if (t->late)
@@ -187,6 +302,8 @@ void page_plan_view(web_ctx *x)
 	HL(h, "</tbody></table>\n");
 	diagnostics(x, s);
 	page_end(x);
+	free(v);
+	tix_entity_free(bl);
 	tix_plan_result_free(&pr);
 }
 
@@ -198,7 +315,7 @@ void page_load(web_ctx *x)
 	if (!begin(x, "Resource load", &root, &have, &pr))
 		return;
 	html *h = &x->h;
-	root_form(x, "/load", have ? &root : NULL, false);
+	root_form(x, "/load", have ? &root : NULL, false, NULL);
 	const tix_schedule *s = pr.schedule;
 	if (!s->nloads) {
 		HL(h, "<p class=\"note\">No resources are assigned in this plan.</p>\n");
@@ -260,7 +377,7 @@ void page_load(web_ctx *x)
 	tix_plan_result_free(&pr);
 }
 
-/* GET /export?format=csv|json|mermaid|mspdi&root=ID: a download, escaped by the export module. */
+/* GET /export?format=csv|json|mermaid|mspdi&root=ID&baseline=ID: a download, escaped by the export module. */
 void page_export(web_ctx *x)
 {
 	tix_export_format f;
@@ -275,7 +392,17 @@ void page_export(web_ctx *x)
 	if (!query_id(x, "root", TIX_ENTITY_TICKET, &root, &have) || !page_plan(x, have ? &root : NULL, &pr))
 		return;
 	const tix_entity *r = have ? list_find(&pr.tickets, &root) : NULL;
-	tix_export(pr.schedule, f, r ? r->u.ticket.title : NULL, &x->res->body);
+	tix_oid bid;
+	tix_entity *bl;
+	tix_plan_variance *v;
+	size_t removed;
+	if (!load_variance(x, pr.schedule, &bid, &bl, &v, &removed)) {
+		tix_plan_result_free(&pr);
+		return;
+	}
+	tix_export_compare(pr.schedule, f, r ? r->u.ticket.title : NULL, v, &x->res->body);
+	free(v);
+	tix_entity_free(bl);
 	static const char *const types[] = {
 		[TIX_EXPORT_MERMAID] = "text/plain; charset=utf-8", [TIX_EXPORT_CSV] = "text/csv; charset=utf-8",
 		[TIX_EXPORT_JSON] = "application/json", [TIX_EXPORT_MSPDI] = "application/xml"};

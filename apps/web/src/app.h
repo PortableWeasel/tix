@@ -110,7 +110,8 @@ void h_days(html *h, int64_t d);
 void h_hours(html *h, int64_t hrs);
 
 /* SVG Gantt of a schedule (gantt.c). */
-void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_only);
+/* v: a baseline comparison (one per task) to draw as thin bars under the tasks; NULL = none. */
+void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_only, const tix_plan_variance *v);
 
 /* Page handlers (pages_*.c). Each handles GET (and POST where it has a form). */
 void page_tickets(web_ctx *x);
@@ -140,6 +141,9 @@ void post_exception(web_ctx *x);
 void page_sync(web_ctx *x);
 void post_sync(web_ctx *x);
 void page_api_tickets(web_ctx *x);
+void page_baselines(web_ctx *x);
+void post_baseline_take(web_ctx *x);
+void post_baseline_rename(web_ctx *x);
 void page_events(web_ctx *x);
 
 #endif

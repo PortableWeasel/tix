@@ -185,6 +185,28 @@ void tix_entity_encode(const tix_entity *e, tix_buf *out)
 		tix_jw_arr_end(&w);
 		break;
 	}
+	case TIX_ENTITY_BASELINE: {
+		const tix_baseline *b = &e->u.baseline;
+		e_str(&w, "name", b->name);
+		e_int(&w, "taken", b->taken);
+		e_id(&w, "root", &b->root);
+		tix_jw_key(&w, "tasks");
+		tix_jw_arr_begin(&w);
+		for (size_t i = 0; i < b->ntasks; i++) {
+			const tix_baseline_task *t = &b->tasks[i];
+			tix_jw_obj_begin(&w);
+			e_id(&w, "ticket", &t->ticket);
+			e_int(&w, "start", t->start);
+			e_int(&w, "finish", t->finish);
+			e_int(&w, "duration", t->duration);
+			e_int(&w, "effort", t->effort);
+			e_int(&w, "cost", t->cost);
+			e_str(&w, "currency", t->currency);
+			tix_jw_obj_end(&w);
+		}
+		tix_jw_arr_end(&w);
+		break;
+	}
 	}
 	tix_jw_obj_end(&w);
 }
@@ -391,7 +413,7 @@ tix_status tix_entity_decode(const char *data, size_t len, tix_hash_algo algo, t
 		return tix_error_set(err, TIX_ERR_UNSUPPORTED, "cached entity has another codec version");
 	}
 	tix_entity *e = tix_xcalloc(1, sizeof(*e));
-	e->type = (tix_entity_type)d_int(&d, o, "type", TIX_ENTITY_IDENTITY, TIX_ENTITY_CALENDAR);
+	e->type = (tix_entity_type)d_int(&d, o, "type", TIX_ENTITY_IDENTITY, TIX_ENTITY_BASELINE);
 	e->id = d_id(&d, o, "id");
 	e->head = d_id(&d, o, "head");
 	e->max_lamport = (uint64_t)d_int(&d, o, "max_lamport", 0, (int64_t)TIX_LAMPORT_MAX);
@@ -432,6 +454,30 @@ tix_status tix_entity_decode(const char *data, size_t len, tix_hash_algo algo, t
 		r->rate = d_int(&d, o, "rate", -1, 1000000000);
 		r->currency = d_str(&d, o, "currency", true);
 		r->active = d_bool(&d, o, "active");
+	} else if (e->type == TIX_ENTITY_BASELINE) {
+		tix_baseline *b = &e->u.baseline;
+		b->name = d_str(&d, o, "name", false);
+		b->taken = d_date(&d, o, "taken");
+		b->root = d_id(&d, o, "root");
+		if (b->taken == TIX_DATE_NONE)
+			d.bad = true;
+		if ((a = d_arr(&d, o, "tasks", MAX_ITEMS, &n)) && n) {
+			b->tasks = tix_xcalloc(n, sizeof(tix_baseline_task));
+			cJSON_ArrayForEach(it, a)
+			{
+				tix_baseline_task *t = &b->tasks[b->ntasks++];
+				t->ticket = d_id(&d, it, "ticket");
+				t->start = d_date(&d, it, "start");
+				t->finish = d_date(&d, it, "finish");
+				t->duration = d_int(&d, it, "duration", -1, TIX_DURATION_MAX);
+				t->effort = d_int(&d, it, "effort", -1, TIX_EFFORT_MAX);
+				t->cost = d_int(&d, it, "cost", -1, TIX_COST_MAX);
+				t->currency = d_str(&d, it, "currency", true);
+				if (tix_oid_is_null(&t->ticket) || (b->ntasks > 1 && tix_oid_cmp(&b->tasks[b->ntasks - 2].ticket,
+												 &t->ticket) >= 0))
+					d.bad = true; /* sorted and unique, as replay leaves them */
+			}
+		}
 	} else {
 		tix_calendar *c = &e->u.calendar;
 		c->name = d_str(&d, o, "name", false);

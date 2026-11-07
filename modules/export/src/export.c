@@ -117,10 +117,33 @@ static const char *csv_int(int64_t v, char *buf)
 	return buf;
 }
 
-static void csv(const tix_schedule *s, tix_buf *out)
+/* Hundredths as a decimal ("4000.00"); tix stores money in hundredths of the currency. */
+static void csv_money(tix_buf *out, bool known, int64_t v)
+{
+	if (!known) {
+		tix_buf_addc(out, ',');
+		return;
+	}
+	long long a = v < 0 ? -(long long)v : (long long)v;
+	tix_buf_addf(out, ",%s%lld.%02lld", v < 0 ? "-" : "", a / 100, a % 100);
+}
+
+static void csv_delta(tix_buf *out, bool known, int64_t v)
+{
+	if (known)
+		tix_buf_addf(out, ",%lld", (long long)v);
+	else
+		tix_buf_addc(out, ',');
+}
+
+static void csv(const tix_schedule *s, const tix_plan_variance *v, tix_buf *out)
 {
 	tix_buf_adds(out, "wbs,id,title,kind,status,start,finish,duration_days,effort_hours,progress,total_float,"
-			  "critical,late_start,late_finish,deadline,actual_start,actual_finish,assignments\r\n");
+			  "critical,late_start,late_finish,deadline,actual_start,actual_finish,assignments,cost,currency");
+	if (v)
+		tix_buf_adds(out, ",baseline_start,baseline_finish,start_slip_days,finish_slip_days,duration_delta_days,"
+				  "effort_delta_hours,cost_delta");
+	tix_buf_adds(out, "\r\n");
 	for (size_t i = 0; i < s->ntasks; i++) {
 		const tix_plan_task *t = &s->tasks[i];
 		const tix_ticket *tk = &t->ticket->u.ticket;
@@ -152,6 +175,19 @@ static void csv(const tix_schedule *s, tix_buf *out)
 		tix_buf_addf(out, "%s,", csv_date(t->actual_start, d));
 		tix_buf_addf(out, "%s,", csv_date(t->actual_finish, d));
 		csv_cell(out, tix_buf_cstr(&as), true);
+		csv_money(out, t->cost >= 0, t->cost);
+		tix_buf_addc(out, ',');
+		csv_cell(out, t->currency ? t->currency : "", false);
+		if (v) {
+			const tix_plan_variance *x = &v[i];
+			tix_buf_addf(out, ",%s", csv_date(x->start, d));
+			tix_buf_addf(out, ",%s", csv_date(x->finish, d));
+			csv_delta(out, x->dates, x->start_slip);
+			csv_delta(out, x->dates, x->finish_slip);
+			csv_delta(out, x->has_duration, x->duration_delta);
+			csv_delta(out, x->has_effort, x->effort_delta);
+			csv_money(out, x->has_cost, x->cost_delta);
+		}
 		tix_buf_adds(out, "\r\n");
 		tix_buf_free(&as);
 	}
@@ -188,7 +224,7 @@ static void j_int(tix_jw *w, const char *k, int64_t v, bool present)
 		tix_jw_null(w);
 }
 
-static void json(const tix_schedule *s, tix_buf *out)
+static void json(const tix_schedule *s, const tix_plan_variance *v, tix_buf *out)
 {
 	tix_jw w;
 	tix_jw_init(&w, out);
@@ -228,6 +264,32 @@ static void json(const tix_schedule *s, tix_buf *out)
 		j_date(&w, "deadline", tk->plan.deadline);
 		j_date(&w, "actual_start", t->actual_start);
 		j_date(&w, "actual_finish", t->actual_finish);
+		j_int(&w, "cost", t->cost, t->cost >= 0);
+		tix_jw_key(&w, "currency");
+		if (t->currency)
+			tix_jw_str(&w, t->currency);
+		else
+			tix_jw_null(&w);
+		if (v) {
+			const tix_plan_variance *x = &v[i];
+			tix_jw_key(&w, "baseline");
+			if (!x->baselined) {
+				tix_jw_null(&w);
+			} else {
+				tix_jw_obj_begin(&w);
+				j_date(&w, "start", x->start);
+				j_date(&w, "finish", x->finish);
+				j_int(&w, "duration", x->duration, x->duration >= 0);
+				j_int(&w, "effort", x->effort, x->effort >= 0);
+				j_int(&w, "cost", x->cost, x->cost >= 0);
+				j_int(&w, "start_slip", x->start_slip, x->dates);
+				j_int(&w, "finish_slip", x->finish_slip, x->dates);
+				j_int(&w, "duration_delta", x->duration_delta, x->has_duration);
+				j_int(&w, "effort_delta", x->effort_delta, x->has_effort);
+				j_int(&w, "cost_delta", x->cost_delta, x->has_cost);
+				tix_jw_obj_end(&w);
+			}
+		}
 		tix_jw_key(&w, "deps");
 		tix_jw_arr_begin(&w);
 		for (size_t k = 0; k < tk->plan.ndeps; k++) {
@@ -297,13 +359,19 @@ static void json(const tix_schedule *s, tix_buf *out)
 	tix_buf_addc(out, '\n');
 }
 
-void tix_export(const tix_schedule *s, tix_export_format f, const char *title, tix_buf *out)
+void tix_export_compare(const tix_schedule *s, tix_export_format f, const char *title, const tix_plan_variance *v,
+			tix_buf *out)
 {
 	TIX_REQUIRE(s && out);
 	switch (f) {
 	case TIX_EXPORT_MERMAID: mermaid(s, title, out); break;
-	case TIX_EXPORT_CSV: csv(s, out); break;
-	case TIX_EXPORT_JSON: json(s, out); break;
-	case TIX_EXPORT_MSPDI: tix_export_mspdi(s, title, out); break;
+	case TIX_EXPORT_CSV: csv(s, v, out); break;
+	case TIX_EXPORT_JSON: json(s, v, out); break;
+	case TIX_EXPORT_MSPDI: tix_export_mspdi(s, title, v, out); break;
 	}
+}
+
+void tix_export(const tix_schedule *s, tix_export_format f, const char *title, tix_buf *out)
+{
+	tix_export_compare(s, f, title, NULL, out);
 }

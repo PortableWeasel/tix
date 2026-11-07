@@ -97,7 +97,7 @@ static void task_data(html *h, const tix_plan_task *t, size_t row)
 	}
 }
 
-void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_only)
+void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_only, const tix_plan_variance *v)
 {
 	html *h = &x->h;
 	if (s->start == TIX_DATE_NONE) {
@@ -283,6 +283,22 @@ void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_on
 		HL(h, " ");
 		short_title(h, t->ticket->u.ticket.title, LABEL_CHARS - (t->depth > 10 ? 10 : t->depth) * 2);
 		HL(h, "</text>");
+		if (v && v[i].baselined && v[i].start != TIX_DATE_NONE && v[i].start <= last) {
+			/* the baseline: a thin bar along the bottom of the row */
+			tix_date bs = v[i].start < g.s0 ? g.s0 : v[i].start, bf = v[i].finish > last ? last : v[i].finish;
+			long b0 = x_of(&g, bs), b1 = x_of(&g, bf) + g.colw;
+			HL(h, "<rect class=\"base\" x=\"");
+			num(h, b0);
+			HL(h, "\" y=\"");
+			num(h, y + ROW_H - 4);
+			HL(h, "\" width=\"");
+			num(h, b1 - b0 < 3 ? 3 : b1 - b0);
+			HL(h, "\" height=\"3\"><title>baseline ");
+			h_date(h, v[i].start);
+			HL(h, " to ");
+			h_date(h, v[i].finish);
+			HL(h, "</title></rect>");
+		}
 		if (t->scheduled && t->start <= last) {
 			long x0 = x_of(&g, t->start), x1 = x_of(&g, t->finish > last ? last : t->finish) + g.colw;
 			if (t->milestone) {

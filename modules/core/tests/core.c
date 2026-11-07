@@ -867,6 +867,56 @@ static void expect_order(tix_repo *r, tix_ticket_query q, const tix_oid *want, s
 	tix_entity_list_free(&l);
 }
 
+/* Baselines: more tasks than one pack holds become a chain under one ref; rename; list. */
+static void test_baseline(void)
+{
+	fake_env env = {1700000000, 13};
+	tix_store *s = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_repo *r = open_repo(s, &env, NULL);
+	tix_oid me, first, b1, b2, bad;
+	tix_date today;
+	TIX_REQUIRE(tix_date_parse("2026-11-09", &today));
+	TK_STATUS(tix_baseline_take(r, "nobody", NULL, today, &b1, NULL, &e), TIX_ERR_NOT_FOUND, &e);
+	TK_OK(tix_identity_create(r, "Ada", "a@x", &me, &e), &e);
+	TK_OK(tix_repo_set_identity(r, &me, &e), &e);
+	size_t n = TIX_PACK_MAX_OPS + 100;
+	for (size_t i = 0; i < n; i++) {
+		tix_oid t;
+		TK_OK(tix_ticket_create(r, "T", "", NULL, &t, &e), &e);
+		if (!i)
+			first = t;
+		tix_op d = tix_op_set(TIX_F_DURATION, tix_value_int(TIX_V_INT, 2));
+		TK_OK(tix_entity_apply(r, TIX_ENTITY_TICKET, &t, &d, 1, &e), &e);
+		tix_op_free(&d);
+	}
+	size_t got = 0;
+	TK_OK(tix_baseline_take(r, "Plan of record", NULL, today, &b1, &got, &e), &e);
+	TK_CHECK(got == n);
+	tix_entity *bl = NULL;
+	TK_OK(tix_entity_load(r, TIX_ENTITY_BASELINE, &b1, &bl, &e), &e);
+	TK_CHECK(bl && bl->u.baseline.ntasks == n && !strcmp(bl->u.baseline.name, "Plan of record") &&
+		 bl->u.baseline.taken == today && !tix_oid_eq(&bl->head, &b1)); /* head is the chain's end */
+	const tix_baseline_task *bt = bl ? tix_baseline_find(&bl->u.baseline, &first) : NULL;
+	TK_CHECK(bt && bt->duration == 2 && bt->start == today);
+	tix_entity_free(bl);
+	tix_op ren = tix_op_text(TIX_OP_BASELINE_SET_NAME, "Approved");
+	TK_OK(tix_entity_apply(r, TIX_ENTITY_BASELINE, &b1, &ren, 1, &e), &e);
+	tix_op_free(&ren);
+	TK_OK(tix_baseline_take(r, "Later, one root", &first, today + 7, &b2, &got, &e), &e);
+	TK_CHECK(got == 1);
+	memset(&bad, 0, sizeof(bad));
+	bad.algo = TIX_HASH_SHA1;
+	bad.bytes[0] = 0xee;
+	TK_STATUS(tix_baseline_take(r, "x", &bad, today, &b1, NULL, &e), TIX_ERR_NOT_FOUND, &e);
+	tix_entity_list l;
+	TK_OK(tix_baseline_list(r, &l, &e), &e);
+	TK_CHECK(l.n == 2 && tix_oid_eq(&l.v[0]->id, &b2) && !strcmp(l.v[1]->u.baseline.name, "Approved"));
+	TK_CHECK(l.n == 2 && tix_oid_eq(&l.v[0]->u.baseline.root, &first));
+	tix_entity_list_free(&l);
+	tix_repo_close(r);
+	tix_store_destroy(s);
+}
+
 static void test_stamp(void)
 {
 	fake_env env = {1700000000, 11};
@@ -928,6 +978,7 @@ int main(void)
 {
 	test_sort();
 	test_stamp();
+	test_baseline();
 	test_flow();
 	test_resolve();
 	test_retry();

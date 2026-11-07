@@ -5,8 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-const tix_entity_type tix_entity_types[4] = {TIX_ENTITY_IDENTITY, TIX_ENTITY_TICKET, TIX_ENTITY_RESOURCE,
-					      TIX_ENTITY_CALENDAR};
+const tix_entity_type tix_entity_types[5] = {TIX_ENTITY_IDENTITY, TIX_ENTITY_TICKET, TIX_ENTITY_RESOURCE,
+					      TIX_ENTITY_CALENDAR, TIX_ENTITY_BASELINE};
 
 const char *tix_entity_type_name(tix_entity_type t)
 {
@@ -15,6 +15,7 @@ const char *tix_entity_type_name(tix_entity_type t)
 	case TIX_ENTITY_TICKET: return "ticket";
 	case TIX_ENTITY_RESOURCE: return "resource";
 	case TIX_ENTITY_CALENDAR: return "calendar";
+	case TIX_ENTITY_BASELINE: return "baseline";
 	}
 	TIX_REQUIRE(!"unknown entity type");
 	return NULL;
@@ -27,6 +28,7 @@ const char *tix_entity_ref_prefix(tix_entity_type t)
 	case TIX_ENTITY_TICKET: return "refs/tix/tickets/";
 	case TIX_ENTITY_RESOURCE: return "refs/tix/resources/";
 	case TIX_ENTITY_CALENDAR: return "refs/tix/calendars/";
+	case TIX_ENTITY_BASELINE: return "refs/tix/baselines/";
 	}
 	TIX_REQUIRE(!"unknown entity type");
 	return NULL;
@@ -111,7 +113,7 @@ bool tix_dep_kind_parse(const char *s, tix_dep_kind *out)
 bool tix_op_is_create(tix_op_kind k)
 {
 	return k == TIX_OP_TICKET_CREATE || k == TIX_OP_IDENTITY_CREATE || k == TIX_OP_RESOURCE_CREATE ||
-	       k == TIX_OP_CALENDAR_CREATE;
+	       k == TIX_OP_CALENDAR_CREATE || k == TIX_OP_BASELINE_CREATE;
 }
 
 tix_op_kind tix_create_kind(tix_entity_type t)
@@ -121,6 +123,7 @@ tix_op_kind tix_create_kind(tix_entity_type t)
 	case TIX_ENTITY_TICKET: return TIX_OP_TICKET_CREATE;
 	case TIX_ENTITY_RESOURCE: return TIX_OP_RESOURCE_CREATE;
 	case TIX_ENTITY_CALENDAR: return TIX_OP_CALENDAR_CREATE;
+	case TIX_ENTITY_BASELINE: return TIX_OP_BASELINE_CREATE;
 	}
 	TIX_REQUIRE(!"unknown entity type");
 	return TIX_OP_UNKNOWN;
@@ -189,6 +192,16 @@ void tix_op_free(tix_op *op)
 	case TIX_OP_EXCEPTION_ADD:
 		free(op->u.exception_add.note);
 		break;
+	case TIX_OP_BASELINE_CREATE:
+		free(op->u.baseline_create.nonce);
+		free(op->u.baseline_create.name);
+		break;
+	case TIX_OP_BASELINE_SET_NAME:
+		free(op->u.text.value);
+		break;
+	case TIX_OP_BASELINE_TASK:
+		free(op->u.baseline_task.currency);
+		break;
 	case TIX_OP_SET_STATUS:
 	case TIX_OP_DEP_ADD:
 	case TIX_OP_DEP_REMOVE:
@@ -231,7 +244,7 @@ tix_op tix_op_identity_create(const char *nonce, const char *name, const char *e
 tix_op tix_op_text(tix_op_kind kind, const char *value)
 {
 	TIX_REQUIRE(kind == TIX_OP_SET_TITLE || kind == TIX_OP_SET_BODY || kind == TIX_OP_COMMENT ||
-		    kind == TIX_OP_SET_NAME || kind == TIX_OP_SET_EMAIL);
+		    kind == TIX_OP_SET_NAME || kind == TIX_OP_SET_EMAIL || kind == TIX_OP_BASELINE_SET_NAME);
 	tix_op op = op_of(kind);
 	op.u.text.value = tix_xstrdup(value);
 	return op;
@@ -351,5 +364,30 @@ tix_op tix_op_exception_remove(tix_date from, tix_date to)
 	tix_op op = op_of(TIX_OP_EXCEPTION_REMOVE);
 	op.u.exception_remove.from = from;
 	op.u.exception_remove.to = to;
+	return op;
+}
+
+tix_op tix_op_baseline_create(const char *nonce, const char *name, tix_date taken, const tix_oid *root)
+{
+	tix_op op = op_of(TIX_OP_BASELINE_CREATE);
+	op.u.baseline_create.nonce = nonce ? tix_xstrdup(nonce) : NULL;
+	op.u.baseline_create.name = tix_xstrdup(name);
+	op.u.baseline_create.taken = taken;
+	if (root)
+		op.u.baseline_create.root = *root;
+	return op;
+}
+
+tix_op tix_op_baseline_task(const tix_oid *ticket, tix_date start, tix_date finish, int64_t duration, int64_t effort,
+			    int64_t cost, const char *currency)
+{
+	tix_op op = op_of(TIX_OP_BASELINE_TASK);
+	op.u.baseline_task.ticket = *ticket;
+	op.u.baseline_task.start = start;
+	op.u.baseline_task.finish = finish;
+	op.u.baseline_task.duration = duration;
+	op.u.baseline_task.effort = effort;
+	op.u.baseline_task.cost = cost;
+	op.u.baseline_task.currency = currency ? tix_xstrdup(currency) : NULL;
 	return op;
 }

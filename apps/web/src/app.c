@@ -141,7 +141,8 @@ void page_begin(web_ctx *x, const char *title)
 	HL(h, ">\n");
 	if (x->session) {
 		HL(h, "<header><nav><a href=\"/tickets\"><b>tix</b></a> <a href=\"/tickets\">Tickets</a> "
-		      "<a href=\"/wbs\">WBS</a> <a href=\"/plan\">Plan</a> <a href=\"/load\">Load</a> "
+		      "<a href=\"/wbs\">WBS</a> <a href=\"/plan\">Plan</a> <a href=\"/baselines\">Baselines</a> "
+		      "<a href=\"/load\">Load</a> "
 		      "<a href=\"/res\">Resources</a> <a href=\"/cal\">Calendars</a> <a href=\"/sync\">Sync</a> "
 		      "<a href=\"/id\">Identity</a></nav>"
 		      "<form class=\"search\" method=\"get\" action=\"/tickets\" role=\"search\">"
@@ -312,7 +313,7 @@ static const route_def get_routes[] = {
 	{"cal", 2, "new", 1, cal_edit},         {"cal", 3, "edit", 2, cal_edit},
 	{"cal", 2, NULL, 0, page_calendar},     {"id", 1, NULL, 0, page_identities},
 	{"sync", 1, NULL, 0, page_sync},       {"api", 2, "tickets", 1, page_api_tickets},
-	{"events", 1, NULL, 0, page_events},
+	{"events", 1, NULL, 0, page_events},     {"baselines", 1, NULL, 0, page_baselines},
 };
 static const route_def post_routes[] = {
 	{"new", 1, NULL, 0, post_new},            {"t", 2, NULL, 0, post_ticket},
@@ -320,6 +321,7 @@ static const route_def post_routes[] = {
 	{"t", 3, "dep", 2, post_dep},             {"t", 3, "assign", 2, post_assign},
 	{"res", 2, NULL, 0, res_post},            {"cal", 2, NULL, 0, cal_post},
 	{"cal", 3, "exception", 2, post_exception}, {"sync", 1, NULL, 0, post_sync},
+	{"baselines", 1, NULL, 0, post_baseline_take}, {"baselines", 2, NULL, 0, post_baseline_rename},
 };
 
 static const route_def *match(const web_ctx *x, const route_def *r, size_t n)

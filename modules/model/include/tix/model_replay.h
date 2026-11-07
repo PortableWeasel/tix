@@ -133,6 +133,26 @@ typedef struct tix_calendar {
 	size_t nexceptions;
 } tix_calendar;
 
+/* One task in a baseline: the last "task" op for that ticket in total order wins. */
+typedef struct tix_baseline_task {
+	tix_oid ticket;
+	tix_date start, finish;         /* TIX_DATE_NONE = unscheduled then */
+	int64_t duration, effort, cost; /* -1 = unknown */
+	char *currency;                 /* NULL with cost -1 */
+} tix_baseline_task;
+
+/* A plan snapshot (architecture §14.2). Immutable apart from its name. */
+typedef struct tix_baseline {
+	char *name;
+	tix_date taken;
+	tix_oid root;             /* null = the whole plan */
+	tix_baseline_task *tasks; /* sorted by ticket id */
+	size_t ntasks;
+} tix_baseline;
+
+/* RETURNS the baseline's entry for ticket id, or NULL. */
+const tix_baseline_task *tix_baseline_find(const tix_baseline *b, const tix_oid *ticket);
+
 typedef struct tix_entity {
 	tix_entity_type type;
 	tix_oid id;           /* root commit */
@@ -147,6 +167,7 @@ typedef struct tix_entity {
 		tix_identity identity;
 		tix_resource resource;
 		tix_calendar calendar;
+		tix_baseline baseline;
 	} u;
 } tix_entity;
 
@@ -169,7 +190,7 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out);
  * TIX_ENTITY_CODEC_VERSION whenever tix_entity or the replay rules change, so
  * stale cache entries miss instead of lying.
  */
-#define TIX_ENTITY_CODEC_VERSION 1
+#define TIX_ENTITY_CODEC_VERSION 2
 
 void tix_entity_encode(const tix_entity *e, tix_buf *out);
 /* Checks every field (types, ranges, UTF-8, id algo). RETURNS TIX_ERR_INVALID for

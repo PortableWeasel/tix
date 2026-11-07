@@ -768,6 +768,94 @@ static void rollup(plan *p)
 	free(any);
 }
 
+/* Hours one assignment works on its task: its own effort, else its share of the task's
+ * effort (by units x capacity), else the task's duration at its units. */
+static double assignment_hours(const tix_plan_task *t, const tix_assignment *a, double weight, double wsum)
+{
+	if (a->effort >= 0)
+		return (double)a->effort;
+	if (t->effort >= 0)
+		return wsum > 0 ? (double)t->effort * weight / wsum : 0;
+	if (t->duration > 0) {
+		int hours = t->calendar ? t->calendar->u.calendar.hours : 8;
+		return (double)t->duration * hours * weight / 10000.0;
+	}
+	return 0;
+}
+
+/*
+ * Cost per task: hours x hourly rate over the assignments to rated resources (unrated ones
+ * cost nothing here). Several currencies on one task, or below one summary, make the cost
+ * unknown rather than a meaningless sum. Doubles round once at the end (deterministic).
+ */
+static void costs(plan *p)
+{
+	size_t n = p->tasks.n;
+	bool *mixed = tix_xcalloc(n ? n : 1, sizeof(bool));
+	for (size_t i = 0; i < n; i++) {
+		tix_plan_task *t = &p->tasks.v[i];
+		t->cost = -1;
+		t->currency = NULL;
+		if (t->summary)
+			continue;
+		const tix_ticket_plan *pl = &t->ticket->u.ticket.plan;
+		double wsum = 0, total = 0;
+		for (size_t k = 0; k < pl->nassignments; k++) {
+			size_t r = find(p->res, p->nres, &pl->assignments[k].resource);
+			if (r != NONE)
+				wsum += (double)pl->assignments[k].units * p->res[r]->u.resource.capacity;
+		}
+		bool any = false;
+		for (size_t k = 0; k < pl->nassignments; k++) {
+			size_t r = find(p->res, p->nres, &pl->assignments[k].resource);
+			if (r == NONE)
+				continue;
+			const tix_resource *res = &p->res[r]->u.resource;
+			if (res->rate < 0 || !res->currency)
+				continue;
+			if (t->currency && strcmp(t->currency, res->currency))
+				mixed[i] = true;
+			t->currency = res->currency;
+			double w = (double)pl->assignments[k].units * res->capacity;
+			total += assignment_hours(t, &pl->assignments[k], w, wsum) * (double)res->rate;
+			any = true;
+		}
+		if (mixed[i] || !any) {
+			t->currency = NULL;
+			continue;
+		}
+		t->cost = total >= (double)TIX_COST_MAX ? TIX_COST_MAX : (int64_t)(total + 0.5);
+	}
+	/* summaries: children first (pre-order backwards) */
+	for (size_t i = n; i-- > 0;) {
+		tix_plan_task *t = &p->tasks.v[i];
+		size_t par = t->parent;
+		if (par == NONE)
+			continue;
+		tix_plan_task *u = &p->tasks.v[par];
+		if (mixed[i])
+			mixed[par] = true;
+		if (t->cost < 0 || mixed[par])
+			continue;
+		if (u->currency && strcmp(u->currency, t->currency)) {
+			mixed[par] = true;
+			u->cost = -1;
+			u->currency = NULL;
+			continue;
+		}
+		u->currency = t->currency;
+		u->cost = (u->cost < 0 ? 0 : u->cost) + t->cost;
+		if (u->cost > TIX_COST_MAX)
+			u->cost = TIX_COST_MAX;
+	}
+	for (size_t i = 0; i < n; i++)
+		if (mixed[i]) {
+			p->tasks.v[i].cost = -1;
+			p->tasks.v[i].currency = NULL;
+		}
+	free(mixed);
+}
+
 static void actuals_and_deadlines(plan *p)
 {
 	char a[8], s1[TIX_DATE_STR], s2[TIX_DATE_STR];
@@ -930,6 +1018,7 @@ tix_status tix_plan_compute(const tix_plan_input *in, tix_schedule **out, tix_er
 			fill_leaf(&p, i);
 	}
 	rollup(&p);
+	costs(&p);
 	actuals_and_deadlines(&p);
 
 	tix_schedule *s = tix_xcalloc(1, sizeof(*s));
@@ -994,3 +1083,50 @@ const tix_entity *tix_schedule_resource(const tix_schedule *s, const tix_oid *id
 	size_t k = find(s->resources, s->nresources, id);
 	return k == NONE ? NULL : s->resources[k];
 }
+
+/* Working days from base to now in the task's calendar: positive when now is later. */
+static int32_t slip(const tix_entity *c, tix_date base, tix_date now)
+{
+	if (now == base)
+		return 0;
+	return now > base ? workdays(c, clamp((int64_t)base + 1), clamp((int64_t)now + 1))
+			  : -workdays(c, clamp((int64_t)now + 1), clamp((int64_t)base + 1));
+}
+
+size_t tix_plan_compare(const tix_schedule *s, const tix_baseline *b, tix_plan_variance *out)
+{
+	TIX_REQUIRE(s && b && (out || !s->ntasks));
+	size_t present = 0;
+	for (size_t i = 0; i < s->ntasks; i++) {
+		const tix_plan_task *t = &s->tasks[i];
+		tix_plan_variance *v = &out[i];
+		memset(v, 0, sizeof(*v));
+		v->start = v->finish = TIX_DATE_NONE;
+		v->duration = v->effort = v->cost = -1;
+		const tix_baseline_task *k = tix_baseline_find(b, &t->ticket->id);
+		if (!k)
+			continue;
+		present++;
+		v->baselined = true;
+		v->start = k->start;
+		v->finish = k->finish;
+		v->duration = k->duration;
+		v->effort = k->effort;
+		v->cost = k->cost;
+		v->currency = k->currency;
+		if (t->scheduled && k->start != TIX_DATE_NONE) {
+			v->dates = true;
+			v->start_slip = slip(t->calendar, k->start, t->start);
+			v->finish_slip = slip(t->calendar, k->finish, t->finish);
+		}
+		if ((v->has_duration = t->duration >= 0 && k->duration >= 0))
+			v->duration_delta = t->duration - k->duration;
+		if ((v->has_effort = t->effort >= 0 && k->effort >= 0))
+			v->effort_delta = t->effort - k->effort;
+		if ((v->has_cost = t->cost >= 0 && k->cost >= 0 && t->currency && k->currency &&
+				   !strcmp(t->currency, k->currency)))
+			v->cost_delta = t->cost - k->cost;
+	}
+	return b->ntasks - present;
+}
+
