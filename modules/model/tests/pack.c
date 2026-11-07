@@ -430,7 +430,7 @@ static void test_workflow_ops(void)
 		tix_op_set_state(TIX_TICKET_OPEN, "ready"),
 		tix_op_set_state(TIX_TICKET_DONE, NULL),
 		tix_op_stage_add("needs-input", TIX_TICKET_IN_PROGRESS, true, 40),
-		tix_op_stage_remove("needs-input"),
+		tix_op_stage_remove("needs-input", TIX_TICKET_IN_PROGRESS),
 		tix_op_claim(1700001800),
 		tix_op_release(),
 		tix_op_set_autonomy(TIX_AUTO_AUTONOMOUS, 1700030000),
@@ -442,7 +442,7 @@ static void test_workflow_ops(void)
 		"{\"op\":\"set-state\",\"status\":\"open\",\"stage\":\"ready\"}\n"
 		"{\"op\":\"set-state\",\"status\":\"done\",\"stage\":null}\n"
 		"{\"op\":\"stage-add\",\"name\":\"needs-input\",\"phase\":\"in-progress\",\"human\":true,\"rank\":40}\n"
-		"{\"op\":\"stage-remove\",\"name\":\"needs-input\"}\n"
+		"{\"op\":\"stage-remove\",\"name\":\"needs-input\",\"phase\":\"in-progress\"}\n"
 		"{\"op\":\"claim\",\"until\":1700001800}\n"
 		"{\"op\":\"release\"}\n"
 		"{\"op\":\"set-autonomy\",\"mode\":\"autonomous\",\"until\":1700030000}\n"
@@ -460,7 +460,8 @@ static void test_workflow_ops(void)
 		{"stage-add human not bool", HDR "{\"op\":\"stage-add\",\"name\":\"x\",\"phase\":\"open\",\"human\":1,\"rank\":1}\n", TIX_ERR_INVALID},
 		{"stage-add negative rank", HDR "{\"op\":\"stage-add\",\"name\":\"x\",\"phase\":\"open\",\"human\":false,\"rank\":-1}\n", TIX_ERR_INVALID},
 		{"stage-add key order", HDR "{\"op\":\"stage-add\",\"phase\":\"open\",\"name\":\"x\",\"human\":false,\"rank\":1}\n", TIX_ERR_INVALID},
-		{"stage-remove bad name", HDR "{\"op\":\"stage-remove\",\"name\":\"X\"}\n", TIX_ERR_INVALID},
+		{"stage-remove bad name", HDR "{\"op\":\"stage-remove\",\"name\":\"X\",\"phase\":\"open\"}\n", TIX_ERR_INVALID},
+		{"stage-remove no phase", HDR "{\"op\":\"stage-remove\",\"name\":\"x\"}\n", TIX_ERR_INVALID},
 		{"claim negative", HDR "{\"op\":\"claim\",\"until\":-1}\n", TIX_ERR_INVALID},
 		{"claim float", HDR "{\"op\":\"claim\",\"until\":1.5}\n", TIX_ERR_INVALID},
 		{"claim missing until", HDR "{\"op\":\"claim\"}\n", TIX_ERR_INVALID},

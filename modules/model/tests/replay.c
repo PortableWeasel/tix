@@ -464,10 +464,15 @@ static void test_stages(void)
 	apply1(&a, &t, tix_op_stage_add("draft", TIX_TICKET_OPEN, true, 10));
 	apply1(&a, &t, tix_op_stage_add("review", TIX_TICKET_IN_PROGRESS, false, 20));
 	sync_both(&a, &b);
-	apply1(&a, &t, tix_op_stage_remove("ready"));
+	apply1(&a, &t, tix_op_stage_remove("ready", TIX_TICKET_OPEN));
 	apply1(&b, &t, tix_op_stage_add("ready", TIX_TICKET_OPEN, false, 50)); /* concurrent re-add survives */
-	apply1(&b, &t, tix_op_stage_remove("draft"));
+	apply1(&b, &t, tix_op_stage_remove("draft", TIX_TICKET_OPEN));
 	apply1(&a, &t, tix_op_stage_add("draft", TIX_TICKET_OPEN, false, 5)); /* concurrent re-add survives */
+	/* one name may serve several phases; removing one leaves the other */
+	apply1(&a, &t, tix_op_stage_add("needs-input", TIX_TICKET_OPEN, true, 30));
+	apply1(&a, &t, tix_op_stage_add("needs-input", TIX_TICKET_IN_PROGRESS, true, 30));
+	apply1(&a, &t, tix_op_stage_remove("needs-input", TIX_TICKET_OPEN));
+	apply1(&a, &t, tix_op_stage_remove("needs-input", TIX_TICKET_IN_PROGRESS));
 	sync_both(&a, &b);
 	tix_entity *ea = loadt(&a, &t), *eb = loadt(&b, &t);
 	tix_buf sa = TIX_BUF_INIT, sb = TIX_BUF_INIT;

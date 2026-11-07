@@ -40,7 +40,7 @@ static bool in_human_stage(tix_repo *r, const tix_entity *t)
 	tix_entity *owner = NULL;
 	if (tix_ticket_stages(r, &t->id, NULL, &owner, NULL))
 		return false;
-	const tix_stage_def *d = tix_stage_find(owner, t->u.ticket.stage);
+	const tix_stage_def *d = tix_stage_find(owner, t->u.ticket.status, t->u.ticket.stage);
 	bool human = d && d->human;
 	tix_entity_free(owner);
 	return human;

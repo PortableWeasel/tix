@@ -1115,10 +1115,15 @@ stage, and `--status open/ready` matches one stage.
   and a lone `set-status` as "phase, stage cleared".
 - **Stage names**: `[a-z][a-z0-9-]{0,31}`.
 - **The project's stage list** is a field on a WBS root, inherited by its subtree (like
-  `calendar`): `stages`, an OR-map `name → {phase, human: bool, rank}`. The CLI is
+  `calendar`): `stages`, an OR-map `phase/name → {human: bool, rank}`, so one name can serve
+  several phases (`open/needs-input` and `in-progress/needs-input`). The ops are
+  `{"op":"stage-add","name","phase","human","rank"}` and `{"op":"stage-remove","name","phase"}`.
+  The phase is part of the key, which was fixed on 2026-11-07 while writing the skill
+  (first keyed by name alone). The CLI is
   `tix stage ls [ID]` (the list that applies to a ticket, and where it comes from; without
   an id, every ticket that has one), `tix stage add ID NAME --phase P [--human] [--rank N]`
-  (rank defaults to 10 past the phase's last stage) and `tix stage rm ID NAME`.
+  (rank defaults to 10 past the phase's last stage) and `tix stage rm ID NAME [--phase P]`
+  (the phase is needed only when the name is listed in several).
   - `human` marks a stage that waits for a person. The inbox (§15.6) and the guard (§15.5)
     use it.
   - Core refuses a stage that isn't on the effective list, or that is listed under another

@@ -150,7 +150,7 @@ static void tickets_event(web_app *app, tix_buf *b, const web_head *now, size_t 
 		bool human = false;
 		tix_entity *owner = NULL;
 		if (e->u.ticket.stage && !tix_ticket_stages(app->cfg.repo, &e->id, NULL, &owner, NULL)) {
-			const tix_stage_def *d = tix_stage_find(owner, e->u.ticket.stage);
+			const tix_stage_def *d = tix_stage_find(owner, e->u.ticket.status, e->u.ticket.stage);
 			human = d && d->human;
 		}
 		tix_entity_free(owner);

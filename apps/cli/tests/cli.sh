@@ -313,7 +313,13 @@ out=$(git show "refs/tix/tickets/$wid:ops.ndjson")   # older readers still see t
 [[ $out == *'{"op":"set-status","status":"open"}'$'\n''{"op":"set-state","status":"open","stage":"ready"}'* ]] ||
 	fail "set-status must come right before set-state: $out"
 expect 0 "$TIX" edit "$wc" --status done; expect 0 "$TIX" show "$wc"; has "status:   done"; hasnt "done/"
-expect 1 "$TIX" stage rm "$wc" ready; has "no stage 'ready' on this ticket"
+expect 1 "$TIX" stage rm "$wc" ready; has "no stage 'open/ready' on this ticket"
+expect 0 "$TIX" stage add "$wr" waiting --phase open --human
+expect 0 "$TIX" stage add "$wr" waiting --phase in-progress --human   # one name, two phases
+expect 2 "$TIX" stage rm "$wr" waiting; has "listed in several phases"
+expect 0 "$TIX" stage rm "$wr" waiting --phase open
+expect 0 "$TIX" stage ls "$wr"; has "in-progress/waiting"; hasnt "open/waiting"
+expect 1 "$TIX" edit "$wc" --status open/waiting; has "stage 'waiting' belongs to in-progress, not open"
 expect 0 "$TIX" stage rm "$wr" ready
 expect 0 "$TIX" stage ls "$wr"; hasnt "open/ready"
 expect 0 "$TIX" new -t "Free stage" --status blocked/whatever; has "Created ticket"   # no list: any stage

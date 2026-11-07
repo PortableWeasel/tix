@@ -332,10 +332,11 @@ tix_op tix_op_stage_add(const char *name, tix_ticket_status phase, bool human, i
 	return op;
 }
 
-tix_op tix_op_stage_remove(const char *name)
+tix_op tix_op_stage_remove(const char *name, tix_ticket_status phase)
 {
 	tix_op op = op_of(TIX_OP_STAGE_REMOVE);
 	op.u.stage_remove.name = tix_xstrdup(name);
+	op.u.stage_remove.phase = phase;
 	return op;
 }
 

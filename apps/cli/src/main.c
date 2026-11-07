@@ -30,7 +30,7 @@ static const char usage_text[] =
 	"\n"
 	"workflow stages (S may be PHASE/STAGE, e.g. open/ready; lists are inherited down the WBS)\n"
 	"  stage ls [ID]                        the stage list that applies to a ticket (or every list)\n"
-	"  stage add ID NAME --phase P [--human] [--rank N]   stage rm ID NAME\n"
+	"  stage add ID NAME --phase P [--human] [--rank N]   stage rm ID NAME [--phase P]\n"
 	"\n"
 	"claims (who works on what; leases end by themselves)\n"
 	"  claim ID [--for 30m] | claim ID --renew [--for D] | claim ID --release\n"

@@ -669,22 +669,32 @@ static tix_status precheck_ticket(tix_repo *r, const tix_entity *e, const tix_op
 				     short_hex(&t->claim.identity, who), (long long)((t->claim.until - now + 59) / 60));
 	}
 	case TIX_OP_STAGE_REMOVE:
-		if (e && tix_stage_find(e, op->u.stage_remove.name))
+		if (e && tix_stage_find(e, op->u.stage_remove.phase, op->u.stage_remove.name))
 			return TIX_OK;
-		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no stage '%s' on this ticket", op->u.stage_remove.name);
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no stage '%s/%s' on this ticket",
+				     tix_ticket_status_name(op->u.stage_remove.phase), op->u.stage_remove.name);
 	default:
 		return TIX_OK;
 	}
 }
 
-const tix_stage_def *tix_stage_find(const tix_entity *owner, const char *stage)
+const tix_stage_def *tix_stage_find(const tix_entity *owner, tix_ticket_status phase, const char *stage)
 {
 	if (!owner || owner->type != TIX_ENTITY_TICKET || !stage)
 		return NULL;
 	for (size_t i = 0; i < owner->u.ticket.nstages; i++)
-		if (!strcmp(owner->u.ticket.stages[i].name, stage))
+		if (owner->u.ticket.stages[i].phase == phase && !strcmp(owner->u.ticket.stages[i].name, stage))
 			return &owner->u.ticket.stages[i];
 	return NULL;
+}
+
+/* Some phase that lists stage, for a helpful error; -1 if none. */
+static int stage_phase_of(const tix_stage_def *v, size_t n, const char *stage)
+{
+	for (size_t i = 0; i < n; i++)
+		if (!strcmp(v[i].name, stage))
+			return (int)v[i].phase;
+	return -1;
 }
 
 static void autonomy_of(const tix_entity *e, int64_t now, tix_autonomy *out)
@@ -804,8 +814,9 @@ static tix_status precheck_states(tix_repo *r, const tix_entity *e, const tix_op
 									: NULL;
 		if (!name)
 			continue;
+		tix_ticket_status ph = ops[i].kind == TIX_OP_STAGE_ADD ? ops[i].u.stage_add.phase : ops[i].u.stage_remove.phase;
 		for (size_t k = 0; k < own.n; k++)
-			if (!strcmp(own.v[k].name, name)) {
+			if (own.v[k].phase == ph && !strcmp(own.v[k].name, name)) {
 				own.v[k] = own.v[--own.n];
 				break;
 			}
@@ -836,19 +847,23 @@ static tix_status precheck_states(tix_repo *r, const tix_entity *e, const tix_op
 			continue;
 		const tix_stage_def *d = NULL;
 		bool have_list = own.n || owner;
+		const char *sg = op->u.set_state.stage;
 		for (size_t k = 0; k < own.n && !d; k++)
-			if (!strcmp(own.v[k].name, op->u.set_state.stage))
+			if (own.v[k].phase == op->u.set_state.status && !strcmp(own.v[k].name, sg))
 				d = &own.v[k];
 		if (!own.n)
-			d = tix_stage_find(owner, op->u.set_state.stage);
+			d = tix_stage_find(owner, op->u.set_state.status, sg);
 		if (!have_list)
 			continue;
-		if (!d)
-			st = tix_error_set(err, TIX_ERR_INVALID, "'%s' is not on this project's stage list (see `tix stage ls`)",
-					   op->u.set_state.stage);
-		else if (d->phase != op->u.set_state.status)
-			st = tix_error_set(err, TIX_ERR_INVALID, "stage '%s' belongs to %s, not %s", d->name,
-					   tix_ticket_status_name(d->phase), tix_ticket_status_name(op->u.set_state.status));
+		int other = d ? -1
+			      : own.n ? stage_phase_of(own.v, own.n, sg)
+				      : stage_phase_of(owner->u.ticket.stages, owner->u.ticket.nstages, sg);
+		if (!d && other >= 0)
+			st = tix_error_set(err, TIX_ERR_INVALID, "stage '%s' belongs to %s, not %s", sg,
+					   tix_ticket_status_name((tix_ticket_status)other),
+					   tix_ticket_status_name(op->u.set_state.status));
+		else if (!d)
+			st = tix_error_set(err, TIX_ERR_INVALID, "'%s' is not on this project's stage list (see `tix stage ls`)", sg);
 		else if (guarded && d->human && d->phase != TIX_TICKET_BLOCKED)
 			st = tix_error_set(err, TIX_ERR_REFUSED,
 					   "autonomous mode: '%s' waits for a person; decide and record an assumption, or abort "

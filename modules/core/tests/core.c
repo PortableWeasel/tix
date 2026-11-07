@@ -1115,15 +1115,16 @@ static void test_stages(void)
 	/* no list anywhere up the chain: any stage goes */
 	TK_OK(apply_one(r, &other, tix_op_set_state(TIX_TICKET_BLOCKED, "anything")), &e);
 	/* removing a stage that isn't defined there */
-	TK_STATUS(apply_one(r, &child, tix_op_stage_remove("ready")), TIX_ERR_NOT_FOUND, &e);
+	TK_STATUS(apply_one(r, &child, tix_op_stage_remove("ready", TIX_TICKET_OPEN)), TIX_ERR_NOT_FOUND, &e);
 
 	/* the effective list and lookups */
 	tix_entity *owner = NULL;
 	TK_OK(tix_ticket_stages(r, &child, NULL, &owner, &e), &e);
 	TK_CHECK(owner && tix_oid_eq(&owner->id, &root));
-	const tix_stage_def *d = tix_stage_find(owner, "draft");
+	const tix_stage_def *d = tix_stage_find(owner, TIX_TICKET_OPEN, "draft");
 	TK_CHECK(d && d->human && d->phase == TIX_TICKET_OPEN);
-	TK_CHECK(!tix_stage_find(owner, "nope"));
+	TK_CHECK(!tix_stage_find(owner, TIX_TICKET_OPEN, "nope"));
+	TK_CHECK(!tix_stage_find(owner, TIX_TICKET_DONE, "draft"));
 	tix_entity_free(owner);
 	TK_OK(tix_ticket_stages(r, &other, NULL, &owner, &e), &e);
 	TK_CHECK(owner == NULL);

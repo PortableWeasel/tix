@@ -196,8 +196,8 @@ tix_status tix_calendar_list(tix_repo *r, tix_entity_list *out, tix_error *err);
  */
 tix_status tix_ticket_stages(tix_repo *r, const tix_oid *id, const tix_oid *parent, tix_entity **owner,
 			     tix_error *err);
-/* The definition of stage in owner's list, or NULL. */
-const tix_stage_def *tix_stage_find(const tix_entity *owner, const char *stage);
+/* The definition of phase/stage in owner's list, or NULL. */
+const tix_stage_def *tix_stage_find(const tix_entity *owner, tix_ticket_status phase, const char *stage);
 
 /* ---- autonomy (architecture §15.5) ---------------------------------------------- */
 

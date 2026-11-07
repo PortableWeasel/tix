@@ -589,8 +589,16 @@ static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t
 			t->autonomy = op->u.set_autonomy.mode;
 			t->autonomy_until = op->u.set_autonomy.until;
 			break;
-		case TIX_OP_STAGE_ADD: push_or(&sadd, op->u.stage_add.name, r); break;
-		case TIX_OP_STAGE_REMOVE: push_or(&srem, op->u.stage_remove.name, r); break;
+		case TIX_OP_STAGE_ADD: { /* keyed by phase/name: one name may serve several phases */
+			char key[TIX_STATE_STR];
+			push_or(&sadd, tix_state_str(op->u.stage_add.phase, op->u.stage_add.name, key), r);
+			break;
+		}
+		case TIX_OP_STAGE_REMOVE: {
+			char key[TIX_STATE_STR];
+			push_or(&srem, tix_state_str(op->u.stage_remove.phase, op->u.stage_remove.name, key), r);
+			break;
+		}
 		case TIX_OP_SET_FIELD: fold_field(c, r, f); break;
 		case TIX_OP_DEP_ADD: push_or_id(&dadd, &op->u.dep_add.pred, r); break;
 		case TIX_OP_DEP_REMOVE: push_or_id(&drem, &op->u.unref.target, r); break;

@@ -232,7 +232,7 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out);
  * TIX_ENTITY_CODEC_VERSION whenever tix_entity or the replay rules change, so
  * stale cache entries miss instead of lying.
  */
-#define TIX_ENTITY_CODEC_VERSION 8
+#define TIX_ENTITY_CODEC_VERSION 9
 
 void tix_entity_encode(const tix_entity *e, tix_buf *out);
 /* Checks every field (types, ranges, UTF-8, id algo). RETURNS TIX_ERR_INVALID for

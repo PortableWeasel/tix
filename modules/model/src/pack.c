@@ -494,6 +494,8 @@ static tix_status check_op(tix_entity_type type, const tix_op *op, tix_error *er
 	case TIX_OP_STAGE_REMOVE:
 		if (!tix_stage_valid(op->u.stage_remove.name))
 			return tix_error_set(err, TIX_ERR_INVALID, "bad stage name");
+		if ((unsigned)op->u.stage_remove.phase > TIX_TICKET_CANCELLED)
+			return tix_error_set(err, TIX_ERR_INVALID, "bad phase");
 		return TIX_OK;
 	case TIX_OP_CLAIM:
 		if (op->u.claim.until < 0 || op->u.claim.until > (int64_t)TIX_LAMPORT_MAX)
@@ -753,7 +755,10 @@ static void encode_op(const tix_op *op, tix_buf *out)
 		tix_jw_key(&w, "rank");
 		tix_jw_int(&w, op->u.stage_add.rank);
 		break;
-	case TIX_OP_STAGE_REMOVE: put_kv(&w, "name", op->u.stage_remove.name); break;
+	case TIX_OP_STAGE_REMOVE:
+		put_kv(&w, "name", op->u.stage_remove.name);
+		put_kv(&w, "phase", tix_ticket_status_name(op->u.stage_remove.phase));
+		break;
 	case TIX_OP_CLAIM:
 		tix_jw_key(&w, "until");
 		tix_jw_int(&w, op->u.claim.until);
@@ -1186,7 +1191,12 @@ static tix_status fill_op(const cJSON *j, tix_op *op, tix_hash_algo algo, tix_er
 		op->u.stage_add.rank = (int32_t)rank;
 		return TIX_OK;
 	}
-	case TIX_OP_STAGE_REMOVE: op->u.stage_remove.name = dup_str(j, "name"); return TIX_OK;
+	case TIX_OP_STAGE_REMOVE:
+		op->u.stage_remove.name = dup_str(j, "name");
+		s = get_str(j, "phase");
+		if (!s || !tix_ticket_status_parse(s, &op->u.stage_remove.phase))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad stage-remove");
+		return TIX_OK;
 	case TIX_OP_CLAIM:
 		return get_int(j, "until", 0, (int64_t)TIX_LAMPORT_MAX, &op->u.claim.until)
 			       ? TIX_OK

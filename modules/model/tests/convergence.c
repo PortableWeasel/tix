@@ -63,7 +63,7 @@ static tix_op random_ticket_op(uint64_t *rng, tix_sim_clone *c, const tix_oid *t
 	case 7: return tix_op_set_state((tix_ticket_status)tk_rand_below(rng, 5), pick(rng, labels, 3));
 	case 8: return tix_op_stage_add(pick(rng, labels, 3), (tix_ticket_status)tk_rand_below(rng, 5),
 					tk_rand_below(rng, 2), (int32_t)tk_rand_below(rng, 3));
-	case 9: return tix_op_stage_remove(pick(rng, labels, 3));
+	case 9: return tix_op_stage_remove(pick(rng, labels, 3), (tix_ticket_status)tk_rand_below(rng, 5));
 	case 0: return tix_op_text(TIX_OP_SET_TITLE, pick(rng, titles, 3));
 	case 1: return tix_op_text(TIX_OP_SET_BODY, pick(rng, titles, 3));
 	case 2: return tix_op_set_status((tix_ticket_status)tk_rand_below(rng, 5));

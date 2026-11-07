@@ -222,7 +222,7 @@ typedef enum tix_op_kind {
 	/* ticket: agent workflow (§15) */
 	TIX_OP_SET_STATE,         /* "set-state": status, stage|null (one register with set-status) */
 	TIX_OP_STAGE_ADD,         /* "stage-add": name, phase, human, rank */
-	TIX_OP_STAGE_REMOVE,      /* "stage-remove": name */
+	TIX_OP_STAGE_REMOVE,      /* "stage-remove": name, phase (a list may use one name in several phases) */
 	TIX_OP_CLAIM,             /* "claim": until (the claimant is the pack author) */
 	TIX_OP_RELEASE,           /* "release" */
 	TIX_OP_TYPED_COMMENT,     /* "typed-comment": kind, body, data (JSON object as a string), reply-to|null */
@@ -258,7 +258,7 @@ typedef struct tix_op {
 		struct { tix_ticket_status status; } set_status;
 		struct { tix_ticket_status status; char *stage; /* NULL = none */ } set_state;
 		struct { char *name; tix_ticket_status phase; bool human; int32_t rank; } stage_add;
-		struct { char *name; } stage_remove;
+		struct { char *name; tix_ticket_status phase; } stage_remove;
 		struct { int64_t until; } claim; /* unix seconds */
 		struct { char *kind, *body, *data; tix_opid reply_to; /* null commit = none */ } typed_comment;
 		struct { tix_autonomy_mode mode; int64_t until; /* -1 = none */ } set_autonomy;
@@ -301,7 +301,7 @@ tix_op tix_op_set_status(tix_ticket_status s);
 /* stage NULL or "" = none. */
 tix_op tix_op_set_state(tix_ticket_status s, const char *stage);
 tix_op tix_op_stage_add(const char *name, tix_ticket_status phase, bool human, int32_t rank);
-tix_op tix_op_stage_remove(const char *name);
+tix_op tix_op_stage_remove(const char *name, tix_ticket_status phase);
 tix_op tix_op_claim(int64_t until);
 /* until -1 = no expiry. */
 tix_op tix_op_set_autonomy(tix_autonomy_mode mode, int64_t until);

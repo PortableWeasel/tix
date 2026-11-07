@@ -145,15 +145,46 @@ static int stage_add(cli *c, int argc, char **argv)
 
 static int stage_rm(cli *c, int argc, char **argv)
 {
-	if (argc != 3)
-		return cli_usage("usage: tix stage rm TICKET NAME");
+	const char *ticket = NULL, *name = NULL;
+	tix_ticket_status phase = TIX_TICKET_OPEN;
+	bool have_phase = false;
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--phase") && i + 1 < argc) {
+			if (!tix_ticket_status_parse(argv[++i], &phase))
+				return cli_usage("stage rm: unknown phase '%s'", argv[i]);
+			have_phase = true;
+		} else if (!ticket && argv[i][0] != '-') {
+			ticket = argv[i];
+		} else if (!name && argv[i][0] != '-') {
+			name = argv[i];
+		} else {
+			return cli_usage("stage rm: unexpected '%s'", argv[i]);
+		}
+	}
+	if (!ticket || !name)
+		return cli_usage("usage: tix stage rm TICKET NAME [--phase P]");
+	if (!tix_stage_valid(name))
+		return cli_usage("stage rm: bad stage name '%s'", name);
 	tix_oid id;
-	int rc = cli_resolve(c, TIX_ENTITY_TICKET, argv[1], &id);
+	int rc = cli_resolve(c, TIX_ENTITY_TICKET, ticket, &id);
 	if (rc)
 		return rc;
-	if (!tix_stage_valid(argv[2]))
-		return cli_usage("stage rm: bad stage name '%s'", argv[2]);
-	tix_op op = tix_op_stage_remove(argv[2]);
+	if (!have_phase) { /* the one phase that lists it here */
+		tix_entity *e;
+		tix_status st = tix_entity_load(c->repo, TIX_ENTITY_TICKET, &id, &e, &c->err);
+		if (st)
+			return cli_fail(c, st);
+		int found = 0;
+		for (size_t i = 0; i < e->u.ticket.nstages; i++)
+			if (!strcmp(e->u.ticket.stages[i].name, name)) {
+				phase = e->u.ticket.stages[i].phase;
+				found++;
+			}
+		tix_entity_free(e);
+		if (found > 1)
+			return cli_usage("stage rm: '%s' is listed in several phases; say which with --phase", name);
+	}
+	tix_op op = tix_op_stage_remove(name, phase);
 	tix_status st = tix_entity_apply(c->repo, TIX_ENTITY_TICKET, &id, &op, 1, &c->err);
 	tix_op_free(&op);
 	return st ? cli_fail(c, st) : EXIT_OK;
@@ -162,7 +193,7 @@ static int stage_rm(cli *c, int argc, char **argv)
 int cmd_stage(cli *c, int argc, char **argv)
 {
 	if (argc < 2)
-		return cli_usage("usage: tix stage ls [TICKET] | add TICKET NAME --phase P [--human] [--rank N] | rm TICKET NAME");
+		return cli_usage("usage: tix stage ls [TICKET] | add TICKET NAME --phase P [--human] [--rank N] | rm TICKET NAME [--phase P]");
 	if (!strcmp(argv[1], "ls"))
 		return stage_ls(c, argc - 1, argv + 1);
 	if (!strcmp(argv[1], "add"))
