@@ -119,6 +119,10 @@ static tix_status ticket_ops(tix_repo *r, const tix_entity *t, const tix_activit
 		for (size_t k = 0; k < p.nops; k++) {
 			if (p.time < q->since || p.ops[k].kind == TIX_OP_UNKNOWN)
 				continue;
+			/* the set-status written for older readers right before a set-state is the same write */
+			if (p.ops[k].kind == TIX_OP_SET_STATUS && k + 1 < p.nops && p.ops[k + 1].kind == TIX_OP_SET_STATE &&
+			    p.ops[k + 1].u.set_state.status == p.ops[k].u.set_status.status)
+				continue;
 			if (out->n == *cap) {
 				*cap = *cap ? *cap * 2 : 64;
 				out->v = tix_xrealloc(out->v, *cap * sizeof(*out->v));

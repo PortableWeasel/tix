@@ -1284,10 +1284,13 @@ tix interprets `data` only through generic shapes, never through the kinds:
   instead.
   - The check is local. Merges never reject ops; incoming data is validated as usual.
   - It guarantees that a well-meaning agent can't park the night's work on a person.
-  - **The `blocked` phase is exempt.** A blocked ticket never holds up the queue:
-    `claim --next` skips only its dependents and keeps handing out other work. That makes
-    `blocked/aborted` the agent's escape hatch for impossible tickets. It's a stronger
-    "needs a person" that stops one branch of the plan, never the whole night.
+  - **The `blocked` and `done` phases are exempt**, because neither holds up the queue.
+    A blocked ticket stops only its own dependents while `claim --next` keeps handing out
+    other work, which makes `blocked/aborted` the agent's escape hatch for impossible
+    tickets: a stronger "needs a person" that stops one branch of the plan, never the
+    whole night. A done ticket satisfies its dependents whatever its stage, so
+    `done/unaccepted` can wait for a person's acceptance without stalling anything. (The
+    `done` exemption was added on 2026-11-07, while writing the skill.)
 - **Op**: `{"op":"set-autonomy","mode":"autonomous","until":<unix>|null}`, one LWW register
   (mode and expiry never mix across writes). `tix_ticket_autonomy` gives the effective
   setting for a ticket (its own, else the nearest ancestor's), with an expired autonomous
@@ -1347,7 +1350,7 @@ tix interprets `data` only through generic shapes, never through the kinds:
     if the pull fails); anything else is 403. In hosted mode the proxy must let that path
     through.
 
-### 15.7 Not in tix
+### 15.7 Not in tix (the skill: `docs/agent-workflow.md`) ✅
 
 Review rounds are counted from `review` comments by the skill. These all live in the skill:
 

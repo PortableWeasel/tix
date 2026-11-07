@@ -864,10 +864,10 @@ static tix_status precheck_states(tix_repo *r, const tix_entity *e, const tix_op
 					   tix_ticket_status_name(op->u.set_state.status));
 		else if (!d)
 			st = tix_error_set(err, TIX_ERR_INVALID, "'%s' is not on this project's stage list (see `tix stage ls`)", sg);
-		else if (guarded && d->human && d->phase != TIX_TICKET_BLOCKED)
+		else if (guarded && d->human && d->phase != TIX_TICKET_BLOCKED && d->phase != TIX_TICKET_DONE)
 			st = tix_error_set(err, TIX_ERR_REFUSED,
 					   "autonomous mode: '%s' waits for a person; decide and record an assumption, or abort "
-					   "(blocked stages stay allowed)", d->name);
+					   "(blocked and done stages stay allowed)", d->name);
 	}
 	tix_entity_free(owner);
 	free(own.v);

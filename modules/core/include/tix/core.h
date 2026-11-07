@@ -138,7 +138,8 @@ tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t
  *   - an agent identity may only set autonomy to halted (TIX_ERR_REFUSED);
  *   - the autonomy guard (§15.5): while a ticket's effective autonomy is autonomous, an
  *     agent identity may not put it into a stage tagged human, except in the blocked
- *     phase (TIX_ERR_REFUSED; decide and record an assumption, or abort instead).
+ *     and done phases, which never hold up other work (TIX_ERR_REFUSED; decide and
+ *     record an assumption, or abort instead).
  * Each set-state op is written right after a set-status op of the same phase
  * (added here when the caller didn't), so older readers see the phase (§15.1).
  */

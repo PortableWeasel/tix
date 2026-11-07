@@ -1366,9 +1366,10 @@ static void test_autonomy(void)
 	TK_OK(tix_ticket_create(r, "Night", "", NULL, &root, &e), &e);
 	tix_op list[] = {tix_op_stage_add("needs-input", TIX_TICKET_OPEN, true, 10),
 			 tix_op_stage_add("ready", TIX_TICKET_OPEN, false, 20),
-			 tix_op_stage_add("aborted", TIX_TICKET_BLOCKED, true, 10)};
-	TK_OK(tix_entity_apply(r, TIX_ENTITY_TICKET, &root, list, 3, &e), &e);
-	for (int i = 0; i < 3; i++)
+			 tix_op_stage_add("aborted", TIX_TICKET_BLOCKED, true, 10),
+			 tix_op_stage_add("unaccepted", TIX_TICKET_DONE, true, 10)};
+	TK_OK(tix_entity_apply(r, TIX_ENTITY_TICKET, &root, list, 4, &e), &e);
+	for (int i = 0; i < 4; i++)
 		tix_op_free(&list[i]);
 	TK_OK(tix_ticket_create(r, "Job", "", NULL, &t, &e), &e);
 	place(r, &t, &root, TIX_RANK_LAST, NULL);
@@ -1395,6 +1396,7 @@ static void test_autonomy(void)
 	TK_STATUS(apply_one(r, &t, tix_op_set_state(TIX_TICKET_OPEN, "needs-input")), TIX_ERR_REFUSED, &e);
 	TK_CHECK(strstr(e.msg, "record an assumption") != NULL);
 	TK_OK(apply_one(r, &t, tix_op_set_state(TIX_TICKET_BLOCKED, "aborted")), &e); /* blocked is exempt */
+	TK_OK(apply_one(r, &t, tix_op_set_state(TIX_TICKET_DONE, "unaccepted")), &e);  /* so is done */
 	TK_OK(apply_one(r, &t, tix_op_set_state(TIX_TICKET_OPEN, "ready")), &e);      /* not human: fine */
 	/* a person isn't guarded */
 	TK_OK(tix_repo_set_identity(r, &ada, &e), &e);
@@ -1450,19 +1452,19 @@ static void test_activity(void)
 
 	tix_activity_list l;
 	TK_OK(tix_activity_log(r, &(tix_activity_query){0}, &l, &e), &e);
-	TK_CHECK(l.n == 6); /* 2 creates, set-status + set-state, typed-comment, claim */
+	TK_CHECK(l.n == 5); /* 2 creates, set-state (its compatibility set-status hidden), typed-comment, claim */
 	for (size_t i = 1; i < l.n; i++)
 		TK_CHECK(l.v[i - 1].lamport <= l.v[i].lamport);
-	if (l.n == 6) {
+	if (l.n == 5) {
 		TK_STR_EQ(l.v[0].summary, "created: Alpha");
-		TK_STR_EQ(l.v[3].summary, "status open/ready");
-		TK_STR_EQ(l.v[4].summary, "[question] Which DB?");
-		TK_STR_EQ(l.v[5].op, "claim");
-		TK_STR_EQ(l.v[5].title, "Alpha");
+		TK_STR_EQ(l.v[2].summary, "status open/ready");
+		TK_STR_EQ(l.v[3].summary, "[question] Which DB?");
+		TK_STR_EQ(l.v[4].op, "claim");
+		TK_STR_EQ(l.v[4].title, "Alpha");
 	}
 	tix_activity_list_free(&l);
 	TK_OK(tix_activity_log(r, &(tix_activity_query){.since = mid}, &l, &e), &e);
-	TK_CHECK(l.n == 4);
+	TK_CHECK(l.n == 3);
 	tix_activity_list_free(&l);
 	TK_OK(tix_activity_log(r, &(tix_activity_query){.ticket = &a, .after = &head}, &l, &e), &e);
 	TK_CHECK(l.n == 1 && !strcmp(l.v[0].op, "claim"));
