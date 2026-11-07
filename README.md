@@ -28,8 +28,12 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
 - **M6 done**: `tix web`, a browser UI that needs no JavaScript: tickets, WBS, plan with an
   SVG Gantt, resource load, resources, calendars, sync, and forms for all of it. Loopback
   only, with a login URL printed at start; edits only write the fields you changed.
-- Next (M7): search as you type, Gantt drag editing, live refresh. Later: commit signature
-  enforcement, plan baselines, a TUI, issue-tracker bridges, a hosted web mode.
+- **M7 done**: with JavaScript on, the web UI adds search as you type, ticket pickers,
+  Gantt editing (drag to move, drag the end to resize, drag the handle to link, arrow
+  keys), inline status changes, keyboard shortcuts (`?` lists them) and live refresh when
+  the CLI or a sync changes something. Everything still works without it.
+- In progress: plan baselines, MS Project XML export, commit signature enforcement, a
+  Forgejo issue bridge, a TUI, and a hosted web mode behind SSO.
 
 tix tracks its own work: `tix pull && tix wbs` in a clone of this repo.
 

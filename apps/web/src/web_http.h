@@ -17,6 +17,8 @@
 #define WEB_MAX_NAME 64                       /* field and cookie names */
 #define WEB_MAX_CONNECTIONS 64
 #define WEB_IDLE_MS 30000
+#define WEB_MAX_STREAMS 8   /* open event streams (M7 live refresh); more get 503 */
+#define WEB_PING_MS 15000   /* comment line on idle streams, so proxies keep them */
 
 typedef struct web_kv {
 	char *name, *value; /* NUL-terminated, valid UTF-8, no NUL inside; owned by the request */
@@ -64,9 +66,12 @@ typedef struct web_response {
 	int status;      /* 200 unless set */
 	tix_buf headers; /* "Name: value\r\n" lines */
 	tix_buf body;
+	/* Server-sent events: after the headers (no Content-Length) and body, the connection
+	 * stays open and receives every event web_server_opts.tick produces. Status 200 only. */
+	bool stream;
 } web_response;
 
-#define WEB_RESPONSE_INIT {200, TIX_BUF_INIT, TIX_BUF_INIT}
+#define WEB_RESPONSE_INIT {200, TIX_BUF_INIT, TIX_BUF_INIT, false}
 
 /* REQUIRES name and value contain no CR, LF or NUL (response headers are ours). */
 void web_header(web_response *res, const char *name, const char *value);
@@ -85,8 +90,13 @@ typedef struct web_server_opts {
 	bool (*keep_going)(void *app);
 	/* Extra headers on every response, including errors the server makes itself. */
 	const char *always_headers;
-	int idle_ms;         /* 0: WEB_IDLE_MS */
+	int idle_ms;         /* 0: WEB_IDLE_MS (streams are exempt) */
 	int max_connections; /* 0: WEB_MAX_CONNECTIONS */
+	/* While at least one stream is open, called every tick_ms (0: 1000) on the server
+	 * thread. Bytes it appends to event go to every open stream as they are. */
+	void (*tick)(void *app, tix_buf *event);
+	int tick_ms;
+	int ping_ms;         /* 0: WEB_PING_MS */
 } web_server_opts;
 
 /* Runs the server on the calling thread until keep_going returns false or *stop is set

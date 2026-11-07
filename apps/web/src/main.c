@@ -209,7 +209,8 @@ int main(int argc, char **argv)
 		bool v6 = strchr(host, ':') != NULL;
 		snprintf(url, sizeof(url), v6 ? "http://[%s]:%d" : "http://%s:%d", host, port + attempt);
 		web_server_opts o = {.listen = url, .handler = web_app_handle, .app = &app, .on_listen = on_listen,
-				     .listen_ctx = &r, .always_headers = app.always_headers};
+				     .listen_ctx = &r, .always_headers = app.always_headers,
+				     .tick = web_app_tick, .tick_ms = 1000};
 		err = (tix_error)TIX_ERROR_INIT;
 		if (web_serve(&o, &stop, &err)) {
 			rc = 0;

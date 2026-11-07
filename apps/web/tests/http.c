@@ -40,6 +40,20 @@ static void echo(void *app, const web_request *req, web_response *res)
 		tix_buf_addf(&res->body, "host:%s\n", req->host);
 	if (!strcmp(req->path, "/teapot"))
 		res->status = 404;
+	if (!strcmp(req->path, "/events")) {
+		tix_buf_reset(&res->body);
+		web_header(res, "Content-Type", "text/event-stream");
+		tix_buf_adds(&res->body, "data: hello\n\n");
+		res->stream = true;
+	}
+}
+
+static int ticks;
+static void tick(void *app, tix_buf *ev)
+{
+	(void)app;
+	if (++ticks % 20 == 0) /* every 2 s: pings fill the idle gaps */
+		tix_buf_addf(ev, "data: tick %d\n\n", ticks);
 }
 
 static void on_listen(void *app, int port)
@@ -49,7 +63,7 @@ static void on_listen(void *app, int port)
 		_exit(3);
 }
 
-static pid_t start_server(int *port)
+static pid_t start_server_with(int *port, int max_connections)
 {
 	TK_CHECK(pipe(port_pipe) == 0);
 	pid_t p = fork();
@@ -58,7 +72,7 @@ static pid_t start_server(int *port)
 		signal(SIGPIPE, SIG_IGN);
 		web_server_opts o = {.listen = "http://127.0.0.1:0", .handler = echo, .on_listen = on_listen,
 				     .always_headers = "X-Content-Type-Options: nosniff\r\n", .idle_ms = 400,
-				     .max_connections = 8};
+				     .max_connections = max_connections, .tick = tick, .tick_ms = 100, .ping_ms = 300};
 		tix_error e = TIX_ERROR_INIT;
 		_exit(web_serve(&o, &stop_flag, &e) ? 0 : 2);
 	}
@@ -66,6 +80,11 @@ static pid_t start_server(int *port)
 	close(port_pipe[0]);
 	close(port_pipe[1]);
 	return p;
+}
+
+static pid_t start_server(int *port)
+{
+	return start_server_with(port, 8);
 }
 
 static int dial(int port)
@@ -224,6 +243,47 @@ int main(void)
 	}
 	for (int i = 0; i < 9; i++)
 		close(fds[i]);
+
+	/* still alive after all that */
+	exchange(port, "GET /alive HTTP/1.1\r\nConnection: close\r\n\r\n", out, sizeof(out));
+	CONTAINS(out, "GET /alive\n");
+
+	/* event streams: headers without a length, the first body, then tick events and pings;
+	 * exempt from the idle timeout; the ninth stream is refused */
+	int sport;
+	pid_t ssrv = start_server_with(&sport, 16);
+	int sfd[WEB_MAX_STREAMS + 1];
+	const char *ev_req = "GET /events HTTP/1.1\r\nHost: h\r\n\r\n";
+	for (int i = 0; i <= WEB_MAX_STREAMS; i++) {
+		sfd[i] = dial(sport);
+		say(sfd[i], ev_req, strlen(ev_req));
+		hear(sfd[i], out, sizeof(out), 1500, i < WEB_MAX_STREAMS ? 1 : 0);
+		if (i < WEB_MAX_STREAMS) {
+			hear(sfd[i], out + strlen(out), sizeof(out) - strlen(out), 300, 0);
+			CONTAINS(out, "HTTP/1.1 200 OK\r\n");
+			CONTAINS(out, "Content-Type: text/event-stream\r\n");
+			CONTAINS(out, "data: hello\n\n");
+			TK_CHECK(!strstr(out, "Content-Length"));
+		} else {
+			CONTAINS(out, "HTTP/1.1 503 ");
+		}
+	}
+	hear(sfd[0], out, sizeof(out), 2600, 0); /* > idle_ms: still open, ticking and pinging */
+	CONTAINS(out, "data: tick ");
+	CONTAINS(out, ": ping\n\n");
+	TK_CHECK(!closed(sfd[0], 50));
+	close(sfd[1]); /* a closed stream frees its slot */
+	int again = dial(sport);
+	say(again, ev_req, strlen(ev_req));
+	hear(again, out, sizeof(out), 1500, 0);
+	CONTAINS(out, "200 OK");
+	close(again);
+	for (int i = 0; i <= WEB_MAX_STREAMS; i++)
+		if (i != 1)
+			close(sfd[i]);
+	kill(ssrv, SIGTERM);
+	int sstatus;
+	TK_CHECK(waitpid(ssrv, &sstatus, 0) == ssrv && WIFEXITED(sstatus) && WEXITSTATUS(sstatus) == 0);
 
 	/* still alive after all that */
 	exchange(port, "GET /alive HTTP/1.1\r\nConnection: close\r\n\r\n", out, sizeof(out));

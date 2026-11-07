@@ -10,12 +10,14 @@
 
 typedef struct server {
 	const web_server_opts *o;
-	int connections;
+	struct mg_mgr *mgr;
+	int connections, streams;
 } server;
 
 /* Per-connection state lives in c->data (Mongoose's scratch space). */
 typedef struct conn_state {
-	uint64_t last_ms;
+	uint64_t last_ms, last_sent_ms;
+	bool stream;
 } conn_state;
 
 _Static_assert(sizeof(conn_state) <= MG_DATA_SIZE, "conn_state must fit c->data");
@@ -56,6 +58,15 @@ static void send_response(struct mg_connection *c, const server *sv, const web_r
 		mg_send(c, res->headers.data, res->headers.len);
 	if (sv->o->always_headers)
 		mg_printf(c, "%s", sv->o->always_headers);
+	if (res->stream && res->status == 200 && !head) {
+		/* an open-ended event stream: no length, no keep-alive reuse */
+		mg_printf(c, "Connection: close\r\n\r\n");
+		if (res->body.len)
+			mg_send(c, res->body.data, res->body.len);
+		state(c)->stream = true;
+		state(c)->last_sent_ms = mg_millis();
+		return; /* is_resp stays set: nothing more is parsed on this connection */
+	}
 	if (res->status == 204 || res->status == 304) /* no body, and no Content-Length (RFC 9110) */
 		mg_printf(c, "\r\n");
 	else
@@ -108,7 +119,15 @@ static void on_message(struct mg_connection *c, server *sv, struct mg_http_messa
 	}
 	web_response res = WEB_RESPONSE_INIT;
 	sv->o->handler(sv->o->app, &req, &res);
+	if (res.stream && res.status == 200 && sv->streams >= WEB_MAX_STREAMS) {
+		web_response_free(&res);
+		web_request_free(&req);
+		refuse(c, sv, 503, "too many event streams");
+		return;
+	}
 	send_response(c, sv, &res, !strcmp(req.method, "HEAD"));
+	if (state(c)->stream)
+		sv->streams++;
 	web_response_free(&res);
 	web_request_free(&req);
 }
@@ -126,14 +145,24 @@ static void on_event(struct mg_connection *c, int ev, void *ev_data)
 	case MG_EV_CLOSE:
 		if (c->is_accepted)
 			sv->connections--;
+		if (state(c)->stream)
+			sv->streams--;
 		break;
 	case MG_EV_READ:
 	case MG_EV_WRITE:
 		state(c)->last_ms = mg_millis();
 		break;
 	case MG_EV_POLL:
-		if (c->is_accepted && mg_millis() - state(c)->last_ms > (uint64_t)(sv->o->idle_ms ? sv->o->idle_ms : WEB_IDLE_MS))
+		if (state(c)->stream) {
+			uint64_t ping = (uint64_t)(sv->o->ping_ms ? sv->o->ping_ms : WEB_PING_MS);
+			if (mg_millis() - state(c)->last_sent_ms > ping) {
+				mg_printf(c, ": ping\n\n");
+				state(c)->last_sent_ms = mg_millis();
+			}
+		} else if (c->is_accepted &&
+			   mg_millis() - state(c)->last_ms > (uint64_t)(sv->o->idle_ms ? sv->o->idle_ms : WEB_IDLE_MS)) {
 			c->is_closing = 1;
+		}
 		break;
 	case MG_EV_HTTP_HDRS: {
 		struct mg_http_message *hm = ev_data;
@@ -168,11 +197,25 @@ static void on_event(struct mg_connection *c, int ev, void *ev_data)
 	}
 }
 
+/* One tick: the app's event bytes, if any, to every open stream. */
+static void tick(server *sv)
+{
+	tix_buf ev = TIX_BUF_INIT;
+	sv->o->tick(sv->o->app, &ev);
+	if (ev.len)
+		for (struct mg_connection *c = sv->mgr->conns; c; c = c->next)
+			if (state(c)->stream && !c->is_closing && !c->is_draining) {
+				mg_send(c, ev.data, ev.len);
+				state(c)->last_sent_ms = mg_millis();
+			}
+	tix_buf_free(&ev);
+}
+
 bool web_serve(const web_server_opts *o, volatile sig_atomic_t *stop, tix_error *err)
 {
 	TIX_REQUIRE(o && o->listen && o->handler);
-	server sv = {o, 0};
 	struct mg_mgr mgr;
+	server sv = {o, &mgr, 0, 0};
 	mg_mgr_init(&mgr);
 	struct mg_connection *lc = mg_http_listen(&mgr, o->listen, on_event, &sv);
 	if (!lc) {
@@ -182,8 +225,14 @@ bool web_serve(const web_server_opts *o, volatile sig_atomic_t *stop, tix_error 
 	}
 	if (o->on_listen)
 		o->on_listen(o->listen_ctx, (int)mg_ntohs(lc->loc.port));
-	while (!(stop && *stop) && (!o->keep_going || o->keep_going(o->app)))
-		mg_mgr_poll(&mgr, 200);
+	uint64_t last_tick = mg_millis(), every = (uint64_t)(o->tick_ms ? o->tick_ms : 1000);
+	while (!(stop && *stop) && (!o->keep_going || o->keep_going(o->app))) {
+		mg_mgr_poll(&mgr, 100);
+		if (o->tick && sv.streams > 0 && mg_millis() - last_tick >= every) {
+			last_tick = mg_millis();
+			tick(&sv);
+		}
+	}
 	mg_mgr_free(&mgr);
 	return true;
 }

@@ -545,7 +545,7 @@ Also installed as `git-tix`, so `git tix …` works.
 6. ✅ **M5 index** (done 2026-11-06): SQLite cache of replayed entities, `tix index`.
 7. ✅ **M6 web UI, no JavaScript** (done 2026-11-06, §13): `input` module, store refresh, Mongoose
    adapter, pages, forms, SVG Gantt, `tix web`.
-8. **M7 web UI enhancements** (§13.4): search as you type, Gantt editing, live refresh.
+8. **M7 web UI enhancements** (§13.4) ✅: search as you type, Gantt editing, live refresh.
 9. Later: signature enforcement, baselines, TUI, Forgejo issue bridge, MS Project XML export,
    hosted web mode (§13.8).
 
@@ -667,22 +667,49 @@ tix web [--listen 127.0.0.1:7480] [--read-only] [--no-open]
   w3m/lynx (checked in tests with `w3m -dump` where available). One small CSS file and
   system fonts. Short ids are shown, with full ids in `title` and the URL.
 
-### 13.4 JavaScript enhancements (M7)
+### 13.4 JavaScript enhancements (M7 ✅)
 
 One hand-written `app.js` (no framework, no build step, no third-party code) that each
-page loads with `defer`:
+page loads with `defer`. Its source and the stylesheet live in `apps/web/assets/` and are
+compiled in by `cmake/Embed.cmake`, served under content-hashed names. Progressive
+enhancement only: every request it makes is one a form or link can also make, and nothing
+it does is needed to use tix.
 
-- **Search as you type**: `GET /api/tickets?q=` returns JSON (id, title, status) for
-  the id/title box and for ticket pickers (parent, dependency). Without JS these are
-  the normal search form and a text field taking an id prefix.
-- **Gantt editing**: drag a bar to move it (sets `start`; manual tasks also `finish`),
-  drag its end to resize (`duration`), drag between bars to add an FS dependency. It
-  submits the same form fields to `POST /t/ID` with `fetch` and re-renders the SVG from
-  the response. Arrow keys work on a focused bar.
-- **Inline status change, keyboard shortcuts**, and **live refresh** through SSE
-  (`/events`, a ref-change poll on the server once a second) when the CLI or a sync
-  changes something.
-- Progressive enhancement only: every request JS makes is one a form can also make.
+- **Search as you type**: `GET /api/tickets?q=&limit=&status=` returns
+  `{"tickets":[{"id","short","title","status"}],"more":bool}` from the canonical JSON
+  writer (same matching as the list; active first, then WBS order; limit ≤ 50). The header
+  search box and the `parent`, `pred` and `under` fields become ARIA comboboxes. Results
+  are placed with `textContent` only. Without JS they are the search form and text
+  fields taking an id prefix.
+- **Gantt editing**: the SVG carries its geometry (`data-s0`, `-step`, `-colw`, `-x0`)
+  and each bar its stored fields and head (`data-start`, `-finish`, `-dur`, `-mode`,
+  `-head`, `-kind`). `data-edit` is present only when writes are allowed.
+  - Drag a bar: `start` (manual tasks also `finish`) shifted by whole columns.
+  - Drag its right end: auto tasks get `duration` (old duration plus the Mon–Fri days
+    crossed; ±5 per week column), manual tasks `finish`. The server's calendar decides
+    the real schedule, and the chart is re-drawn from it at once.
+  - Drag the handle at a bar's end onto another bar: `POST /t/OTHER/dep` with an FS link.
+  - A focused bar takes ←/→ (Shift: length), saved after a 0.7 s pause; Esc cancels.
+  - Summary bars and tasks with actual dates (`data-kind="sum"|"fixed"`) don't drag.
+  - Each edit posts the edit form's fields with their originals and `head`, so the
+    stale-tab rule (§13.5) applies unchanged; a refusal shows the server's message.
+- **Inline status**: the list's status cells become selects, and the ticket page's status
+  form applies on change. Both post `status` / `o.status` / `head` to `POST /t/ID`.
+- **Keyboard shortcuts**: `/` search, `g t|w|p|l|r|c` go to a page, `n` new, `e` edit,
+  `j`/`k` and Enter in lists, `?` help. Ignored while typing in a field.
+- **Live refresh**: `GET /events` is a `text/event-stream`. Each page carries
+  `data-stamp`, a fingerprint of every `refs/tix/*` ref (`tix_repo_stamp`). The stream's
+  first event is the current stamp. While a stream is open the server refreshes and
+  re-stamps once a second, and sends an event when the stamp changes.
+  - The page then re-reads itself and swaps `<main>`, keeping focus on the same ticket.
+  - While the user is typing in a form it shows a "changed elsewhere" banner instead, so
+    no input is lost.
+  - The HTTP port gained a streaming response and a server tick for this (still nothing
+    names Mongoose outside its adapter). Streams are exempt from the idle timeout, get a
+    comment line after 15 s of silence, and are capped at 8 (more get 503; the browser
+    then doesn't retry).
+  - The stamp reveals only that something changed. It sits behind the same session check
+    as every page.
 
 ### 13.5 Concurrent edits from the browser
 
@@ -743,7 +770,7 @@ Loopback alone doesn't keep other local users or web pages out.
 - **`--read-only`**: no POST routes are registered and forms are not rendered.
 - **No file system serving**: assets are compiled in and looked up by exact name.
 
-### 13.7 Testing (M6 ✅)
+### 13.7 Testing (M6 ✅, M7 ✅)
 
 - **Handler tests** (no sockets): fake `web_http` requests against core on `store_mem`.
   They cover golden HTML fragments, PRG redirects, 422 re-rendering, changed-fields-only
@@ -767,7 +794,21 @@ Loopback alone doesn't keep other local users or web pages out.
 - **Browser checks** (by hand in M6, headless Chrome): every page in light and dark with no
   CSP violation, and the forms driven with JavaScript disabled. This found the
   `Referrer-Policy` / `Origin: null` problem (§13.6).
-- **No-JS check** (M7): every M7 interaction has a test proving its form fallback works.
+- **M7 tests**:
+  - handler tests for `/api/tickets` (JSON escaping of hostile titles, limits, the
+    session check) and `/events` (stream flag, first stamp equals the page's, ticks speak
+    only on change);
+  - adapter tests for streams (no Content-Length, tick events, pings, idle exemption, the
+    cap and a freed slot);
+  - the smoke test opens a real event stream and sees a CLI write arrive;
+  - `web.browser` (`apps/web/tests/browser.py`, headless Chrome via Playwright under
+    `uv`; skipped when missing) drives every enhancement and reads the result back with
+    the CLI: search and Enter, hostile titles shown as text, inline status on both pages,
+    drag-move, drag-resize, drag-link, arrow keys with focus kept, live refresh in place,
+    the typing banner, shortcuts, the dependency picker; plus no CSP violation, console
+    error or failed request. (Playwright's `wait_for_function` uses `eval`, which the CSP
+    rightly refuses, so the test polls instead.)
+  - The no-JS paths are the M6 tests, unchanged: the forms JS posts are the same forms.
 
 ### 13.8 Hosted mode later (not built in M6–M7)
 

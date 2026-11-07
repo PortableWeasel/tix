@@ -129,7 +129,16 @@ void page_begin(web_ctx *x, const char *title)
 	h_text(h, x->app->js_url);
 	HL(h, "\"></script><title>");
 	h_text(h, title);
-	HL(h, " · tix</title></head>\n<body>\n");
+	HL(h, " · tix</title></head>\n<body");
+	char stamp[TIX_STAMP_LEN];
+	if (x->session && !tix_repo_stamp(x->app->cfg.repo, stamp, NULL)) {
+		HL(h, " data-stamp=\"");
+		h_text(h, stamp);
+		HL(h, "\"");
+	}
+	if (x->app->cfg.read_only)
+		HL(h, " data-read-only");
+	HL(h, ">\n");
 	if (x->session) {
 		HL(h, "<header><nav><a href=\"/tickets\"><b>tix</b></a> <a href=\"/tickets\">Tickets</a> "
 		      "<a href=\"/wbs\">WBS</a> <a href=\"/plan\">Plan</a> <a href=\"/load\">Load</a> "
@@ -302,7 +311,8 @@ static const route_def get_routes[] = {
 	{"res", 2, NULL, 0, page_resource},     {"cal", 1, NULL, 0, page_calendars},
 	{"cal", 2, "new", 1, cal_edit},         {"cal", 3, "edit", 2, cal_edit},
 	{"cal", 2, NULL, 0, page_calendar},     {"id", 1, NULL, 0, page_identities},
-	{"sync", 1, NULL, 0, page_sync},
+	{"sync", 1, NULL, 0, page_sync},       {"api", 2, "tickets", 1, page_api_tickets},
+	{"events", 1, NULL, 0, page_events},
 };
 static const route_def post_routes[] = {
 	{"new", 1, NULL, 0, post_new},            {"t", 2, NULL, 0, post_ticket},

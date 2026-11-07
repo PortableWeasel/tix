@@ -98,11 +98,18 @@ void page_tickets(web_ctx *x)
 	      "<th>Updated</th></tr></thead><tbody>\n");
 	for (size_t i = 0; i < l.n; i++) {
 		const tix_entity *e = l.v[i];
-		HL(h, "<tr><td class=\"id\"><a href=\"/t/");
+		/* data-*: for app.js inline status changes and j/k navigation (M7) */
+		HL(h, "<tr data-id=\"");
+		h_id(h, &e->id);
+		HL(h, "\" data-head=\"");
+		h_id(h, &e->head);
+		HL(h, "\" data-status=\"");
+		h_text(h, tix_ticket_status_name(e->u.ticket.status));
+		HL(h, "\"><td class=\"id\"><a href=\"/t/");
 		h_id(h, &e->id);
 		HL(h, "\">");
 		h_short(h, &e->id);
-		HL(h, "</a></td><td>");
+		HL(h, "</a></td><td class=\"st\">");
 		h_status(h, e->u.ticket.status);
 		HL(h, "</td><td><a href=\"/t/");
 		h_id(h, &e->id);

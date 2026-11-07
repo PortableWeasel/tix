@@ -470,8 +470,12 @@ static void test_pages(void)
 	TK_CHECK(call(&c, "GET", "/plan", NULL) == 200);
 	clean(&c, "/plan");
 	HAS(&c, "<svg class=\"gantt\"");
-	snprintf(buf, sizeof(buf), "<a href=\"/t/%s\"><title>", tix_oid_hex(&dig, hex));
+	snprintf(buf, sizeof(buf), "<a class=\"task\" href=\"/t/%s\" data-id=\"%s\"", tix_oid_hex(&dig, hex), hex);
 	HAS(&c, buf);
+	HAS(&c, " data-s0=\"");   /* geometry and task data for app.js (M7) */
+	HAS(&c, " data-edit");
+	HAS(&c, " data-kind=\"sum\"");
+	HAS(&c, " data-kind=\"ms\"");
 	HAS(&c, "class=\"arrow\"");
 	HAS(&c, "class=\"ms");     /* the milestone diamond */
 	HAS(&c, "class=\"bar sum"); /* the summary bar */
@@ -807,13 +811,73 @@ static void test_read_only_pages(void)
 	HASNT(&c, "New ticket");
 	TK_CHECK(call(&c, "GET", "/sync", NULL) == 200);
 	HASNT(&c, "Sync now");
+	TK_CHECK(call(&c, "GET", "/plan", NULL) == 200);
+	HASNT(&c, "data-edit"); /* no dragging on a read-only server */
+	HAS(&c, "data-read-only");
 	TK_CHECK(call(&c, "POST", "/new", form(&c, "title", "x", "o.title", "", NULL)) == 405);
+	web_response_free(&c.res);
+	world_close(&w);
+}
+
+/* M7: the JSON search and the event stream. */
+static void test_api(void)
+{
+	world w;
+	world_open(&w, false);
+	tix_oid a, b;
+	TK_OK(tix_ticket_create(w.repo, "Quote \" back\\slash </script><b>x", "", NULL, &a, &e), &e);
+	TK_OK(tix_ticket_create(w.repo, "Plain other", "", NULL, &b, &e), &e);
+	client c = new_client(&w);
+	TK_CHECK(call(&c, "GET", "/api/tickets?q=quote", NULL) == 401); /* a session first, as for pages */
+	TK_CHECK(call(&c, "GET", "/events", NULL) == 401);
+	TK_CHECK(!c.res.stream);
+	login(&c);
+
+	TK_CHECK(call(&c, "GET", "/api/tickets?q=QUOTE", NULL) == 200);
+	TK_CHECK(strstr(tix_buf_cstr(&c.res.headers), "Content-Type: application/json\r\n") != NULL);
+	char hex[TIX_OID_MAX_HEX + 1], want[400];
+	snprintf(want, sizeof(want),
+		 "{\"tickets\":[{\"id\":\"%s\",\"short\":\"%.7s\",\"title\":\"Quote \\\" back\\\\slash "
+		 "</script><b>x\",\"status\":\"open\"}],\"more\":false}",
+		 tix_oid_hex(&a, hex), hex);
+	TK_STR_EQ(body(&c), want); /* JSON-escaped, never HTML: app.js only sets textContent */
+	TK_CHECK(call(&c, "GET", "/api/tickets?limit=1", NULL) == 200);
+	HAS(&c, "\"more\":true");
+	TK_CHECK(call(&c, "GET", "/api/tickets?limit=zz&status=done", NULL) == 200);
+	TK_STR_EQ(body(&c), "{\"tickets\":[],\"more\":false}");
+	TK_CHECK(call(&c, "POST", "/api/tickets", form(&c, NULL)) == 405);
+
+	/* the stream starts with the stamp every page carries; ticks speak only on change */
+	TK_CHECK(call(&c, "GET", "/tickets", NULL) == 200);
+	const char *ds = strstr(body(&c), "data-stamp=\"");
+	TK_CHECK(ds != NULL);
+	char stamp[TIX_STAMP_LEN] = "";
+	if (ds)
+		snprintf(stamp, sizeof(stamp), "%.16s", ds + 12);
+	TK_CHECK(call(&c, "GET", "/events", NULL) == 200);
+	TK_CHECK(c.res.stream);
+	TK_CHECK(strstr(tix_buf_cstr(&c.res.headers), "Content-Type: text/event-stream\r\n") != NULL);
+	snprintf(want, sizeof(want), "retry: 5000\nevent: stamp\ndata: %s\n\n", stamp);
+	TK_STR_EQ(body(&c), want);
+	tix_buf ev = TIX_BUF_INIT;
+	web_app_tick(c.app, &ev);
+	TK_CHECK(ev.len == 0);
+	tix_op op = tix_op_set_status(TIX_TICKET_DONE);
+	TK_OK(tix_entity_apply(w.repo, TIX_ENTITY_TICKET, &b, &op, 1, &e), &e);
+	tix_op_free(&op);
+	web_app_tick(c.app, &ev);
+	TK_CHECK(!strncmp(tix_buf_cstr(&ev), "event: stamp\ndata: ", 19) && strncmp(tix_buf_cstr(&ev) + 19, stamp, 16));
+	tix_buf_reset(&ev);
+	web_app_tick(c.app, &ev);
+	TK_CHECK(ev.len == 0);
+	tix_buf_free(&ev);
 	web_response_free(&c.res);
 	world_close(&w);
 }
 
 int main(void)
 {
+	test_api();
 	test_checks();
 	test_read_only();
 	test_escaping();

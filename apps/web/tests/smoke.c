@@ -185,6 +185,48 @@ int main(int argc, char **argv)
 	TK_CHECK(run(show, out, sizeof(out)) == 0);
 	CONTAINS(out, "Hello from HTTP");
 
+	/* live refresh: an open event stream hears about a CLI write within a couple of ticks */
+	{
+		int fd = socket(AF_INET, SOCK_STREAM, 0);
+		struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port)};
+		a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		TK_CHECK(fd >= 0 && connect(fd, (struct sockaddr *)&a, sizeof(a)) == 0);
+		char req[512], ev[4096] = "";
+		int n = snprintf(req, sizeof(req), "GET /events HTTP/1.1\r\nHost: %s\r\nCookie: %s\r\n\r\n", hostport,
+				 cookie);
+		TK_CHECK(write(fd, req, (size_t)n) == n);
+		size_t got = 0;
+		struct pollfd pf = {fd, POLLIN, 0};
+		while (!strstr(ev, "\n\n") && poll(&pf, 1, 3000) > 0) {
+			ssize_t r = read(fd, ev + got, sizeof(ev) - 1 - got);
+			if (r <= 0)
+				break;
+			got += (size_t)r;
+			ev[got] = '\0';
+			if (strstr(ev, "data: ") && strstr(strstr(ev, "data: "), "\n\n"))
+				break;
+		}
+		CONTAINS(ev, "text/event-stream");
+		char first[20] = "";
+		grab(ev, "data: ", "\n", first, sizeof(first));
+		TK_CHECK(strlen(first) == 16);
+		char *cli_more[] = {tix, "new", "-t", "Seen live", NULL};
+		TK_CHECK(run(cli_more, out, sizeof(out)) == 0);
+		got = 0;
+		ev[0] = '\0';
+		while (!strstr(ev, "data: ") && poll(&pf, 1, 4000) > 0) {
+			ssize_t r = read(fd, ev + got, sizeof(ev) - 1 - got);
+			if (r <= 0)
+				break;
+			got += (size_t)r;
+			ev[got] = '\0';
+		}
+		char second[20] = "";
+		grab(ev, "data: ", "\n", second, sizeof(second));
+		TK_CHECK(strlen(second) == 16 && strcmp(first, second));
+		close(fd);
+	}
+
 	/* a forged form from elsewhere is refused */
 	char saved[64];
 	snprintf(saved, sizeof(saved), "%s", origin);

@@ -29,7 +29,7 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/assets_gen.c
 
 # Pages, sessions and request checks: everything above HTTP, testable on store_mem.
 add_library(tix_web_app STATIC ${CMAKE_CURRENT_BINARY_DIR}/assets_gen.c src/app.c src/html.c src/assets.c src/util.c src/gantt.c
-  src/pages_tickets.c src/pages_plan.c src/pages_res.c src/forms.c src/actions.c)
+  src/pages_tickets.c src/pages_plan.c src/pages_res.c src/forms.c src/actions.c src/api.c)
 target_link_libraries(tix_web_app PUBLIC tix_web_request tix::core tix::input tix::export)
 tix_apply_warnings(tix_web_app)
 
@@ -52,3 +52,13 @@ target_link_libraries(test_web_smoke PRIVATE tix::testkit tix::base)
 tix_apply_warnings(test_web_smoke)
 add_test(NAME web.smoke COMMAND test_web_smoke $<TARGET_FILE:tix> $<TARGET_FILE:tix-web>)
 set_tests_properties(web.smoke PROPERTIES LABELS web TIMEOUT 300)
+
+# app.js in a real browser (headless Chrome via Playwright, run with uv). Skipped (77) when
+# uv, Playwright or Chrome isn't there; label "browser" to run or exclude it on its own.
+find_program(TIX_UV uv)
+if(TIX_UV)
+  add_test(NAME web.browser
+    COMMAND ${TIX_UV} run --quiet --with playwright python ${CMAKE_CURRENT_SOURCE_DIR}/tests/browser.py
+      $<TARGET_FILE:tix> $<TARGET_FILE:tix-web>)
+  set_tests_properties(web.browser PROPERTIES LABELS "web;browser" TIMEOUT 300 SKIP_RETURN_CODE 77)
+endif()

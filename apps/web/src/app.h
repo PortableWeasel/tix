@@ -6,6 +6,7 @@
 #define TIX_WEB_APP_H
 
 #include "html.h"
+#include "tix/base_json.h"
 #include "tix/input.h"
 #include "web_http.h"
 
@@ -41,6 +42,7 @@ typedef struct web_app {
 	char always_headers[1024]; /* security headers on every response */
 	char css_url[64];          /* "/assets/tix-<hash>.css" */
 	char js_url[64];           /* "/assets/tix-<hash>.js" */
+	char stamp[TIX_STAMP_LEN]; /* last repository stamp sent to event streams */
 } web_app;
 
 /* Fills app (makes the login token). */
@@ -51,6 +53,8 @@ void web_app_set_listen(web_app *app, const char *host, int port);
 
 /* The web_handler. */
 void web_app_handle(void *app, const web_request *req, web_response *res);
+/* web_server_opts.tick: refreshes, and emits a stamp event when the repository changed. */
+void web_app_tick(void *app, tix_buf *event);
 
 /* ---- for the page handlers (pages_*.c) ---- */
 
@@ -135,5 +139,7 @@ void post_named(web_ctx *x, tix_entity_type t);
 void post_exception(web_ctx *x);
 void page_sync(web_ctx *x);
 void post_sync(web_ctx *x);
+void page_api_tickets(web_ctx *x);
+void page_events(web_ctx *x);
 
 #endif

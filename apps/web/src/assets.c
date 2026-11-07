@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-extern const char tix_asset_css[], tix_asset_js[];
+extern const char *const tix_asset_css, *const tix_asset_js;
 extern const size_t tix_asset_css_len, tix_asset_js_len;
 
 typedef struct asset {
@@ -16,10 +16,15 @@ typedef struct asset {
 	char name[32];
 } asset;
 
-static asset assets[] = {
-	{tix_asset_css, &tix_asset_css_len, "css", "text/css; charset=utf-8", ""},
-	{tix_asset_js, &tix_asset_js_len, "js", "text/javascript; charset=utf-8", ""},
-};
+static asset assets[2];
+
+static void init_assets(void)
+{
+	if (assets[0].data)
+		return;
+	assets[0] = (asset){tix_asset_css, &tix_asset_css_len, "css", "text/css; charset=utf-8", ""};
+	assets[1] = (asset){tix_asset_js, &tix_asset_js_len, "js", "text/javascript; charset=utf-8", ""};
+}
 
 static uint32_t fnv1a(const char *s, size_t n)
 {
@@ -31,6 +36,7 @@ static uint32_t fnv1a(const char *s, size_t n)
 
 static const char *name_of(asset *a)
 {
+	init_assets();
 	if (!a->name[0])
 		snprintf(a->name, sizeof(a->name), "tix-%08x.%s", fnv1a(a->data, *a->len), a->ext);
 	return a->name;
@@ -48,6 +54,7 @@ const char *asset_js_name(void)
 
 bool asset_find(const char *name, const char **type, const char **body, size_t *len)
 {
+	init_assets();
 	for (size_t i = 0; i < sizeof(assets) / sizeof(*assets); i++)
 		if (!strcmp(name, name_of(&assets[i]))) {
 			*type = assets[i].type;

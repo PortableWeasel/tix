@@ -3,6 +3,10 @@
  * column per day (per week beyond 120 days), bars link to their tickets, the critical path
  * and lateness are marked, dependencies are drawn as arrows. Styling is by class (the CSP
  * forbids style attributes); geometry uses SVG presentation attributes.
+ *
+ * For app.js (M7) the chart also carries its geometry (data-s0, -step, -colw, -x0, -rowh,
+ * -headh) and each task its stored fields and head (data-*), so a drag can post the same
+ * fields the edit form would. data-edit is present only when writes are allowed.
  */
 #include "app.h"
 
@@ -40,6 +44,57 @@ static void short_title(html *h, const char *s, size_t n)
 static void num(html *h, long v)
 {
 	h_int(h, v);
+}
+
+static void data_date(html *h, const char *name, tix_date d)
+{
+	HL(h, " ");
+	h_text(h, name);
+	HL(h, "=\"");
+	if (d != TIX_DATE_NONE)
+		h_date(h, d);
+	HL(h, "\"");
+}
+
+/* What a drag needs about one task: its stored values (the form's originals), its head
+ * (the conflict check), what kind of bar it is, and where it is drawn. */
+static void task_data(html *h, const tix_plan_task *t, size_t row)
+{
+	const tix_ticket_plan *p = &t->ticket->u.ticket.plan;
+	HL(h, " data-id=\"");
+	h_id(h, &t->ticket->id);
+	HL(h, "\" data-head=\"");
+	h_id(h, &t->ticket->head);
+	HL(h, "\" data-row=\"");
+	num(h, (long)row);
+	HL(h, "\" data-kind=\"");
+	if (t->summary)
+		HL(h, "sum");
+	else if (t->actual_start != TIX_DATE_NONE || t->actual_finish != TIX_DATE_NONE)
+		HL(h, "fixed"); /* it happened: actual dates, not a plan to drag */
+	else if (t->milestone)
+		HL(h, "ms");
+	else
+		HL(h, "task");
+	HL(h, "\" data-mode=\"");
+	if (p->mode == TIX_MODE_MANUAL)
+		HL(h, "manual");
+	else
+		HL(h, "auto");
+	HL(h, "\"");
+	data_date(h, "data-start", p->start);
+	data_date(h, "data-finish", p->finish);
+	HL(h, " data-dur=\"");
+	if (p->duration >= 0)
+		num(h, (long)p->duration);
+	HL(h, "\"");
+	if (t->scheduled) {
+		data_date(h, "data-s", t->start);
+		data_date(h, "data-f", t->finish);
+		HL(h, " data-days=\"");
+		num(h, (long)t->duration);
+		HL(h, "\"");
+	}
 }
 
 void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_only)
@@ -83,7 +138,24 @@ void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_on
 	num(h, width);
 	HL(h, " ");
 	num(h, height);
-	HL(h, "\"><defs><marker id=\"arr\" viewBox=\"0 0 6 6\" refX=\"6\" refY=\"3\" markerWidth=\"6\" "
+	HL(h, "\"");
+	data_date(h, "data-s0", g.s0);
+	HL(h, " data-step=\"");
+	num(h, g.step);
+	HL(h, "\" data-colw=\"");
+	num(h, g.colw);
+	HL(h, "\" data-cols=\"");
+	num(h, (long)g.cols);
+	HL(h, "\" data-x0=\"");
+	num(h, LABEL_W);
+	HL(h, "\" data-rowh=\"");
+	num(h, ROW_H);
+	HL(h, "\" data-headh=\"");
+	num(h, HEAD_H);
+	HL(h, "\"");
+	if (!x->app->cfg.read_only)
+		HL(h, " data-edit");
+	HL(h, "><defs><marker id=\"arr\" viewBox=\"0 0 6 6\" refX=\"6\" refY=\"3\" markerWidth=\"6\" "
 	      "markerHeight=\"6\" orient=\"auto\"><path class=\"head\" d=\"M0,0 L6,3 L0,6 z\"/></marker></defs>\n");
 
 	/* header: month names, then Monday (or week) ticks; weekends shaded in day view */
@@ -182,9 +254,11 @@ void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_on
 		if (row[i] == SIZE_MAX)
 			continue;
 		long y = HEAD_H + (long)row[i] * ROW_H;
-		HL(h, "<a href=\"/t/");
+		HL(h, "<a class=\"task\" href=\"/t/");
 		h_id(h, &t->ticket->id);
-		HL(h, "\"><title>");
+		HL(h, "\"");
+		task_data(h, t, row[i]);
+		HL(h, "><title>");
 		h_text(h, t->wbs);
 		HL(h, " ");
 		h_text(h, t->ticket->u.ticket.title);
