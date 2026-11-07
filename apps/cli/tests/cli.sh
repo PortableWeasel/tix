@@ -388,6 +388,39 @@ cd "$T/c1" && expect 0 "$TIX" pull && expect 0 "$TIX" show "$j2"; has "claimed: 
 expect 0 "$TIX" claim "$j2" --release; has "Released"
 expect 0 "$TIX" show "$j2"; hasnt "claimed:"
 
+# ---- autonomy (§15.5): the switch, expiry, the guard, halt -----------------------------
+cd "$T/c1"   # Ada is an agent here (claims section)
+expect 0 "$TIX" new -t "Night root"; nr=$(sed -n 's/^Created ticket //p' <<<"$out")
+expect 0 "$TIX" stage add "$nr" needs-input --phase open --human
+expect 0 "$TIX" stage add "$nr" ready --phase open
+expect 0 "$TIX" stage add "$nr" aborted --phase blocked --human
+expect 0 "$TIX" new -t "Night job" --parent "$nr" --status open/ready; nj=$(sed -n 's/^Created ticket //p' <<<"$out")
+expect 0 "$TIX" autonomy "$nj" show; has "supervised (nothing up the tree"
+expect 1 "$TIX" autonomy "$nr" on --for 8h; has "agents may only halt"
+expect 0 "$TIX" id edit --kind human
+expect 2 "$TIX" autonomy "$nr" on; has "needs an end"
+expect 2 "$TIX" autonomy "$nr" on --for 8h --no-expiry; has "needs an end"
+expect 2 "$TIX" autonomy "$nr" on --until 25:00; has "--until is HH:MM"
+expect 2 "$TIX" autonomy "$nr" maybe; has "on, off, halt or show"
+expect 0 "$TIX" autonomy "$nr" on --for 8h; has "autonomous until"
+expect 0 "$TIX" autonomy "$nj" show; has "autonomous until"; has "(set on ${nr}"
+expect 0 "$TIX" show "$nr"; has "autonomy: autonomous until"
+expect 0 "$TIX" edit "$nj" --status open/needs-input   # a person isn't guarded
+expect 0 "$TIX" edit "$nj" --status open/ready
+expect 0 "$TIX" id edit --kind agent
+expect 1 "$TIX" edit "$nj" --status open/needs-input; has "autonomous mode: 'needs-input' waits for a person"
+expect 0 "$TIX" edit "$nj" --status blocked/aborted   # the escape hatch
+expect 0 "$TIX" edit "$nj" --status open/ready
+expect 0 "$TIX" autonomy "$nr" halt; has "halted"
+expect 3 "$TIX" claim --next --status open/ready --local; has "no work"
+expect 1 "$TIX" autonomy "$nr" off; has "agents may only halt"
+expect 0 "$TIX" id edit --kind human
+expect 0 "$TIX" autonomy "$nr" on --until "2099-01-01 08:00"; has "autonomous until 2099-01-01"
+expect 0 "$TIX" autonomy "$nr" on --no-expiry; has "autonomous  (set on"
+expect 0 "$TIX" autonomy "$nr" off; has "supervised"
+expect 0 "$TIX" id edit --kind agent
+expect 0 "$TIX" edit "$nj" --status open/needs-input   # supervised again: fine
+
 # ---- index cache (M5) ------------------------------------------------------------
 cd "$T/a"
 expect 0 "$TIX" index clear; has "index: 0 cached"

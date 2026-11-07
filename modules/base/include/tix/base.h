@@ -23,6 +23,7 @@ typedef enum tix_status {
 	TIX_ERR_AMBIGUOUS,   /* id prefix matches more than one entity */
 	TIX_ERR_IO,          /* storage / process failure */
 	TIX_ERR_UNSUPPORTED, /* valid but not handled by this version */
+	TIX_ERR_REFUSED,     /* well-formed, but a policy forbids it (the autonomy guard, §15.5) */
 } tix_status;
 
 /* RETURNS a static, human-readable name ("ok", "invalid", ...). */

@@ -433,6 +433,8 @@ static void test_workflow_ops(void)
 		tix_op_stage_remove("needs-input"),
 		tix_op_claim(1700001800),
 		tix_op_release(),
+		tix_op_set_autonomy(TIX_AUTO_AUTONOMOUS, 1700030000),
+		tix_op_set_autonomy(TIX_AUTO_HALTED, -1),
 	};
 	round_trip(TIX_ENTITY_TICKET, t, sizeof(t) / sizeof(*t),
 		"{\"tix\":1,\"type\":\"ticket\",\"author\":\"" A40 "\",\"lamport\":3,\"time\":9}\n"
@@ -442,7 +444,9 @@ static void test_workflow_ops(void)
 		"{\"op\":\"stage-add\",\"name\":\"needs-input\",\"phase\":\"in-progress\",\"human\":true,\"rank\":40}\n"
 		"{\"op\":\"stage-remove\",\"name\":\"needs-input\"}\n"
 		"{\"op\":\"claim\",\"until\":1700001800}\n"
-		"{\"op\":\"release\"}\n");
+		"{\"op\":\"release\"}\n"
+		"{\"op\":\"set-autonomy\",\"mode\":\"autonomous\",\"until\":1700030000}\n"
+		"{\"op\":\"set-autonomy\",\"mode\":\"halted\",\"until\":null}\n");
 
 	static const bad_case cases[] = {
 		{"stage uppercase", HDR "{\"op\":\"set-state\",\"status\":\"open\",\"stage\":\"Ready\"}\n", TIX_ERR_INVALID},
@@ -462,6 +466,9 @@ static void test_workflow_ops(void)
 		{"claim missing until", HDR "{\"op\":\"claim\"}\n", TIX_ERR_INVALID},
 		{"claim with identity", HDR "{\"op\":\"claim\",\"until\":5,\"identity\":\"" A40 "\"}\n", TIX_ERR_INVALID},
 		{"release extra", HDR "{\"op\":\"release\",\"x\":1}\n", TIX_ERR_INVALID},
+		{"autonomy bad mode", HDR "{\"op\":\"set-autonomy\",\"mode\":\"yolo\",\"until\":null}\n", TIX_ERR_INVALID},
+		{"autonomy no until", HDR "{\"op\":\"set-autonomy\",\"mode\":\"halted\"}\n", TIX_ERR_INVALID},
+		{"autonomy negative", HDR "{\"op\":\"set-autonomy\",\"mode\":\"halted\",\"until\":-1}\n", TIX_ERR_INVALID},
 	};
 	for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
 		tix_error e = TIX_ERROR_INIT;

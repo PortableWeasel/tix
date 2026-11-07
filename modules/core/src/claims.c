@@ -106,7 +106,9 @@ static tix_status candidates(tix_repo *r, const tix_claim_query *q, int64_t now,
 		const tix_ticket *t = &e->u.ticket;
 		bool live = tix_claim_live(&t->claim, now), own = live && tix_oid_eq(&t->claim.identity, &r->identity) &&
 								!other_claim(r, t, now);
-		if (state_matches(q, t) && (!live || own) && !in_human_stage(r, e) && tix_ticket_deps_done(r, e)) {
+		tix_autonomy au;
+		if (state_matches(q, t) && (!live || own) && !in_human_stage(r, e) && tix_ticket_deps_done(r, e) &&
+		    !tix_ticket_autonomy(r, &e->id, now, &au, NULL) && au.mode != TIX_AUTO_HALTED) {
 			if (own)
 				TIX_VEC_PUSH(&mine, e);
 			else

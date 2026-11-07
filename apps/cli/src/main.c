@@ -37,6 +37,11 @@ static const char usage_text[] =
 	"  claim --next [--status S]... [--under ID] [--for 30m] [--remote R | --local]\n"
 	"        first free ticket in WBS order whose predecessors are done and whose stage\n"
 	"        doesn't wait for a person; syncs through the remote; exit 3 = no work\n"
+	"\n"
+	"autonomy (agents keep working without a person; set on a WBS root, inherited)\n"
+	"  autonomy ID on --until 08:00 | --for 10h | --no-expiry     autonomy ID off | halt | show\n"
+	"        while on, agents can't park tickets in stages that wait for a person\n"
+	"        (blocked stages excepted); agents may only halt\n"
 	"\n";
 static const char usage_text2[] =
 	"planning options (new, edit; 'none' clears a value)\n"
@@ -253,7 +258,7 @@ int main(int argc, char **argv)
 		{"unassign", cmd_unassign}, {"res", cmd_res}, {"cal", cmd_cal},
 		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"export", cmd_export}, {"index", cmd_index},
 		{"baseline", cmd_baseline}, {"verify", cmd_verify}, {"bridge", cmd_bridge}, {"stage", cmd_stage},
-		{"claim", cmd_claim}, {"note", cmd_note},
+		{"claim", cmd_claim}, {"note", cmd_note}, {"autonomy", cmd_autonomy},
 	};
 	int (*fn)(cli *, int, char **) = NULL;
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(*cmds); i++)

@@ -226,7 +226,13 @@ typedef enum tix_op_kind {
 	TIX_OP_CLAIM,             /* "claim": until (the claimant is the pack author) */
 	TIX_OP_RELEASE,           /* "release" */
 	TIX_OP_TYPED_COMMENT,     /* "typed-comment": kind, body, data (JSON object as a string), reply-to|null */
+	TIX_OP_SET_AUTONOMY,      /* "set-autonomy": mode, until|null (one register) */
 } tix_op_kind;
+
+/* §15.5: who may keep a subtree's work moving without a person. */
+typedef enum tix_autonomy_mode { TIX_AUTO_SUPERVISED = 0, TIX_AUTO_AUTONOMOUS, TIX_AUTO_HALTED } tix_autonomy_mode;
+const char *tix_autonomy_mode_name(tix_autonomy_mode m);
+bool tix_autonomy_mode_parse(const char *s, tix_autonomy_mode *out);
 
 /* "task" op of a baseline: one planned task as it was when the snapshot was taken. */
 typedef struct tix_baseline_task_op {
@@ -255,6 +261,7 @@ typedef struct tix_op {
 		struct { char *name; } stage_remove;
 		struct { int64_t until; } claim; /* unix seconds */
 		struct { char *kind, *body, *data; tix_opid reply_to; /* null commit = none */ } typed_comment;
+		struct { tix_autonomy_mode mode; int64_t until; /* -1 = none */ } set_autonomy;
 		struct { tix_strs add, remove; } label;
 		struct { tix_opid target; char *body; } edit_comment;
 		struct { char *kind, *fingerprint, *pubkey; } key_add;
@@ -296,6 +303,8 @@ tix_op tix_op_set_state(tix_ticket_status s, const char *stage);
 tix_op tix_op_stage_add(const char *name, tix_ticket_status phase, bool human, int32_t rank);
 tix_op tix_op_stage_remove(const char *name);
 tix_op tix_op_claim(int64_t until);
+/* until -1 = no expiry. */
+tix_op tix_op_set_autonomy(tix_autonomy_mode mode, int64_t until);
 /* data NULL = "{}"; reply_to NULL = none. */
 tix_op tix_op_typed_comment(const char *kind, const char *body, const char *data, const tix_opid *reply_to);
 

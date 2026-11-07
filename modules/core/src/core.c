@@ -564,6 +564,7 @@ static bool dep_reaches(const tix_entity_list *all, const tix_oid *from, const t
 }
 
 static tix_status list_all(tix_repo *r, tix_entity_type t, tix_entity_list *out, tix_error *err);
+static bool acting_as_agent(tix_repo *r);
 
 /* Ticket ops: references must resolve; no parent or dependency cycles. */
 static tix_status precheck_ticket(tix_repo *r, const tix_entity *e, const tix_op *op, tix_entity_list *all,
@@ -623,6 +624,10 @@ static tix_status precheck_ticket(tix_repo *r, const tix_entity *e, const tix_op
 			if (tix_oid_eq(&e->u.ticket.plan.assignments[k].resource, &op->u.unref.target))
 				return TIX_OK;
 		return tix_error_set(err, TIX_ERR_NOT_FOUND, "%s is not assigned", short_hex(&op->u.unref.target, a));
+	case TIX_OP_SET_AUTONOMY:
+		if (op->u.set_autonomy.mode != TIX_AUTO_HALTED && acting_as_agent(r))
+			return tix_error_set(err, TIX_ERR_REFUSED, "agents may only halt autonomy; a person turns it on or off");
+		return TIX_OK;
 	case TIX_OP_TYPED_COMMENT: {
 		const tix_opid *rt = &op->u.typed_comment.reply_to;
 		if (tix_oid_is_null(&rt->commit))
@@ -675,6 +680,60 @@ const tix_stage_def *tix_stage_find(const tix_entity *owner, const char *stage)
 		if (!strcmp(owner->u.ticket.stages[i].name, stage))
 			return &owner->u.ticket.stages[i];
 	return NULL;
+}
+
+static void autonomy_of(const tix_entity *e, int64_t now, tix_autonomy *out)
+{
+	out->set = true;
+	out->mode = e->u.ticket.autonomy;
+	out->until = e->u.ticket.autonomy_until;
+	out->owner = e->id;
+	if (out->mode == TIX_AUTO_AUTONOMOUS && out->until >= 0 && out->until <= now)
+		out->mode = TIX_AUTO_SUPERVISED; /* a forgotten switch expires by itself */
+}
+
+/* Effective autonomy from start (a ticket id; NULL = top level). */
+static tix_status autonomy_from(tix_repo *r, const tix_oid *start, int64_t now, tix_autonomy *out, tix_error *err)
+{
+	memset(out, 0, sizeof(*out));
+	tix_oid cur;
+	bool have = start && !tix_oid_is_null(start);
+	if (have)
+		cur = *start;
+	for (size_t depth = 0; have && depth < 100000; depth++) {
+		tix_entity *e;
+		tix_status st = tix_entity_load(r, TIX_ENTITY_TICKET, &cur, &e, err);
+		if (st == TIX_ERR_NOT_FOUND)
+			return TIX_OK;
+		if (st)
+			return st;
+		if (e->u.ticket.autonomy_set) {
+			autonomy_of(e, now, out);
+			tix_entity_free(e);
+			return TIX_OK;
+		}
+		have = !tix_oid_is_null(&e->u.ticket.plan.parent);
+		cur = e->u.ticket.plan.parent;
+		tix_entity_free(e);
+	}
+	return TIX_OK;
+}
+
+tix_status tix_ticket_autonomy(tix_repo *r, const tix_oid *id, int64_t now, tix_autonomy *out, tix_error *err)
+{
+	TIX_REQUIRE(id && out);
+	return autonomy_from(r, id, now, out, err);
+}
+
+/* RETURNS true when the current identity declares itself an agent (§15.2). */
+static bool acting_as_agent(tix_repo *r)
+{
+	tix_entity *me;
+	if (tix_oid_is_null(&r->identity) || tix_entity_load(r, TIX_ENTITY_IDENTITY, &r->identity, &me, NULL))
+		return false;
+	bool agent = me->u.identity.kind == TIX_ID_AGENT;
+	tix_entity_free(me);
+	return agent;
 }
 
 tix_status tix_ticket_stages(tix_repo *r, const tix_oid *id, const tix_oid *parent, tix_entity **owner,
@@ -755,6 +814,17 @@ static tix_status precheck_states(tix_repo *r, const tix_entity *e, const tix_op
 	tix_status st = TIX_OK;
 	if (!own.n && (moved || !e || !tix_oid_is_null(&parent)))
 		st = tix_ticket_stages(r, NULL, &parent, &owner, err);
+	/* the autonomy guard applies to agents only; look it up once */
+	tix_autonomy au = {0};
+	bool guarded = false;
+	if (!st && acting_as_agent(r)) {
+		int64_t now = r->env.now(r->env.ctx);
+		if (e && e->u.ticket.autonomy_set)
+			autonomy_of(e, now, &au);
+		else
+			st = autonomy_from(r, &parent, now, &au, err);
+		guarded = au.mode == TIX_AUTO_AUTONOMOUS;
+	}
 	for (size_t i = 0; i < n && !st; i++) {
 		const tix_op *op = &ops[i];
 		if (op->kind != TIX_OP_SET_STATE || !op->u.set_state.stage)
@@ -774,6 +844,10 @@ static tix_status precheck_states(tix_repo *r, const tix_entity *e, const tix_op
 		else if (d->phase != op->u.set_state.status)
 			st = tix_error_set(err, TIX_ERR_INVALID, "stage '%s' belongs to %s, not %s", d->name,
 					   tix_ticket_status_name(d->phase), tix_ticket_status_name(op->u.set_state.status));
+		else if (guarded && d->human && d->phase != TIX_TICKET_BLOCKED)
+			st = tix_error_set(err, TIX_ERR_REFUSED,
+					   "autonomous mode: '%s' waits for a person; decide and record an assumption, or abort "
+					   "(blocked stages stay allowed)", d->name);
 	}
 	tix_entity_free(owner);
 	free(own.v);

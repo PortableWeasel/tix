@@ -1263,7 +1263,7 @@ tix interprets `data` only through generic shapes, never through the kinds:
   CID#ITEM=STATE` (short comment ids are expanded). `show` prints the kind, the reply, and
   the data with each item's current state. Entity codec v7.
 
-### 15.5 Autonomy and the human-stage guard
+### 15.5 Autonomy and the human-stage guard ✅
 
 - **Field**: `autonomy` on a WBS root, inherited by its subtree: `{mode, until}` with mode
   `supervised` | `autonomous` | `halted`, LWW.
@@ -1283,7 +1283,13 @@ tix interprets `data` only through generic shapes, never through the kinds:
     `claim --next` skips only its dependents and keeps handing out other work. That makes
     `blocked/aborted` the agent's escape hatch for impossible tickets. It's a stronger
     "needs a person" that stops one branch of the plan, never the whole night.
-- **CLI**: `tix autonomy ROOT on --until 08:00|--for 10h`, `tix autonomy ROOT off|halt|show`.
+- **Op**: `{"op":"set-autonomy","mode":"autonomous","until":<unix>|null}`, one LWW register
+  (mode and expiry never mix across writes). `tix_ticket_autonomy` gives the effective
+  setting for a ticket (its own, else the nearest ancestor's), with an expired autonomous
+  reading as supervised. Policy refusals use the new `TIX_ERR_REFUSED`.
+- **CLI**: `tix autonomy ID on --until 08:00|"YYYY-MM-DD HH:MM"|--for 10h|--no-expiry`
+  (local time; an end is required unless `--no-expiry` says otherwise), `tix autonomy ID
+  off|halt|show`; `show` on a ticket prints its own setting.
 - The web header shows the mode, its expiry, and counts since it was switched on.
 
 ### 15.6 Agent and live interfaces

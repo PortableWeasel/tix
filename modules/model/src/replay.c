@@ -584,6 +584,11 @@ static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t
 			break;
 		case TIX_OP_CLAIM: fold_claim(t, &waiting, &p->author, p->time, op->u.claim.until); break;
 		case TIX_OP_RELEASE: fold_release(t, &waiting, &p->author, p->time); break;
+		case TIX_OP_SET_AUTONOMY:
+			t->autonomy_set = true;
+			t->autonomy = op->u.set_autonomy.mode;
+			t->autonomy_until = op->u.set_autonomy.until;
+			break;
 		case TIX_OP_STAGE_ADD: push_or(&sadd, op->u.stage_add.name, r); break;
 		case TIX_OP_STAGE_REMOVE: push_or(&srem, op->u.stage_remove.name, r); break;
 		case TIX_OP_SET_FIELD: fold_field(c, r, f); break;
@@ -1077,6 +1082,10 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out)
 		tix_jw_key(&w, "status");
 		tix_jw_str(&w, tix_ticket_status_name(t->status));
 		snap_str(&w, "stage", t->stage);
+		if (t->autonomy_set) {
+			snap_str(&w, "autonomy", tix_autonomy_mode_name(t->autonomy));
+			snap_int(&w, "autonomy_until", t->autonomy_until);
+		}
 		snap_id(&w, "claim", &t->claim.identity);
 		snap_int(&w, "claim_since", tix_oid_is_null(&t->claim.identity) ? -1 : t->claim.since);
 		snap_int(&w, "claim_until", tix_oid_is_null(&t->claim.identity) ? -1 : t->claim.until);

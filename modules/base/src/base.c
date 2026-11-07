@@ -15,6 +15,7 @@ const char *tix_status_name(tix_status s)
 	case TIX_ERR_AMBIGUOUS: return "ambiguous";
 	case TIX_ERR_IO: return "io";
 	case TIX_ERR_UNSUPPORTED: return "unsupported";
+	case TIX_ERR_REFUSED: return "refused";
 	}
 	return "unknown";
 }

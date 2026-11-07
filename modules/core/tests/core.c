@@ -1349,8 +1349,88 @@ static void test_claims_race(void)
 	tix_store_destroy(server);
 }
 
+/* §15.5: the switch, its expiry, who may set it, the guard, and halt. */
+static void test_autonomy(void)
+{
+	fake_env env = {1700000000, 41};
+	tix_store *s = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_repo *r = open_repo(s, &env, NULL);
+	tix_oid ada, bot, root, t, got;
+	TK_OK(tix_identity_create(r, "Ada", "a@x", &ada, &e), &e);
+	tix_op mk[] = {tix_op_identity_create(NULL, "Bot", "bot@x"), tix_op_set(TIX_F_ID_KIND, tix_value_int(TIX_V_ENUM, TIX_ID_AGENT))};
+	TK_OK(tix_entity_create(r, TIX_ENTITY_IDENTITY, mk, 2, &bot, &e), &e);
+	tix_op_free(&mk[0]);
+	tix_op_free(&mk[1]);
+	TK_OK(tix_repo_set_identity(r, &ada, &e), &e);
+	TK_OK(tix_ticket_create(r, "Night", "", NULL, &root, &e), &e);
+	tix_op list[] = {tix_op_stage_add("needs-input", TIX_TICKET_OPEN, true, 10),
+			 tix_op_stage_add("ready", TIX_TICKET_OPEN, false, 20),
+			 tix_op_stage_add("aborted", TIX_TICKET_BLOCKED, true, 10)};
+	TK_OK(tix_entity_apply(r, TIX_ENTITY_TICKET, &root, list, 3, &e), &e);
+	for (int i = 0; i < 3; i++)
+		tix_op_free(&list[i]);
+	TK_OK(tix_ticket_create(r, "Job", "", NULL, &t, &e), &e);
+	place(r, &t, &root, TIX_RANK_LAST, NULL);
+	TK_OK(apply_one(r, &root, tix_op_set_status(TIX_TICKET_DONE)), &e);
+
+	tix_autonomy au;
+	TK_OK(tix_ticket_autonomy(r, &t, env.now, &au, &e), &e);
+	TK_CHECK(!au.set && au.mode == TIX_AUTO_SUPERVISED);
+	/* supervised: the agent may ask for input */
+	TK_OK(tix_repo_set_identity(r, &bot, &e), &e);
+	TK_OK(apply_one(r, &t, tix_op_set_state(TIX_TICKET_OPEN, "needs-input")), &e);
+	TK_OK(apply_one(r, &t, tix_op_set_state(TIX_TICKET_OPEN, "ready")), &e);
+	/* agents may only halt */
+	TK_STATUS(apply_one(r, &root, tix_op_set_autonomy(TIX_AUTO_AUTONOMOUS, -1)), TIX_ERR_REFUSED, &e);
+	TK_STATUS(apply_one(r, &root, tix_op_set_autonomy(TIX_AUTO_SUPERVISED, -1)), TIX_ERR_REFUSED, &e);
+
+	/* a person switches it on for the night */
+	TK_OK(tix_repo_set_identity(r, &ada, &e), &e);
+	int64_t until = env.now + 3600;
+	TK_OK(apply_one(r, &root, tix_op_set_autonomy(TIX_AUTO_AUTONOMOUS, until)), &e);
+	TK_OK(tix_ticket_autonomy(r, &t, env.now, &au, &e), &e);
+	TK_CHECK(au.set && au.mode == TIX_AUTO_AUTONOMOUS && au.until == until && tix_oid_eq(&au.owner, &root));
+	TK_OK(tix_repo_set_identity(r, &bot, &e), &e);
+	TK_STATUS(apply_one(r, &t, tix_op_set_state(TIX_TICKET_OPEN, "needs-input")), TIX_ERR_REFUSED, &e);
+	TK_CHECK(strstr(e.msg, "record an assumption") != NULL);
+	TK_OK(apply_one(r, &t, tix_op_set_state(TIX_TICKET_BLOCKED, "aborted")), &e); /* blocked is exempt */
+	TK_OK(apply_one(r, &t, tix_op_set_state(TIX_TICKET_OPEN, "ready")), &e);      /* not human: fine */
+	/* a person isn't guarded */
+	TK_OK(tix_repo_set_identity(r, &ada, &e), &e);
+	TK_OK(apply_one(r, &t, tix_op_set_state(TIX_TICKET_OPEN, "needs-input")), &e);
+	TK_OK(apply_one(r, &t, tix_op_set_state(TIX_TICKET_OPEN, "ready")), &e);
+	/* a new ticket under the root is guarded on create too */
+	TK_OK(tix_repo_set_identity(r, &bot, &e), &e);
+	tix_op mk2[] = {tix_op_ticket_create(NULL, "Q", "", NULL), tix_op_set(TIX_F_PARENT, tix_value_id(&root)),
+			tix_op_set_state(TIX_TICKET_OPEN, "needs-input")};
+	tix_oid q2;
+	TK_STATUS(tix_entity_create(r, TIX_ENTITY_TICKET, mk2, 3, &q2, &e), TIX_ERR_REFUSED, &e);
+	for (int i = 0; i < 3; i++)
+		tix_op_free(&mk2[i]);
+
+	/* halt: agents may, and claim --next hands out nothing below it */
+	tix_ticket_state ready = {TIX_TICKET_OPEN, "ready"};
+	tix_claim_query cq = {.states = &ready, .nstates = 1, .lease = 600};
+	TK_OK(apply_one(r, &root, tix_op_set_autonomy(TIX_AUTO_HALTED, -1)), &e);
+	TK_STATUS(tix_claim_next(r, &cq, &got, &e), TIX_ERR_NOT_FOUND, &e);
+	TK_OK(tix_repo_set_identity(r, &ada, &e), &e);
+	TK_OK(apply_one(r, &root, tix_op_set_autonomy(TIX_AUTO_AUTONOMOUS, env.now + 600)), &e);
+	TK_OK(tix_repo_set_identity(r, &bot, &e), &e);
+	TK_OK(tix_claim_next(r, &cq, &got, &e), &e);
+	TK_CHECK(tix_oid_eq(&got, &t));
+
+	/* expiry: a forgotten switch reads as supervised, and the guard lets go */
+	env.now += 7200;
+	TK_OK(tix_ticket_autonomy(r, &t, env.now, &au, &e), &e);
+	TK_CHECK(au.set && au.mode == TIX_AUTO_SUPERVISED);
+	TK_OK(apply_one(r, &t, tix_op_set_state(TIX_TICKET_OPEN, "needs-input")), &e);
+	tix_repo_close(r);
+	tix_store_destroy(s);
+}
+
 int main(void)
 {
+	test_autonomy();
 	test_claims_local();
 	test_claims_race();
 	test_stages();

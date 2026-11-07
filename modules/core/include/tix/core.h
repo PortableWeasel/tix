@@ -131,7 +131,11 @@ tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t
  *     end after now and at most TIX_CLAIM_MAX_SECS later (TIX_ERR_INVALID); releasing
  *     an unclaimed ticket is TIX_ERR_NOT_FOUND, someone else's live claim
  *     TIX_ERR_CONFLICT (it ends with its lease);
- *   - a typed comment replying to a comment the ticket doesn't have is TIX_ERR_NOT_FOUND.
+ *   - a typed comment replying to a comment the ticket doesn't have is TIX_ERR_NOT_FOUND;
+ *   - an agent identity may only set autonomy to halted (TIX_ERR_REFUSED);
+ *   - the autonomy guard (§15.5): while a ticket's effective autonomy is autonomous, an
+ *     agent identity may not put it into a stage tagged human, except in the blocked
+ *     phase (TIX_ERR_REFUSED; decide and record an assumption, or abort instead).
  * Each set-state op is written right after a set-status op of the same phase
  * (added here when the caller didn't), so older readers see the phase (§15.1).
  */
@@ -192,6 +196,19 @@ tix_status tix_ticket_stages(tix_repo *r, const tix_oid *id, const tix_oid *pare
 /* The definition of stage in owner's list, or NULL. */
 const tix_stage_def *tix_stage_find(const tix_entity *owner, const char *stage);
 
+/* ---- autonomy (architecture §15.5) ---------------------------------------------- */
+
+typedef struct tix_autonomy {
+	bool set;               /* false: nothing up the chain sets it (supervised) */
+	tix_autonomy_mode mode; /* effective: autonomous past its until reads as supervised */
+	int64_t until;          /* -1 = no expiry */
+	tix_oid owner;          /* the ticket carrying the setting */
+} tix_autonomy;
+
+/* The autonomy that applies to ticket id at now: its own setting, else the nearest
+ * ancestor's. Never fails for an unresolved parent (supervised then). */
+tix_status tix_ticket_autonomy(tix_repo *r, const tix_oid *id, int64_t now, tix_autonomy *out, tix_error *err);
+
 /* ---- claims (architecture §15.3) ------------------------------------------------ */
 
 /* A state to look for: a phase, and a stage (NULL = any stage of that phase, "" = none). */
@@ -210,8 +227,8 @@ typedef struct tix_claim_query {
 
 /*
  * Hands out work: the first ticket in WBS order that is in one of the states, isn't
- * claimed by anyone else (live), isn't in a stage tagged human, and whose predecessors
- * are all done or cancelled. A ticket you already hold that matches comes first (it is
+ * claimed by anyone else (live), isn't in a stage tagged human, isn't under a halted
+ * root (§15.5), and whose predecessors are all done or cancelled. A ticket you already hold that matches comes first (it is
  * renewed). With a remote: pulls first, then pushes the claim. The push decides a race:
  * when it is refused and the pull shows someone else's live claim on the same ticket,
  * this claim is released (handing the ticket to theirs, see tix_claim) and the next

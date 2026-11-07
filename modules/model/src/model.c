@@ -259,6 +259,7 @@ void tix_op_free(tix_op *op)
 	case TIX_OP_SET_STATUS:
 	case TIX_OP_CLAIM:
 	case TIX_OP_RELEASE:
+	case TIX_OP_SET_AUTONOMY:
 	case TIX_OP_DEP_ADD:
 	case TIX_OP_DEP_REMOVE:
 	case TIX_OP_ASSIGN:
@@ -342,6 +343,32 @@ tix_op tix_op_claim(int64_t until)
 {
 	tix_op op = op_of(TIX_OP_CLAIM);
 	op.u.claim.until = until;
+	return op;
+}
+
+static const char *const autonomy_names[] = {"supervised", "autonomous", "halted"};
+
+const char *tix_autonomy_mode_name(tix_autonomy_mode m)
+{
+	TIX_REQUIRE((unsigned)m < 3);
+	return autonomy_names[m];
+}
+
+bool tix_autonomy_mode_parse(const char *s, tix_autonomy_mode *out)
+{
+	for (unsigned i = 0; i < 3; i++)
+		if (!strcmp(s, autonomy_names[i])) {
+			*out = (tix_autonomy_mode)i;
+			return true;
+		}
+	return false;
+}
+
+tix_op tix_op_set_autonomy(tix_autonomy_mode mode, int64_t until)
+{
+	tix_op op = op_of(TIX_OP_SET_AUTONOMY);
+	op.u.set_autonomy.mode = mode;
+	op.u.set_autonomy.until = until;
 	return op;
 }
 

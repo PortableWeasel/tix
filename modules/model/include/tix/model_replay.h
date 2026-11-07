@@ -126,6 +126,9 @@ typedef struct tix_ticket {
 	tix_stage_def *stages;    /* this ticket's own stage list, sorted by (phase, rank, name) */
 	size_t nstages;
 	tix_claim claim;
+	bool autonomy_set;           /* this ticket carries an autonomy setting (§15.5) */
+	tix_autonomy_mode autonomy;  /* as set; see tix_ticket_autonomy in core for the effective one */
+	int64_t autonomy_until;      /* -1 = no expiry */
 	tix_claim *waiting; /* concurrent claims queued behind the holder, in arrival order */
 	size_t nwaiting;
 	tix_strs labels;
@@ -229,7 +232,7 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out);
  * TIX_ENTITY_CODEC_VERSION whenever tix_entity or the replay rules change, so
  * stale cache entries miss instead of lying.
  */
-#define TIX_ENTITY_CODEC_VERSION 7
+#define TIX_ENTITY_CODEC_VERSION 8
 
 void tix_entity_encode(const tix_entity *e, tix_buf *out);
 /* Checks every field (types, ranges, UTF-8, id algo). RETURNS TIX_ERR_INVALID for

@@ -45,6 +45,7 @@ static const op_name op_names[] = {
 	{TIX_ENTITY_TICKET, TIX_OP_CLAIM, "claim"},
 	{TIX_ENTITY_TICKET, TIX_OP_RELEASE, "release"},
 	{TIX_ENTITY_TICKET, TIX_OP_TYPED_COMMENT, "typed-comment"},
+	{TIX_ENTITY_TICKET, TIX_OP_SET_AUTONOMY, "set-autonomy"},
 };
 
 /* Set-field ops, by (type, name). */
@@ -500,6 +501,12 @@ static tix_status check_op(tix_entity_type type, const tix_op *op, tix_error *er
 		return TIX_OK;
 	case TIX_OP_RELEASE:
 		return TIX_OK;
+	case TIX_OP_SET_AUTONOMY:
+		if ((unsigned)op->u.set_autonomy.mode > TIX_AUTO_HALTED)
+			return tix_error_set(err, TIX_ERR_INVALID, "bad autonomy mode");
+		if (op->u.set_autonomy.until < -1 || op->u.set_autonomy.until > (int64_t)TIX_LAMPORT_MAX)
+			return tix_error_set(err, TIX_ERR_INVALID, "autonomy until out of range");
+		return TIX_OK;
 	case TIX_OP_TYPED_COMMENT: {
 		const char *k = op->u.typed_comment.kind, *b = op->u.typed_comment.body, *d = op->u.typed_comment.data;
 		if (!tix_stage_valid(k))
@@ -752,6 +759,10 @@ static void encode_op(const tix_op *op, tix_buf *out)
 		tix_jw_int(&w, op->u.claim.until);
 		break;
 	case TIX_OP_RELEASE: break;
+	case TIX_OP_SET_AUTONOMY:
+		put_kv(&w, "mode", tix_autonomy_mode_name(op->u.set_autonomy.mode));
+		put_int_or_null(&w, "until", op->u.set_autonomy.until);
+		break;
 	case TIX_OP_TYPED_COMMENT:
 		put_kv(&w, "kind", op->u.typed_comment.kind);
 		put_kv(&w, "body", op->u.typed_comment.body);
@@ -1181,6 +1192,12 @@ static tix_status fill_op(const cJSON *j, tix_op *op, tix_hash_algo algo, tix_er
 			       ? TIX_OK
 			       : tix_error_set(err, TIX_ERR_INVALID, "bad claim");
 	case TIX_OP_RELEASE: return TIX_OK;
+	case TIX_OP_SET_AUTONOMY:
+		s = get_str(j, "mode");
+		if (!s || !tix_autonomy_mode_parse(s, &op->u.set_autonomy.mode) ||
+		    !get_int_or_null(j, "until", (int64_t)TIX_LAMPORT_MAX, &op->u.set_autonomy.until))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad set-autonomy");
+		return TIX_OK;
 	case TIX_OP_TYPED_COMMENT: {
 		const cJSON *rt = cJSON_GetObjectItemCaseSensitive(j, "reply-to");
 		op->u.typed_comment.kind = dup_str(j, "kind");

@@ -330,6 +330,12 @@ int cmd_show(cli *c, int argc, char **argv)
 	for (size_t i = 0; i < t->nwaiting; i++)
 		printf("waiting:  %s (until %s)\n", cli_who(c, &t->waiting[i].identity, who, sizeof(who)),
 		       cli_time(t->waiting[i].until, when));
+	if (t->autonomy_set) {
+		printf("autonomy: %s", tix_autonomy_mode_name(t->autonomy));
+		if (t->autonomy_until >= 0)
+			printf(" until %s", cli_time(t->autonomy_until, when));
+		putchar('\n');
+	}
 	show_plan(c, t);
 	if (t->nstages) {
 		fputs("stages:   ", stdout);

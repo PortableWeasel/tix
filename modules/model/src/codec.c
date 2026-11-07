@@ -62,6 +62,10 @@ static void encode_ticket(tix_jw *w, const tix_ticket *t)
 	e_str(w, "body", t->body);
 	e_int(w, "status", t->status);
 	e_str(w, "stage", t->stage);
+	tix_jw_key(w, "autonomy_set");
+	tix_jw_bool(w, t->autonomy_set);
+	e_int(w, "autonomy", t->autonomy);
+	e_int(w, "autonomy_until", t->autonomy_until);
 	e_id(w, "claim", &t->claim.identity);
 	e_int(w, "claim_since", t->claim.since);
 	e_int(w, "claim_until", t->claim.until);
@@ -369,6 +373,9 @@ static void decode_ticket(dec *d, const cJSON *o, tix_ticket *t)
 	t->body = d_str(d, o, "body", false);
 	t->status = (tix_ticket_status)d_int(d, o, "status", 0, TIX_TICKET_CANCELLED);
 	t->stage = d_str(d, o, "stage", true);
+	t->autonomy_set = d_bool(d, o, "autonomy_set");
+	t->autonomy = (tix_autonomy_mode)d_int(d, o, "autonomy", 0, TIX_AUTO_HALTED);
+	t->autonomy_until = d_int(d, o, "autonomy_until", -1, (int64_t)TIX_LAMPORT_MAX);
 	t->claim.identity = d_id(d, o, "claim");
 	t->claim.since = d_int(d, o, "claim_since", 0, (int64_t)TIX_LAMPORT_MAX);
 	t->claim.until = d_int(d, o, "claim_until", 0, (int64_t)TIX_LAMPORT_MAX);
