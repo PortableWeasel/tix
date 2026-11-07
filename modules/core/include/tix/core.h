@@ -130,7 +130,8 @@ tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t
  *   - a claim while someone else's claim is live is TIX_ERR_CONFLICT; a claim must
  *     end after now and at most TIX_CLAIM_MAX_SECS later (TIX_ERR_INVALID); releasing
  *     an unclaimed ticket is TIX_ERR_NOT_FOUND, someone else's live claim
- *     TIX_ERR_CONFLICT (it ends with its lease).
+ *     TIX_ERR_CONFLICT (it ends with its lease);
+ *   - a typed comment replying to a comment the ticket doesn't have is TIX_ERR_NOT_FOUND.
  * Each set-state op is written right after a set-status op of the same phase
  * (added here when the caller didn't), so older readers see the phase (§15.1).
  */

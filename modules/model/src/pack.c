@@ -44,6 +44,7 @@ static const op_name op_names[] = {
 	{TIX_ENTITY_TICKET, TIX_OP_STAGE_REMOVE, "stage-remove"},
 	{TIX_ENTITY_TICKET, TIX_OP_CLAIM, "claim"},
 	{TIX_ENTITY_TICKET, TIX_OP_RELEASE, "release"},
+	{TIX_ENTITY_TICKET, TIX_OP_TYPED_COMMENT, "typed-comment"},
 };
 
 /* Set-field ops, by (type, name). */
@@ -199,6 +200,133 @@ static tix_status check_value(tix_field f, const tix_value *v, tix_error *err)
 		break;
 	}
 	return tix_error_set(err, TIX_ERR_INVALID, "bad value");
+}
+
+/* ---- typed-comment data (§15.4) ---------------------------------------- */
+
+static bool note_id_ok(const char *s)
+{
+	size_t n = 0;
+	if (!s || !((*s >= 'a' && *s <= 'z') || (*s >= '0' && *s <= '9')))
+		return false;
+	for (; s[n]; n++)
+		if (!((s[n] >= 'a' && s[n] <= 'z') || (s[n] >= '0' && s[n] <= '9') || s[n] == '-'))
+			return false;
+	return n <= TIX_NOTE_ID_MAX;
+}
+
+static tix_status note_text(const char *what, const cJSON *v, tix_error *err)
+{
+	if (!cJSON_IsString(v))
+		return tix_error_set(err, TIX_ERR_INVALID, "%s must be a string", what);
+	return check_str(what, v->valuestring, 0, TIX_NOTE_TEXT_MAX, true, err);
+}
+
+static const cJSON *note_list(const cJSON *o, const char *key, tix_error *err, tix_status *st)
+{
+	const cJSON *a = cJSON_GetObjectItemCaseSensitive(o, key);
+	*st = TIX_OK;
+	if (!a)
+		return NULL;
+	if (!cJSON_IsArray(a) || cJSON_GetArraySize(a) > TIX_NOTE_ENTRIES_MAX)
+		*st = tix_error_set(err, TIX_ERR_INVALID, "%s must be a list of at most %d entries", key, TIX_NOTE_ENTRIES_MAX);
+	return *st ? NULL : a;
+}
+
+/* Every entry of list `key` is an object with exactly these string members. */
+static tix_status note_entries(const cJSON *o, const char *key, const char *const *members, bool ids, tix_error *err)
+{
+	tix_status st;
+	const cJSON *a = note_list(o, key, err, &st), *it;
+	if (!a)
+		return st;
+	tix_strs seen = {0};
+	cJSON_ArrayForEach(it, a)
+	{
+		int n = 0;
+		for (const cJSON *m = it->child; m; m = m->next)
+			n++;
+		if (!cJSON_IsObject(it))
+			st = tix_error_set(err, TIX_ERR_INVALID, "%s: entries must be objects", key);
+		for (size_t k = 0; !st && members[k]; k++) {
+			const cJSON *v = cJSON_GetObjectItemCaseSensitive(it, members[k]);
+			if (!v)
+				st = tix_error_set(err, TIX_ERR_INVALID, "%s: entry without \"%s\"", key, members[k]);
+			else if (!strcmp(members[k], "id")) {
+				if (!cJSON_IsString(v) || !note_id_ok(v->valuestring))
+					st = tix_error_set(err, TIX_ERR_INVALID, "%s: ids are [a-z0-9][a-z0-9-], at most %d", key,
+							   TIX_NOTE_ID_MAX);
+				else if (ids && !tix_strs_add(&seen, v->valuestring))
+					st = tix_error_set(err, TIX_ERR_INVALID, "%s: id '%s' twice", key, v->valuestring);
+			} else if (!strcmp(members[k], "state")) {
+				if (!cJSON_IsString(v) || !tix_stage_valid(v->valuestring))
+					st = tix_error_set(err, TIX_ERR_INVALID, "%s: states are [a-z][a-z0-9-]", key);
+			} else if (!strcmp(members[k], "ref")) {
+				tix_opid ref;
+				const char *hash = cJSON_IsString(v) ? strchr(v->valuestring, '#') : NULL;
+				char opid[TIX_OID_MAX_HEX + 16];
+				size_t pl = hash ? (size_t)(hash - v->valuestring) : 0;
+				if (!hash || pl >= sizeof(opid) || !note_id_ok(hash + 1))
+					st = tix_error_set(err, TIX_ERR_INVALID, "%s: ref is <comment id>#<item id>", key);
+				else {
+					memcpy(opid, v->valuestring, pl);
+					opid[pl] = '\0';
+					if (!tix_opid_parse(&ref, opid))
+						st = tix_error_set(err, TIX_ERR_INVALID, "%s: ref is <comment id>#<item id>", key);
+				}
+			} else {
+				st = note_text(key, v, err);
+			}
+		}
+		int want = 0;
+		while (members[want])
+			want++;
+		if (!st && n != want)
+			st = tix_error_set(err, TIX_ERR_INVALID, "%s: unexpected members in an entry", key);
+		if (st)
+			break;
+	}
+	tix_strs_free(&seen);
+	return st;
+}
+
+tix_status tix_note_data_check(const char *data, tix_error *err)
+{
+	if (!data)
+		return tix_error_set(err, TIX_ERR_INVALID, "data missing");
+	const char *end = NULL;
+	cJSON *o = cJSON_ParseWithLengthOpts(data, strlen(data), &end, false);
+	tix_status st = TIX_OK;
+	if (!o || !cJSON_IsObject(o) || end != data + strlen(data)) {
+		cJSON_Delete(o);
+		return tix_error_set(err, TIX_ERR_INVALID, "data must be one JSON object");
+	}
+	const cJSON *f = cJSON_GetObjectItemCaseSensitive(o, "fields"), *it;
+	if (f) {
+		if (!cJSON_IsObject(f) || cJSON_GetArraySize(f) > TIX_NOTE_ENTRIES_MAX)
+			st = tix_error_set(err, TIX_ERR_INVALID, "fields must be an object of at most %d entries",
+					   TIX_NOTE_ENTRIES_MAX);
+		cJSON_ArrayForEach(it, f)
+		{
+			if (st)
+				break;
+			if (!it->string || strlen(it->string) > TIX_LABEL_MAX || !note_id_ok(it->string))
+				st = tix_error_set(err, TIX_ERR_INVALID, "field names are [a-z0-9][a-z0-9-]");
+			else
+				st = note_text("field", it, err);
+		}
+	}
+	static const char *const item[] = {"id", "text", "state", NULL};
+	static const char *const question[] = {"id", "text", NULL};
+	static const char *const update[] = {"ref", "state", NULL};
+	if (!st)
+		st = note_entries(o, "items", item, true, err);
+	if (!st)
+		st = note_entries(o, "questions", question, true, err);
+	if (!st)
+		st = note_entries(o, "updates", update, false, err);
+	cJSON_Delete(o);
+	return st;
 }
 
 static tix_status check_id(const char *what, const tix_oid *id, tix_error *err)
@@ -372,6 +500,20 @@ static tix_status check_op(tix_entity_type type, const tix_op *op, tix_error *er
 		return TIX_OK;
 	case TIX_OP_RELEASE:
 		return TIX_OK;
+	case TIX_OP_TYPED_COMMENT: {
+		const char *k = op->u.typed_comment.kind, *b = op->u.typed_comment.body, *d = op->u.typed_comment.data;
+		if (!tix_stage_valid(k))
+			return tix_error_set(err, TIX_ERR_INVALID, "comment kind must be [a-z][a-z0-9-]{0,%d}", TIX_STAGE_MAX - 1);
+		if ((st = check_str("comment", b, 0, TIX_TEXT_MAX, true, err)) ||
+		    (st = check_str("data", d, 2, TIX_TEXT_MAX, true, err)))
+			return st;
+		if (strlen(b) + strlen(d) > TIX_TEXT_MAX)
+			return tix_error_set(err, TIX_ERR_INVALID, "comment and data exceed %d bytes", TIX_TEXT_MAX);
+		const tix_opid *rt = &op->u.typed_comment.reply_to;
+		if (!tix_oid_is_null(&rt->commit) && rt->line < 2)
+			return tix_error_set(err, TIX_ERR_INVALID, "bad reply-to");
+		return tix_note_data_check(d, err);
+	}
 	case TIX_OP_SET_FIELD:
 	case TIX_OP_UNKNOWN:
 		break;
@@ -610,6 +752,16 @@ static void encode_op(const tix_op *op, tix_buf *out)
 		tix_jw_int(&w, op->u.claim.until);
 		break;
 	case TIX_OP_RELEASE: break;
+	case TIX_OP_TYPED_COMMENT:
+		put_kv(&w, "kind", op->u.typed_comment.kind);
+		put_kv(&w, "body", op->u.typed_comment.body);
+		put_kv(&w, "data", op->u.typed_comment.data);
+		tix_jw_key(&w, "reply-to");
+		if (tix_oid_is_null(&op->u.typed_comment.reply_to.commit))
+			tix_jw_null(&w);
+		else
+			tix_jw_str(&w, tix_opid_str(&op->u.typed_comment.reply_to, id));
+		break;
 	case TIX_OP_UNKNOWN: TIX_REQUIRE(!"unknown op"); break;
 	}
 	tix_jw_obj_end(&w);
@@ -620,6 +772,11 @@ static size_t op_ids(const tix_op *op, const tix_oid *ids[1])
 {
 	switch (op->kind) {
 	case TIX_OP_EDIT_COMMENT: ids[0] = &op->u.edit_comment.target.commit; return 1;
+	case TIX_OP_TYPED_COMMENT:
+		if (tix_oid_is_null(&op->u.typed_comment.reply_to.commit))
+			return 0;
+		ids[0] = &op->u.typed_comment.reply_to.commit;
+		return 1;
 	case TIX_OP_DEP_ADD: ids[0] = &op->u.dep_add.pred; return 1;
 	case TIX_OP_DEP_REMOVE:
 	case TIX_OP_UNASSIGN: ids[0] = &op->u.unref.target; return 1;
@@ -1024,6 +1181,20 @@ static tix_status fill_op(const cJSON *j, tix_op *op, tix_hash_algo algo, tix_er
 			       ? TIX_OK
 			       : tix_error_set(err, TIX_ERR_INVALID, "bad claim");
 	case TIX_OP_RELEASE: return TIX_OK;
+	case TIX_OP_TYPED_COMMENT: {
+		const cJSON *rt = cJSON_GetObjectItemCaseSensitive(j, "reply-to");
+		op->u.typed_comment.kind = dup_str(j, "kind");
+		op->u.typed_comment.body = dup_str(j, "body");
+		op->u.typed_comment.data = dup_str(j, "data");
+		if (cJSON_IsString(rt)) {
+			if (!tix_opid_parse(&op->u.typed_comment.reply_to, rt->valuestring) ||
+			    op->u.typed_comment.reply_to.commit.algo != algo)
+				return tix_error_set(err, TIX_ERR_INVALID, "bad reply-to");
+		} else if (!cJSON_IsNull(rt)) {
+			return tix_error_set(err, TIX_ERR_INVALID, "reply-to must be a comment id or null");
+		}
+		return TIX_OK;
+	}
 	case TIX_OP_UNKNOWN: break;
 	}
 	return tix_error_set(err, TIX_ERR_INVALID, "unhandled op");

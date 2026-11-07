@@ -46,6 +46,9 @@
 #define TIX_STAGE_RANK_MAX 1000000
 #define TIX_STAGES_MAX 64       /* stage definitions per ticket */
 #define TIX_CLAIM_MAX_SECS (24 * 3600) /* longest lease core writes (§15.3) */
+#define TIX_NOTE_ENTRIES_MAX 256 /* fields / items / questions / updates per typed comment (§15.4) */
+#define TIX_NOTE_TEXT_MAX 4096   /* one field value, item or question text */
+#define TIX_NOTE_ID_MAX 32       /* item and question ids: [a-z0-9][a-z0-9-]* */
 
 /* ---- entity types -------------------------------------------------------- */
 typedef enum tix_entity_type {
@@ -222,6 +225,7 @@ typedef enum tix_op_kind {
 	TIX_OP_STAGE_REMOVE,      /* "stage-remove": name */
 	TIX_OP_CLAIM,             /* "claim": until (the claimant is the pack author) */
 	TIX_OP_RELEASE,           /* "release" */
+	TIX_OP_TYPED_COMMENT,     /* "typed-comment": kind, body, data (JSON object as a string), reply-to|null */
 } tix_op_kind;
 
 /* "task" op of a baseline: one planned task as it was when the snapshot was taken. */
@@ -250,6 +254,7 @@ typedef struct tix_op {
 		struct { char *name; tix_ticket_status phase; bool human; int32_t rank; } stage_add;
 		struct { char *name; } stage_remove;
 		struct { int64_t until; } claim; /* unix seconds */
+		struct { char *kind, *body, *data; tix_opid reply_to; /* null commit = none */ } typed_comment;
 		struct { tix_strs add, remove; } label;
 		struct { tix_opid target; char *body; } edit_comment;
 		struct { char *kind, *fingerprint, *pubkey; } key_add;
@@ -291,6 +296,21 @@ tix_op tix_op_set_state(tix_ticket_status s, const char *stage);
 tix_op tix_op_stage_add(const char *name, tix_ticket_status phase, bool human, int32_t rank);
 tix_op tix_op_stage_remove(const char *name);
 tix_op tix_op_claim(int64_t until);
+/* data NULL = "{}"; reply_to NULL = none. */
+tix_op tix_op_typed_comment(const char *kind, const char *body, const char *data, const tix_opid *reply_to);
+
+/*
+ * Checks a typed comment's data (architecture §15.4): a JSON object whose known keys have
+ * the generic shapes below; other keys are kept and ignored (forward compatibility).
+ *   "fields":    {"key": "value", ...}                       key/value table
+ *   "items":     [{"id","text","state"}, ...]                checklist; ids unique
+ *   "questions": [{"id","text"}, ...]                        an answer form; ids unique
+ *   "updates":   [{"ref":"<op id>#<item id>","state"}, ...]  folds into earlier items
+ * Field keys and states follow the stage-name rule; ids are [a-z0-9][a-z0-9-]{0,31}; texts
+ * may span lines, at most TIX_NOTE_TEXT_MAX bytes each; at most TIX_NOTE_ENTRIES_MAX
+ * entries per list. RETURNS TIX_ERR_INVALID with a message.
+ */
+tix_status tix_note_data_check(const char *data, tix_error *err);
 tix_op tix_op_release(void);
 tix_op tix_op_label(const tix_strs *add, const tix_strs *remove);
 tix_op tix_op_edit_comment(const tix_opid *target, const char *body);

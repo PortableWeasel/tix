@@ -613,6 +613,67 @@ static void test_claims(void)
 	tix_sim_clone_free(&b);
 }
 
+/* §15.4: typed comments join the comment list; item states fold from later updates. */
+static void test_typed_comments(void)
+{
+	tix_sim_clone a, b;
+	new_clone(&a, "a", "Ada");
+	new_clone(&b, "b", "Bob");
+	tix_oid t = new_ticket(&a, "T", NULL);
+	apply1(&a, &t, tix_op_text(TIX_OP_COMMENT, "plain"));
+	apply1(&a, &t, tix_op_typed_comment("review", "Findings",
+					    "{\"items\":[{\"id\":\"f1\",\"text\":\"a\",\"state\":\"open\"},"
+					    "{\"id\":\"f2\",\"text\":\"b\",\"state\":\"open\"}]}", NULL));
+	tix_entity *x = loadt(&a, &t);
+	TK_CHECK(x && x->u.ticket.ncomments == 2);
+	tix_opid rid = x->u.ticket.comments[1].id;
+	TK_CHECK(!x->u.ticket.comments[0].kind && x->u.ticket.comments[1].kind &&
+		 !strcmp(x->u.ticket.comments[1].kind, "review"));
+	tix_entity_free(x);
+	char ref[200], opid[TIX_OID_MAX_HEX + 12], data[400];
+	snprintf(ref, sizeof(ref), "%s#f1", tix_opid_str(&rid, opid));
+	snprintf(data, sizeof(data), "{\"updates\":[{\"ref\":\"%s\",\"state\":\"addressed\"}]}", ref);
+	sync_both(&a, &b);
+	apply1(&b, &t, tix_op_typed_comment("fix", "fixed in abc", data, &rid));
+	sync_both(&a, &b);
+	x = loadt(&a, &t);
+	if (x && x->u.ticket.ncomments == 3) {
+		const tix_ticket *tk = &x->u.ticket;
+		char *s1 = tix_note_item_state(tk, &tk->comments[1], "f1");
+		char *s2 = tix_note_item_state(tk, &tk->comments[1], "f2");
+		char *s3 = tix_note_item_state(tk, &tk->comments[1], "nope");
+		TK_CHECK(s1 && !strcmp(s1, "addressed") && s2 && !strcmp(s2, "open") && !s3);
+		free(s1);
+		free(s2);
+		TK_CHECK(!tix_opid_cmp(&tk->comments[2].reply_to, &rid));
+		/* the codec round-trips typed comments */
+		tix_buf enc = TIX_BUF_INIT, s_a = TIX_BUF_INIT, s_b = TIX_BUF_INIT;
+		tix_entity *dec = NULL;
+		tix_entity_encode(x, &enc);
+		TK_OK(tix_entity_decode(enc.data, enc.len, TIX_HASH_SHA1, &dec, &e), &e);
+		tix_entity_snapshot(x, &s_a);
+		if (dec)
+			tix_entity_snapshot(dec, &s_b);
+		TK_STR_EQ(tix_buf_cstr(&s_a), tix_buf_cstr(&s_b));
+		tix_entity_free(dec);
+		tix_buf_free(&enc);
+		tix_buf_free(&s_a);
+		tix_buf_free(&s_b);
+	} else {
+		TK_CHECK(!"three comments");
+	}
+	tix_entity_free(x);
+	/* an edit of a typed comment changes its body only, and only by its author */
+	apply1(&b, &t, tix_op_edit_comment(&rid, "Bob's rewrite"));
+	apply1(&a, &t, tix_op_edit_comment(&rid, "Findings, edited"));
+	sync_both(&a, &b);
+	x = loadt(&b, &t);
+	TK_CHECK(x && !strcmp(x->u.ticket.comments[1].body, "Findings, edited") && x->u.ticket.comments[1].data);
+	tix_entity_free(x);
+	tix_sim_clone_free(&a);
+	tix_sim_clone_free(&b);
+}
+
 static void test_resource_and_calendar(void)
 {
 	tix_sim_clone a, b;
@@ -787,6 +848,7 @@ static void test_baseline(void)
 
 int main(void)
 {
+	test_typed_comments();
 	test_claims();
 	test_stages();
 	test_baseline();

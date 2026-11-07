@@ -475,6 +475,52 @@ static void test_workflow_ops(void)
 			tix_pack_free(&d);
 	}
 
+	tix_opid target = {oid_of(B40), 4};
+	tix_op tc[] = {
+		tix_op_typed_comment("review", "Two findings.",
+				     "{\"fields\":{\"verdict\":\"changes\"},\"items\":[{\"id\":\"f1\",\"text\":\"x\",\"state\":\"open\"}]}",
+				     NULL),
+		tix_op_typed_comment("answer", "", "{\"fields\":{\"q1\":\"yes\"}}", &target),
+	};
+	round_trip(TIX_ENTITY_TICKET, tc, 2,
+		"{\"tix\":1,\"type\":\"ticket\",\"author\":\"" A40 "\",\"lamport\":3,\"time\":9}\n"
+		"{\"op\":\"typed-comment\",\"kind\":\"review\",\"body\":\"Two findings.\",\"data\":"
+		"\"{\\\"fields\\\":{\\\"verdict\\\":\\\"changes\\\"},\\\"items\\\":[{\\\"id\\\":\\\"f1\\\",\\\"text\\\":\\\"x\\\",\\\"state\\\":\\\"open\\\"}]}\","
+		"\"reply-to\":null}\n"
+		"{\"op\":\"typed-comment\",\"kind\":\"answer\",\"body\":\"\",\"data\":\"{\\\"fields\\\":{\\\"q1\\\":\\\"yes\\\"}}\","
+		"\"reply-to\":\"" B40 ":4\"}\n");
+	static const struct { const char *what, *data; bool ok; } notes[] = {
+		{"empty object", "{}", true},
+		{"unknown key kept", "{\"later\":[1,2]}", true},
+		{"questions", "{\"questions\":[{\"id\":\"q1\",\"text\":\"Which DB?\"},{\"id\":\"q2\",\"text\":\"\"}]}", true},
+		{"updates", "{\"updates\":[{\"ref\":\"" B40 ":3#f1\",\"state\":\"addressed\"}]}", true},
+		{"array", "[]", false},
+		{"two objects", "{}{}", false},
+		{"field not string", "{\"fields\":{\"a\":1}}", false},
+		{"field bad name", "{\"fields\":{\"A B\":\"x\"}}", false},
+		{"item without state", "{\"items\":[{\"id\":\"f1\",\"text\":\"x\"}]}", false},
+		{"item extra member", "{\"items\":[{\"id\":\"f1\",\"text\":\"x\",\"state\":\"open\",\"y\":1}]}", false},
+		{"item duplicate id", "{\"items\":[{\"id\":\"f1\",\"text\":\"\",\"state\":\"open\"},{\"id\":\"f1\",\"text\":\"\",\"state\":\"open\"}]}", false},
+		{"item bad state", "{\"items\":[{\"id\":\"f1\",\"text\":\"x\",\"state\":\"Open\"}]}", false},
+		{"item bad id", "{\"items\":[{\"id\":\"-x\",\"text\":\"x\",\"state\":\"open\"}]}", false},
+		{"question control char", "{\"questions\":[{\"id\":\"q\",\"text\":\"a\\u0001\"}]}", false},
+		{"update bad ref", "{\"updates\":[{\"ref\":\"f1\",\"state\":\"done\"}]}", false},
+		{"items not a list", "{\"items\":{}}", false},
+	};
+	for (size_t i = 0; i < sizeof(notes) / sizeof(*notes); i++) {
+		tix_error ne = TIX_ERROR_INIT;
+		tix_status st = tix_note_data_check(notes[i].data, &ne);
+		tk_checks++;
+		if ((st == TIX_OK) != notes[i].ok)
+			tk_fail(__FILE__, __LINE__, "note '%s': got %s %s", notes[i].what, tix_status_name(st), ne.msg);
+	}
+	const char *badkind = HDR "{\"op\":\"typed-comment\",\"kind\":\"Review\",\"body\":\"\",\"data\":\"{}\",\"reply-to\":null}\n";
+	tix_pack bk;
+	tix_error bke = TIX_ERROR_INIT;
+	TK_STATUS(tix_pack_decode(badkind, strlen(badkind), TIX_HASH_SHA1, &bk, &bke), TIX_ERR_INVALID, &bke);
+	const char *baddata = HDR "{\"op\":\"typed-comment\",\"kind\":\"x\",\"body\":\"\",\"data\":\"[]\",\"reply-to\":null}\n";
+	TK_STATUS(tix_pack_decode(baddata, strlen(baddata), TIX_HASH_SHA1, &bk, &bke), TIX_ERR_INVALID, &bke);
+
 	tix_op id[] = {tix_op_set(TIX_F_ID_KIND, tix_value_int(TIX_V_ENUM, TIX_ID_AGENT))};
 	round_trip(TIX_ENTITY_IDENTITY, id, 1,
 		"{\"tix\":1,\"type\":\"identity\",\"author\":\"" A40 "\",\"lamport\":3,\"time\":9}\n"

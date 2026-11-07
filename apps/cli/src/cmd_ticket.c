@@ -345,16 +345,28 @@ int cmd_show(cli *c, int argc, char **argv)
 	for (size_t i = 0; i < t->ncomments; i++) {
 		const tix_comment *cm = &t->comments[i];
 		short_opid(&cm->id, cid);
-		printf("\n--- %s  %s  %s%s\n", cid, cli_who(c, &cm->author, who, sizeof(who)),
+		printf("\n--- %s  %s  %s%s", cid, cli_who(c, &cm->author, who, sizeof(who)),
 		       cli_time(cm->time, when), cm->edited ? "  (edited)" : "");
-		indent(cm->body);
+		if (cm->kind) {
+			printf("  [%s]", cm->kind);
+			if (!tix_oid_is_null(&cm->reply_to.commit)) {
+				char rid[32];
+				short_opid(&cm->reply_to, rid);
+				printf("  re %s", rid);
+			}
+		}
+		putchar('\n');
+		if (cm->body[0])
+			indent(cm->body);
+		if (cm->kind)
+			cli_print_note(t, cm);
 	}
 	tix_entity_free(e);
 	return EXIT_OK;
 }
 
 /* "<hex prefix>:<line>" against the ticket's comments (prefix >= 7 chars). */
-static int resolve_comment(const tix_entity *e, const char *arg, tix_opid *out)
+int cli_resolve_comment(const tix_entity *e, const char *arg, tix_opid *out)
 {
 	const char *colon = strchr(arg, ':');
 	size_t plen = colon ? (size_t)(colon - arg) : 0;
@@ -399,7 +411,7 @@ int cmd_comment(cli *c, int argc, char **argv)
 	if (rc)
 		return rc;
 	tix_opid target;
-	if (edit && (rc = resolve_comment(e, edit, &target))) {
+	if (edit && (rc = cli_resolve_comment(e, edit, &target))) {
 		tix_entity_free(e);
 		return rc;
 	}

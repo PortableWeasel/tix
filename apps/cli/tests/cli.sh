@@ -318,6 +318,31 @@ expect 0 "$TIX" stage rm "$wr" ready
 expect 0 "$TIX" stage ls "$wr"; hasnt "open/ready"
 expect 0 "$TIX" new -t "Free stage" --status blocked/whatever; has "Created ticket"   # no list: any stage
 
+# ---- typed comments (§15.4) -------------------------------------------------------------
+cd "$T/a"
+expect 0 "$TIX" new -t "Needs answers"; tq=$(sed -n 's/^Created ticket //p' <<<"$out")
+expect 0 "$TIX" note "$tq" --kind question -m "Two things:" --question q1="Which database?" --question q2="Deadline?"
+expect 0 "$TIX" show "$tq"; has "[question]"; has "    Two things:"; has "    ? q1: Which database?"
+qc=$(grep -o '^--- [0-9a-f]*:[0-9]*' <<<"$out" | tail -1 | cut -c5-)
+expect 0 "$TIX" note "$tq" --kind answer --reply-to "$qc" --field q1=Postgres --field q2="end of month"
+expect 0 "$TIX" show "$tq"; has "[answer]  re $qc"; has "    q1: Postgres"; has "    q2: end of month"
+expect 0 "$TIX" note "$tq" --kind review -m "Changes needed" --field verdict=changes --item f1="Add tests" --item f2="Fix typo=open"
+rc=$(grep -o '^--- [0-9a-f]*:[0-9]*' <<<"$("$TIX" show "$tq")" | tail -1 | cut -c5-)
+expect 0 "$TIX" show "$tq"; has "    verdict: changes"; has "    [open] f1: Add tests"; has "    [open] f2: Fix typo"
+expect 0 "$TIX" note "$tq" --kind fix -m "done" --update "$rc#f1=addressed"
+expect 0 "$TIX" show "$tq"; has "    [addressed] f1: Add tests"; has "    [open] f2: Fix typo"
+expect 0 "$TIX" note "$tq" --kind raw --data '{"fields":{"a":"b"},"later":true}'
+expect 0 "$TIX" show "$tq"; has "[raw]"; has "    a: b"
+expect 2 "$TIX" note "$tq" --kind raw --data '[1]'; has "one JSON object"
+expect 2 "$TIX" note "$tq" --kind raw --data '{}' --field a=b; has "use one of"
+expect 2 "$TIX" note "$tq" --kind raw --item "-bad=x"; has "ids are"
+expect 2 "$TIX" note "$tq" --field a=b; has "usage: tix note"
+expect 1 "$TIX" note "$tq" --kind x --reply-to deadbee:2; has "no such comment"
+expect 1 "$TIX" note "$tq" --kind Bad; has "comment kind"
+echo '{"questions":[{"id":"q9","text":"from a file"}]}' > "$T/note.json"
+expect 0 "$TIX" note "$tq" --kind question --data-file "$T/note.json"
+expect 0 "$TIX" show "$tq"; has "    ? q9: from a file"
+
 # ---- claims (§15.3): leases, claim --next, races through a remote ---------------------
 git init -q --bare "$T/claims.git"
 git init -q "$T/c1" && cd "$T/c1" && git remote add origin "$T/claims.git"

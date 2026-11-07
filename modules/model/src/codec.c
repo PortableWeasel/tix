@@ -103,6 +103,9 @@ static void encode_ticket(tix_jw *w, const tix_ticket *t)
 		e_str(w, "body", c->body);
 		tix_jw_key(w, "edited");
 		tix_jw_bool(w, c->edited);
+		e_str(w, "kind", c->kind);
+		e_str(w, "data", c->data);
+		e_opid(w, "reply_to", &c->reply_to);
 		tix_jw_obj_end(w);
 	}
 	tix_jw_arr_end(w);
@@ -412,6 +415,11 @@ static void decode_ticket(dec *d, const cJSON *o, tix_ticket *t)
 			c->time = d_int(d, it, "time", 0, (int64_t)TIX_LAMPORT_MAX);
 			c->body = d_str(d, it, "body", false);
 			c->edited = d_bool(d, it, "edited");
+			c->kind = d_str(d, it, "kind", true);
+			c->data = d_str(d, it, "data", true);
+			c->reply_to = d_opid(d, it, "reply_to");
+			if ((c->kind != NULL) != (c->data != NULL) || (c->kind && !tix_stage_valid(c->kind)))
+				d->bad = true;
 		}
 	}
 	p->parent = d_id(d, o, "parent");

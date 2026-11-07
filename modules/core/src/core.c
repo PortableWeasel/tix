@@ -623,6 +623,15 @@ static tix_status precheck_ticket(tix_repo *r, const tix_entity *e, const tix_op
 			if (tix_oid_eq(&e->u.ticket.plan.assignments[k].resource, &op->u.unref.target))
 				return TIX_OK;
 		return tix_error_set(err, TIX_ERR_NOT_FOUND, "%s is not assigned", short_hex(&op->u.unref.target, a));
+	case TIX_OP_TYPED_COMMENT: {
+		const tix_opid *rt = &op->u.typed_comment.reply_to;
+		if (tix_oid_is_null(&rt->commit))
+			return TIX_OK;
+		for (size_t k = 0; e && k < e->u.ticket.ncomments; k++)
+			if (!tix_opid_cmp(&e->u.ticket.comments[k].id, rt))
+				return TIX_OK;
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no comment to reply to with that id on this ticket");
+	}
 	case TIX_OP_CLAIM: {
 		int64_t now = r->env.now(r->env.ctx);
 		char who[16];

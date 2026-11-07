@@ -41,6 +41,9 @@ typedef struct tix_comment {
 	int64_t time;
 	char *body;
 	bool edited;
+	char *kind;        /* typed comments (§15.4): the kind; NULL for a plain comment */
+	char *data;        /* typed comments: the JSON object (validated shapes); NULL otherwise */
+	tix_opid reply_to; /* null commit = not a reply */
 } tix_comment;
 
 /* An op's position in the total order (lamport, commit oid, line). */
@@ -226,7 +229,7 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out);
  * TIX_ENTITY_CODEC_VERSION whenever tix_entity or the replay rules change, so
  * stale cache entries miss instead of lying.
  */
-#define TIX_ENTITY_CODEC_VERSION 6
+#define TIX_ENTITY_CODEC_VERSION 7
 
 void tix_entity_encode(const tix_entity *e, tix_buf *out);
 /* Checks every field (types, ranges, UTF-8, id algo). RETURNS TIX_ERR_INVALID for
@@ -234,5 +237,12 @@ void tix_entity_encode(const tix_entity *e, tix_buf *out);
  * ENSURES on TIX_OK: *out owned by the caller. */
 tix_status tix_entity_decode(const char *data, size_t len, tix_hash_algo algo, tix_entity **out,
 			     tix_error *err);
+
+/*
+ * The current state of item `item` of typed comment c on ticket t (§15.4): the latest
+ * "updates" entry naming it, in total order, else the item's own state.
+ * RETURNS a string the caller frees, or NULL when c has no such item.
+ */
+char *tix_note_item_state(const tix_ticket *t, const tix_comment *c, const char *item);
 
 #endif

@@ -251,6 +251,11 @@ void tix_op_free(tix_op *op)
 	case TIX_OP_STAGE_REMOVE:
 		free(op->u.stage_remove.name);
 		break;
+	case TIX_OP_TYPED_COMMENT:
+		free(op->u.typed_comment.kind);
+		free(op->u.typed_comment.body);
+		free(op->u.typed_comment.data);
+		break;
 	case TIX_OP_SET_STATUS:
 	case TIX_OP_CLAIM:
 	case TIX_OP_RELEASE:
@@ -343,6 +348,17 @@ tix_op tix_op_claim(int64_t until)
 tix_op tix_op_release(void)
 {
 	return op_of(TIX_OP_RELEASE);
+}
+
+tix_op tix_op_typed_comment(const char *kind, const char *body, const char *data, const tix_opid *reply_to)
+{
+	tix_op op = op_of(TIX_OP_TYPED_COMMENT);
+	op.u.typed_comment.kind = tix_xstrdup(kind);
+	op.u.typed_comment.body = tix_xstrdup(body ? body : "");
+	op.u.typed_comment.data = tix_xstrdup(data ? data : "{}");
+	if (reply_to)
+		op.u.typed_comment.reply_to = *reply_to;
+	return op;
 }
 
 tix_op tix_op_label(const tix_strs *add, const tix_strs *remove)

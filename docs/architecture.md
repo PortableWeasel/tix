@@ -1222,7 +1222,7 @@ claim a ticket too.
   fetch was stale (refused push) and where its own claim was still unpushed; a `cli.sh`
   race between two clones over a bare remote.
 
-### 15.4 Typed comments
+### 15.4 Typed comments ✅
 
 New op
 `{"op":"typed-comment","kind":"review","body":"…","data":"{…}","reply-to":"<op id>"|null}`.
@@ -1250,6 +1250,18 @@ tix interprets `data` only through generic shapes, never through the kinds:
   `questions`.
 - Older readers ignore the op.
 - Editing a typed comment follows the `edit-comment` rule (author only, LWW).
+- **Validated in `model`** (`tix_note_data_check`), on write and on read like every other
+  field: one JSON object; `fields` values are strings (names `[a-z0-9][a-z0-9-]`), item and
+  question ids `[a-z0-9][a-z0-9-]{0,31}` and unique per comment, states follow the
+  stage-name rule, `updates` refs are `<op id>#<item id>`, texts ≤ 4 KiB, lists ≤ 256
+  entries; other top-level keys are kept and ignored. A malformed one rejects its pack.
+- `tix_note_item_state` folds updates (anyone may update an item). Core checks that a
+  `reply-to` names a comment on the same ticket.
+- **CLI**: `tix note ID --kind K [-m TEXT] [--reply-to CID]` with `--data JSON`,
+  `--data-file F|-`, or shortcuts that build the JSON: `--field K=V`, `--item
+  ID=TEXT[=STATE]` (state defaults to `open`), `--question ID=TEXT`, `--update
+  CID#ITEM=STATE` (short comment ids are expanded). `show` prints the kind, the reply, and
+  the data with each item's current state. Entity codec v7.
 
 ### 15.5 Autonomy and the human-stage guard
 

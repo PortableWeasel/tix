@@ -2,6 +2,8 @@
 #include "tix/base_json.h"
 #include "tix/model_replay.h"
 
+#include <cjson/cJSON.h>
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -283,6 +285,53 @@ static void push_or_range(or_vec *v, tix_date from, tix_date to, const op_ref *r
 	push_or(v, key, r);
 }
 
+/* RETURNS the state string of entry `id` in list `key` of data (borrowed from o), or NULL. */
+static const char *note_find(const cJSON *o, const char *key, const char *match_key, const char *id)
+{
+	const cJSON *a = cJSON_GetObjectItemCaseSensitive(o, key), *it;
+	const char *found = NULL;
+	cJSON_ArrayForEach(it, a)
+	{
+		const cJSON *k = cJSON_GetObjectItemCaseSensitive(it, match_key);
+		const cJSON *st = cJSON_GetObjectItemCaseSensitive(it, "state");
+		if (cJSON_IsString(k) && cJSON_IsString(st) && !strcmp(k->valuestring, id))
+			found = st->valuestring; /* the last one in the list wins */
+	}
+	return found;
+}
+
+char *tix_note_item_state(const tix_ticket *t, const tix_comment *c, const char *item)
+{
+	if (!c->data)
+		return NULL;
+	cJSON *o = cJSON_Parse(c->data);
+	const char *own = o ? note_find(o, "items", "id", item) : NULL;
+	char *state = own ? tix_xstrdup(own) : NULL;
+	cJSON_Delete(o);
+	if (!state)
+		return NULL;
+	char ref[TIX_OID_MAX_HEX + 16 + TIX_NOTE_ID_MAX + 2], opid[TIX_OID_MAX_HEX + 12];
+	snprintf(ref, sizeof(ref), "%s#%s", tix_opid_str(&c->id, opid), item);
+	bool after = false;
+	for (size_t i = 0; i < t->ncomments; i++) { /* comments are in total order */
+		const tix_comment *u = &t->comments[i];
+		if (u == c) {
+			after = true;
+			continue;
+		}
+		if (!after || !u->data)
+			continue;
+		cJSON *uo = cJSON_Parse(u->data);
+		const char *s = uo ? note_find(uo, "updates", "ref", ref) : NULL;
+		if (s) {
+			free(state);
+			state = tix_xstrdup(s);
+		}
+		cJSON_Delete(uo);
+	}
+	return state;
+}
+
 bool tix_claim_live(const tix_claim *c, int64_t now)
 {
 	return !tix_oid_is_null(&c->identity) && c->until > now;
@@ -550,7 +599,14 @@ static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t
 			break;
 		case TIX_OP_COMMENT: {
 			tix_comment cm = {{c->nodes[r->node].oid, r->line}, p->author, p->time,
-					  tix_xstrdup(op->u.text.value), false};
+					  tix_xstrdup(op->u.text.value), false, NULL, NULL, {{0}, 0}};
+			TIX_VEC_PUSH(&comments, cm);
+			break;
+		}
+		case TIX_OP_TYPED_COMMENT: {
+			tix_comment cm = {{c->nodes[r->node].oid, r->line}, p->author, p->time,
+					  tix_xstrdup(op->u.typed_comment.body), false, tix_xstrdup(op->u.typed_comment.kind),
+					  tix_xstrdup(op->u.typed_comment.data), op->u.typed_comment.reply_to};
 			TIX_VEC_PUSH(&comments, cm);
 			break;
 		}
@@ -880,8 +936,11 @@ void tix_entity_free(tix_entity *e)
 			free(t->stages[i].name);
 		free(t->stages);
 		tix_strs_free(&t->labels);
-		for (size_t i = 0; i < t->ncomments; i++)
+		for (size_t i = 0; i < t->ncomments; i++) {
 			free(t->comments[i].body);
+			free(t->comments[i].kind);
+			free(t->comments[i].data);
+		}
 		free(t->comments);
 		free(t->plan.rank);
 		free(t->plan.external);
@@ -1063,6 +1122,15 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out)
 			tix_jw_str(&w, cm->body);
 			tix_jw_key(&w, "edited");
 			tix_jw_bool(&w, cm->edited);
+			if (cm->kind) {
+				snap_str(&w, "kind", cm->kind);
+				snap_str(&w, "data", cm->data);
+				tix_jw_key(&w, "reply_to");
+				if (tix_oid_is_null(&cm->reply_to.commit))
+					tix_jw_null(&w);
+				else
+					tix_jw_str(&w, tix_opid_str(&cm->reply_to, opid));
+			}
 			tix_jw_obj_end(&w);
 		}
 		tix_jw_arr_end(&w);
