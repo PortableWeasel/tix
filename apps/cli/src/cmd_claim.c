@@ -49,7 +49,7 @@ static int claim_next(cli *c, int argc, char **argv)
 	tix_oid under;
 	tix_claim_query q = {.lease = 1800};
 	const char *remote_name = NULL;
-	bool local = false;
+	bool local = false, json = false;
 	int rc = EXIT_OK;
 	for (int i = 1; i < argc && rc == EXIT_OK; i++) {
 		if (!strcmp(argv[i], "--next")) {
@@ -75,6 +75,8 @@ static int claim_next(cli *c, int argc, char **argv)
 			remote_name = argv[++i];
 		} else if (!strcmp(argv[i], "--local")) {
 			local = true;
+		} else if (!strcmp(argv[i], "--json")) {
+			json = true;
 		} else {
 			rc = cli_usage("claim --next: unexpected '%s'", argv[i]);
 		}
@@ -92,6 +94,8 @@ static int claim_next(cli *c, int argc, char **argv)
 		tix_status st = tix_claim_next(c->repo, &q, &id, &c->err);
 		if (st == TIX_ERR_NOT_FOUND && tix_repo_identity(c->repo, &me)) { /* no work: not an error */
 			fprintf(stderr, "tix: %s\n", c->err.msg);
+			if (json)
+				puts("null");
 			rc = EXIT_NO_WORK;
 		} else if (st) {
 			rc = cli_fail(c, st);
@@ -99,8 +103,17 @@ static int claim_next(cli *c, int argc, char **argv)
 			tix_entity *e;
 			char s[16];
 			if (!tix_entity_load(c->repo, TIX_ENTITY_TICKET, &id, &e, NULL)) {
-				printf("Claimed %s %s (for %lld min)\n", cli_short(&id, s), e->u.ticket.title,
-				       (long long)(q.lease / 60));
+				if (json) {
+					tix_buf b = TIX_BUF_INIT;
+					tix_jw jw;
+					tix_jw_init(&jw, &b);
+					cli_json_ticket(c, &jw, e, (int64_t)time(NULL));
+					puts(tix_buf_cstr(&b));
+					tix_buf_free(&b);
+				} else {
+					printf("Claimed %s %s (for %lld min)\n", cli_short(&id, s), e->u.ticket.title,
+					       (long long)(q.lease / 60));
+				}
 				tix_entity_free(e);
 			}
 		}

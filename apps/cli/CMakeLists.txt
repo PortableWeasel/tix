@@ -1,7 +1,7 @@
 # The tix CLI: a composition root (may use any module). Installed also as git-tix,
 # so `git tix ...` works.
 add_executable(tix src/main.c src/cmd_id.c src/cmd_ticket.c src/cmd_sync.c src/cmd_plan.c
-  src/cmd_res.c src/cmd_baseline.c src/cmd_verify.c src/cmd_bridge.c src/cmd_stage.c src/cmd_claim.c src/cmd_note.c src/cmd_autonomy.c src/planopts.c src/editor.c)
+  src/cmd_res.c src/cmd_baseline.c src/cmd_verify.c src/cmd_bridge.c src/cmd_stage.c src/cmd_claim.c src/cmd_note.c src/cmd_autonomy.c src/cmd_feed.c src/planopts.c src/editor.c)
 target_link_libraries(tix PRIVATE tix::core tix::input tix::export tix::index_sqlite tix::store_libgit
   tix::bridge tix::bridge_forgejo tix_apps_common)
 tix_apply_warnings(tix)

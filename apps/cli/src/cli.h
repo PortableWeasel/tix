@@ -10,6 +10,7 @@
 #include "tix/index_sqlite.h"
 #include "tix/input.h"
 #include "tix/store_libgit.h"
+#include "tix/base_json.h"
 
 #include <stdio.h>
 
@@ -79,6 +80,10 @@ int cmd_stage(cli *c, int argc, char **argv);
 int cmd_claim(cli *c, int argc, char **argv);
 int cmd_note(cli *c, int argc, char **argv);
 int cmd_autonomy(cli *c, int argc, char **argv);
+int cmd_log(cli *c, int argc, char **argv);
+int cmd_watch(cli *c, int argc, char **argv);
+/* {"id","short","title","status","stage","labels","parent","claim":{..}|null,"updated"} */
+void cli_json_ticket(cli *c, tix_jw *w, const tix_entity *e, int64_t now);
 /* "<hex prefix>:<line>" against e's comments; prints errors. RETURNS EXIT_OK on success. */
 int cli_resolve_comment(const tix_entity *e, const char *arg, tix_opid *out);
 /* Prints a typed comment's fields, items (with their current state), questions and updates. */

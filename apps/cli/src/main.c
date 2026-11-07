@@ -42,6 +42,11 @@ static const char usage_text[] =
 	"  autonomy ID on --until 08:00 | --for 10h | --no-expiry     autonomy ID off | halt | show\n"
 	"        while on, agents can't park tickets in stages that wait for a person\n"
 	"        (blocked stages excepted); agents may only halt\n"
+	"\n"
+	"for agents and scripts (--json: one JSON value per line)\n"
+	"  ls, show, claim --next, stage ls, autonomy show: add --json\n"
+	"  log [ID] [--since 2h|DATE] [--under ID] [--limit N] [--json]   ticket activity, oldest first\n"
+	"  watch [--under ID] [--pull 30s] [--max-events N] [--json]     one line per change, as it happens\n"
 	"\n";
 static const char usage_text2[] =
 	"planning options (new, edit; 'none' clears a value)\n"
@@ -259,6 +264,7 @@ int main(int argc, char **argv)
 		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"export", cmd_export}, {"index", cmd_index},
 		{"baseline", cmd_baseline}, {"verify", cmd_verify}, {"bridge", cmd_bridge}, {"stage", cmd_stage},
 		{"claim", cmd_claim}, {"note", cmd_note}, {"autonomy", cmd_autonomy},
+		{"log", cmd_log}, {"watch", cmd_watch},
 	};
 	int (*fn)(cli *, int, char **) = NULL;
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(*cmds); i++)

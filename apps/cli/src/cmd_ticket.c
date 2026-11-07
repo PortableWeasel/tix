@@ -134,11 +134,13 @@ int cmd_ls(cli *c, int argc, char **argv)
 {
 	tix_ticket_query q = {.status_mask = TIX_STATUS_MASK_ACTIVE, .sort = TIX_SORT_STATUS};
 	tix_oid author, assignee, under;
-	bool all = false, explicit_status = false;
+	bool all = false, explicit_status = false, json = false;
 	char stage[TIX_STAGE_MAX + 1] = "";
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--all")) {
 			all = true;
+		} else if (!strcmp(argv[i], "--json")) {
+			json = true;
 		} else if (!strcmp(argv[i], "--status") && need_value(i, argc, argv[i])) {
 			tix_ticket_status s;
 			char st1[TIX_STAGE_MAX + 1];
@@ -188,6 +190,19 @@ int cmd_ls(cli *c, int argc, char **argv)
 	tix_status st = tix_ticket_list(c->repo, &q, &l, &c->err);
 	if (st)
 		return cli_fail(c, st);
+	if (json) {
+		int64_t now = (int64_t)time(NULL);
+		for (size_t i = 0; i < l.n; i++) {
+			tix_buf b = TIX_BUF_INIT;
+			tix_jw jw;
+			tix_jw_init(&jw, &b);
+			cli_json_ticket(c, &jw, l.v[i], now);
+			puts(tix_buf_cstr(&b));
+			tix_buf_free(&b);
+		}
+		tix_entity_list_free(&l);
+		return EXIT_OK;
+	}
 	int w = 11;
 	char state[TIX_STATE_STR];
 	for (size_t i = 0; i < l.n; i++) {
@@ -302,12 +317,21 @@ static void show_plan(cli *c, const tix_ticket *t)
 
 int cmd_show(cli *c, int argc, char **argv)
 {
-	if (argc != 2)
+	bool json = argc == 3 && (!strcmp(argv[1], "--json") || !strcmp(argv[2], "--json"));
+	if (argc != 2 && !json)
 		return cli_usage("show: expected one ticket ID");
 	tix_entity *e;
-	int rc = load_ticket_arg(c, argv[1], &e);
+	int rc = load_ticket_arg(c, json && !strcmp(argv[1], "--json") ? argv[2] : argv[1], &e);
 	if (rc)
 		return rc;
+	if (json) { /* the canonical snapshot: every field, as replayed */
+		tix_buf b = TIX_BUF_INIT;
+		tix_entity_snapshot(e, &b);
+		puts(tix_buf_cstr(&b));
+		tix_buf_free(&b);
+		tix_entity_free(e);
+		return EXIT_OK;
+	}
 	const tix_ticket *t = &e->u.ticket;
 	char hex[TIX_OID_MAX_HEX + 1], who[300], when[32], cid[32], state[TIX_STATE_STR];
 	printf("%s\n", t->title);

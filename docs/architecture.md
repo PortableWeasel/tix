@@ -1296,11 +1296,20 @@ tix interprets `data` only through generic shapes, never through the kinds:
 
 - **`--json`** on `ls`, `show`, `claim`, `stage ls`, `autonomy show` and `log`. Output comes
   from the canonical JSON writer, with field names matching the op schema.
-- **`tix log [--since T] [--under R] [--json]`**: the activity feed. It lists ops in total
+- **`tix log [ID] [--since 2h|DATE] [--under R] [--limit N] [--json]`** ✅: the activity feed. It lists ops in total
   order with author, kind, ticket and summary. The web's activity page uses the same feed.
-- **`tix watch [--under R] [--pull 30s] [--json]`**: one NDJSON event per changed ticket
-  (`{"ticket","head","ops":[…]}`). It compares ref heads once a second and pulls on the
-  given interval. Agents use it to wait without polling `ls`.
+- **`tix watch [--under R] [--pull 30s] [--max-events N] [--json]`**: one NDJSON event per
+  changed ticket (`{"ticket","short","title","head","ops":[…]}`, the ops being the new
+  commits' activity entries). It compares ref heads once a second and pulls on the given
+  interval. Agents use it to wait without polling `ls`; `--max-events 1` returns after the
+  next change. ✅
+- CLI shapes ✅: `ls --json` and `claim --next --json` print `{"id","short","title",
+  "status","stage","labels","parent","claim":{"identity","name","until","live"}|null,
+  "updated"}` per line (`claim --next` prints `null` with exit 3 when there's no work);
+  `show --json` prints the canonical snapshot (every replayed field); `stage ls ID --json`
+  `{"owner","stages":[…]}`; `autonomy show --json` `{"mode","until","owner"}`; `log`
+  entries are `{"time","id","ticket","short","title","author","name","op","summary"}`
+  (core `tix_activity_log`).
 - **Web UI**:
   - **Inbox**: tickets in a `human` stage, then live claims with their age.
   - **Activity page**: since a time, by default since autonomy was switched on.

@@ -54,13 +54,36 @@ static long long parse_for(const char *s)
 	return -1;
 }
 
-static int show(cli *c, const tix_oid *id)
+static int show(cli *c, const tix_oid *id, bool json)
 {
 	tix_autonomy au;
 	int64_t now = (int64_t)time(NULL);
 	tix_status st = tix_ticket_autonomy(c->repo, id, now, &au, &c->err);
 	if (st)
 		return cli_fail(c, st);
+	if (json) {
+		tix_buf b = TIX_BUF_INIT;
+		tix_jw w;
+		char hex[TIX_OID_MAX_HEX + 1];
+		tix_jw_init(&w, &b);
+		tix_jw_obj_begin(&w);
+		tix_jw_key(&w, "mode");
+		tix_jw_str(&w, tix_autonomy_mode_name(au.mode));
+		tix_jw_key(&w, "until");
+		if (au.set && au.until >= 0)
+			tix_jw_int(&w, au.until);
+		else
+			tix_jw_null(&w);
+		tix_jw_key(&w, "owner");
+		if (au.set)
+			tix_jw_str(&w, tix_oid_hex(&au.owner, hex));
+		else
+			tix_jw_null(&w);
+		tix_jw_obj_end(&w);
+		puts(tix_buf_cstr(&b));
+		tix_buf_free(&b);
+		return EXIT_OK;
+	}
 	char s[16], when[32];
 	if (!au.set) {
 		printf("supervised (nothing up the tree sets autonomy)\n");
@@ -85,9 +108,10 @@ int cmd_autonomy(cli *c, int argc, char **argv)
 		return rc;
 	const char *what = argv[2];
 	if (!strcmp(what, "show")) {
-		if (argc != 3)
-			return cli_usage("autonomy show takes no options");
-		return show(c, &id);
+		bool json = argc == 4 && !strcmp(argv[3], "--json");
+		if (argc != 3 && !json)
+			return cli_usage("autonomy show takes only --json");
+		return show(c, &id, json);
 	}
 	tix_autonomy_mode mode;
 	int64_t until = -1, now = (int64_t)time(NULL);
@@ -127,5 +151,5 @@ int cmd_autonomy(cli *c, int argc, char **argv)
 	tix_op_free(&op);
 	if (st)
 		return cli_fail(c, st);
-	return show(c, &id);
+	return show(c, &id, false);
 }

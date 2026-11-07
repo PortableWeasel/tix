@@ -1428,8 +1428,54 @@ static void test_autonomy(void)
 	tix_store_destroy(s);
 }
 
+/* §15.6: the activity feed. */
+static void test_activity(void)
+{
+	fake_env env = {1700000000, 51};
+	tix_store *s = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_repo *r = open_repo(s, &env, NULL);
+	tix_oid me, a, b;
+	TK_OK(tix_identity_create(r, "Ada", "a@x", &me, &e), &e);
+	TK_OK(tix_repo_set_identity(r, &me, &e), &e);
+	TK_OK(tix_ticket_create(r, "Alpha", "", NULL, &a, &e), &e);
+	TK_OK(tix_ticket_create(r, "Beta", "", NULL, &b, &e), &e);
+	int64_t mid = env.now + 1;
+	TK_OK(apply_one(r, &a, tix_op_set_state(TIX_TICKET_OPEN, "ready")), &e);
+	TK_OK(apply_one(r, &b, tix_op_typed_comment("question", "Which DB?\nmore", "{}", NULL)), &e);
+	tix_entity *x = load_ticket(r, &a);
+	tix_oid head = x->head;
+	tix_entity_free(x);
+	TK_OK(apply_one(r, &a, tix_op_claim(env.now + 600)), &e);
+
+	tix_activity_list l;
+	TK_OK(tix_activity_log(r, &(tix_activity_query){0}, &l, &e), &e);
+	TK_CHECK(l.n == 6); /* 2 creates, set-status + set-state, typed-comment, claim */
+	for (size_t i = 1; i < l.n; i++)
+		TK_CHECK(l.v[i - 1].lamport <= l.v[i].lamport);
+	if (l.n == 6) {
+		TK_STR_EQ(l.v[0].summary, "created: Alpha");
+		TK_STR_EQ(l.v[3].summary, "status open/ready");
+		TK_STR_EQ(l.v[4].summary, "[question] Which DB?");
+		TK_STR_EQ(l.v[5].op, "claim");
+		TK_STR_EQ(l.v[5].title, "Alpha");
+	}
+	tix_activity_list_free(&l);
+	TK_OK(tix_activity_log(r, &(tix_activity_query){.since = mid}, &l, &e), &e);
+	TK_CHECK(l.n == 4);
+	tix_activity_list_free(&l);
+	TK_OK(tix_activity_log(r, &(tix_activity_query){.ticket = &a, .after = &head}, &l, &e), &e);
+	TK_CHECK(l.n == 1 && !strcmp(l.v[0].op, "claim"));
+	tix_activity_list_free(&l);
+	TK_OK(tix_activity_log(r, &(tix_activity_query){.limit = 2}, &l, &e), &e);
+	TK_CHECK(l.n == 2 && !strcmp(l.v[1].op, "claim"));
+	tix_activity_list_free(&l);
+	tix_repo_close(r);
+	tix_store_destroy(s);
+}
+
 int main(void)
 {
+	test_activity();
 	test_autonomy();
 	test_claims_local();
 	test_claims_race();

@@ -241,6 +241,38 @@ tix_status tix_claim_next(tix_repo *r, const tix_claim_query *q, tix_oid *out, t
  * not done). */
 bool tix_ticket_deps_done(tix_repo *r, const tix_entity *t);
 
+/* ---- activity (architecture §15.6) ------------------------------------------------ */
+
+/* One ticket op, for feeds. OWNS op, summary and title. */
+typedef struct tix_activity {
+	int64_t time;     /* pack time (as written by its author) */
+	uint64_t lamport;
+	tix_opid id;
+	tix_oid ticket, author;
+	char *title;      /* the ticket's current title */
+	char *op;         /* wire name: "set-state", "typed-comment", ... */
+	char *summary;    /* one line for people: "status open/ready", "[review] Two findings" */
+} tix_activity;
+
+typedef struct tix_activity_list {
+	tix_activity *v;
+	size_t n;
+} tix_activity_list;
+
+void tix_activity_list_free(tix_activity_list *l);
+
+typedef struct tix_activity_query {
+	int64_t since;            /* only ops whose pack time is >= since; 0 = all */
+	const tix_oid *under;     /* only tickets below this one (and it); NULL = all */
+	const tix_oid *ticket;    /* only this ticket; NULL = all */
+	const tix_oid *after;     /* with ticket: only commits not reachable from this head */
+	size_t limit;             /* keep the last N; 0 = all */
+} tix_activity_query;
+
+/* Ticket ops in total order (lamport, commit, line), oldest first. Tickets whose history
+ * doesn't validate are skipped. */
+tix_status tix_activity_log(tix_repo *r, const tix_activity_query *q, tix_activity_list *out, tix_error *err);
+
 /* ---- planning (architecture §5) --------------------------------------------- */
 
 typedef enum tix_rank_pos { TIX_RANK_FIRST, TIX_RANK_LAST, TIX_RANK_BEFORE, TIX_RANK_AFTER } tix_rank_pos;

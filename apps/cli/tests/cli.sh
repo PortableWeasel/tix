@@ -421,6 +421,43 @@ expect 0 "$TIX" autonomy "$nr" off; has "supervised"
 expect 0 "$TIX" id edit --kind agent
 expect 0 "$TIX" edit "$nj" --status open/needs-input   # supervised again: fine
 
+# ---- agent interfaces (§15.6): --json, log, watch -----------------------------------------
+cd "$T/c1"
+expect 0 "$TIX" ls --json --all; has '"short":"'"$nj"'"'; has '"status":"open","stage":"needs-input"'
+[ "$(grep -c '^{' <<<"$out")" = "$(wc -l <<<"$out")" ] || fail "ls --json: one object per line"
+expect 0 "$TIX" show "$nj" --json; has '"type":"ticket"'; has '"stage":"needs-input"'; has '"waiting":[]'
+expect 0 "$TIX" show --json "$nj"; has '"title":"Night job"'
+expect 0 "$TIX" stage ls "$nj" --json; has '"stages":[{"name":"needs-input","phase":"open","human":true'
+expect 2 "$TIX" stage ls --json; has "--json needs a TICKET"
+expect 0 "$TIX" autonomy "$nj" show --json; has '"mode":"supervised","until":null,"owner":"'
+expect 0 "$TIX" edit "$nj" --status open/ready
+expect 0 "$TIX" claim --next --json --local --status open/ready; has '"short":"'"$nj"'"'; has '"live":true'
+expect 3 "$TIX" claim --next --json --local --status blocked; has "null"
+expect 0 "$TIX" log "$nj"; has "Night job: created: Night job"; has "status open/ready"; has "claimed"
+expect 0 "$TIX" log "$nj" --json --limit 1; has '"op":"claim"'; has '"summary":"claimed"'
+[ "$(wc -l <<<"$out")" = 1 ] || fail "log --limit 1 printed more than one line"
+expect 0 "$TIX" log --since 1h --under "$nr"; has "Night root"; has "Night job"
+expect 2 "$TIX" log --since yesterday; has "--since is like"
+expect 2 "$TIX" watch --pull 1s; has "at least 5s"
+timeout 20 "$TIX" watch --json --max-events 1 > "$T/watch.out" 2>&1 & wpid=$!
+sleep 1.5
+"$TIX" note "$nj" --kind question -m "Port 80 or 8080?" >/dev/null
+wait $wpid; wrc=$?
+out=$(cat "$T/watch.out")
+[ $wrc = 0 ] || fail "watch exited $wrc: $out"
+has '"short":"'"$nj"'"'; has '"op":"typed-comment"'; has '"summary":"[question] Port 80 or 8080?"'
+expect 0 "$TIX" new -t "Other root"; orr=$(sed -n 's/^Created ticket //p' <<<"$out")
+expect 0 "$TIX" new -t "Other job" --parent "$orr"; oj=$(sed -n 's/^Created ticket //p' <<<"$out")
+timeout 20 "$TIX" watch --under "$orr" --max-events 1 > "$T/watch2.out" 2>&1 & wpid=$!
+sleep 1.5
+"$TIX" comment "$nj" -m "not under that root" >/dev/null   # filtered out
+sleep 1.5
+"$TIX" comment "$oj" -m "under it" >/dev/null
+wait $wpid; wrc=$?
+out=$(cat "$T/watch2.out")
+[ $wrc = 0 ] || fail "watch --under exited $wrc: $out"
+has "Other job: comment: under it"; hasnt "not under that root"
+
 # ---- index cache (M5) ------------------------------------------------------------
 cd "$T/a"
 expect 0 "$TIX" index clear; has "index: 0 cached"

@@ -7,8 +7,13 @@
 static int stage_ls(cli *c, int argc, char **argv)
 {
 	char s[16], state[TIX_STATE_STR];
-	if (argc > 2)
-		return cli_usage("usage: tix stage ls [TICKET]");
+	bool json = false;
+	if (argc >= 2 && !strcmp(argv[argc - 1], "--json")) {
+		json = true;
+		argc--;
+	}
+	if (argc > 2 || (json && argc != 2))
+		return cli_usage("usage: tix stage ls [TICKET] (--json needs a TICKET)");
 	if (argc == 1) { /* every ticket that defines a list */
 		tix_entity_list l;
 		tix_ticket_query q = {.sort = TIX_SORT_WBS};
@@ -37,6 +42,39 @@ static int stage_ls(cli *c, int argc, char **argv)
 	tix_status st = tix_ticket_stages(c->repo, &id, NULL, &owner, &c->err);
 	if (st)
 		return cli_fail(c, st);
+	if (json) {
+		tix_buf b = TIX_BUF_INIT;
+		tix_jw w;
+		char hex[TIX_OID_MAX_HEX + 1];
+		tix_jw_init(&w, &b);
+		tix_jw_obj_begin(&w);
+		tix_jw_key(&w, "owner");
+		if (owner)
+			tix_jw_str(&w, tix_oid_hex(&owner->id, hex));
+		else
+			tix_jw_null(&w);
+		tix_jw_key(&w, "stages");
+		tix_jw_arr_begin(&w);
+		for (size_t i = 0; owner && i < owner->u.ticket.nstages; i++) {
+			const tix_stage_def *d = &owner->u.ticket.stages[i];
+			tix_jw_obj_begin(&w);
+			tix_jw_key(&w, "name");
+			tix_jw_str(&w, d->name);
+			tix_jw_key(&w, "phase");
+			tix_jw_str(&w, tix_ticket_status_name(d->phase));
+			tix_jw_key(&w, "human");
+			tix_jw_bool(&w, d->human);
+			tix_jw_key(&w, "rank");
+			tix_jw_int(&w, d->rank);
+			tix_jw_obj_end(&w);
+		}
+		tix_jw_arr_end(&w);
+		tix_jw_obj_end(&w);
+		puts(tix_buf_cstr(&b));
+		tix_buf_free(&b);
+		tix_entity_free(owner);
+		return EXIT_OK;
+	}
 	if (!owner) {
 		printf("no stage list applies to %s (any stage is accepted)\n", cli_short(&id, s));
 		return EXIT_OK;
