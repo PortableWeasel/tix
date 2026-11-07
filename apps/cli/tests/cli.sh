@@ -25,6 +25,7 @@ git config user.name "Ada Lovelace" && git config user.email ada@example.org
 expect 2 "$TIX"; has "usage: tix"
 expect 0 "$TIX" help; has "statuses:"
 expect 2 "$TIX" frobnicate; has "unknown command"
+expect 0 "$TIX" --version; has "tix 0."; has "(git.git 2.47.3)"
 expect 0 "$TIX" web --help; has "--read-only"   # execs tix-web next to tix
 expect 2 "$TIX" web --listen 0.0.0.0:7480; has "hosted mode"
 expect 2 "$TIX" web --listen 192.168.1.5:80; has "hosted mode"
@@ -58,6 +59,9 @@ expect 0 "$TIX" show "$t1"; has "fixed in a1b2c3"; has "(edited)"; hasnt "lookin
 # usage and id errors
 expect 2 "$TIX" edit "$t1"; has "nothing to change"
 expect 2 "$TIX" ls --status wip; has "unknown status"
+expect 2 "$TIX" ls --sort size; has "--sort is newest"
+expect 2 "$TIX" new -t x --status wip; has "unknown status"
+
 expect 1 "$TIX" show "${t1:0:6}"; has "must be 7"
 expect 1 "$TIX" show 0000000; has "no ticket matches"
 expect 1 "$TIX" edit "$t1" --title $'two\nlines'; has "control characters"
@@ -285,6 +289,15 @@ expect 0 "$TIX" push; has "pushed 2"
 git clone -q "$T/s.git" "$T/s2" 2>/dev/null && cd "$T/s2"
 expect 0 "$TIX" pull; has "2 new"
 expect 0 "$TIX" show "$t"; has "sha256 ticket"
+
+cd "$T/s"
+# new --status records finished work in one step; ls sorts active first, then WBS order
+expect 0 "$TIX" new -t "Already shipped" --status done --actual-start 2026-01-05 --actual-finish 2026-01-06
+t3=$(sed -n 's/^Created ticket //p' <<<"$out")
+expect 0 "$TIX" show "$t3"; has "status:   done"
+expect 0 "$TIX" edit "$t" --status in-progress
+expect 0 "$TIX" ls --all; first=$(head -1 <<<"$out"); [[ $first == *"in-progress"* ]] || fail "ls: in-progress not first: $out"
+expect 0 "$TIX" ls --all --sort newest; has "$t3"   # order itself: core test_sort (times here share a second)
 
 if [ $fails -gt 0 ]; then echo "$fails failure(s)"; exit 1; fi
 echo "cli end-to-end OK"

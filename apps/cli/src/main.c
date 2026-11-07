@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 static const char usage_text[] =
-	"usage: tix <command> [<args>]\n"
+	"usage: tix <command> [<args>]      (tix --version: versions)\n"
 	"\n"
 	"identities\n"
 	"  id new [--name N] [--email E]     create an identity (defaults from git config)\n"
@@ -17,8 +17,9 @@ static const char usage_text[] =
 	"  id edit [--name N] [--email E] [--add-key KIND FPR PUBKEY] [--remove-key FPR]\n"
 	"\n"
 	"tickets\n"
-	"  new [-t TITLE] [-m BODY] [-l LABEL]... [PLANNING]   create (opens $EDITOR without -t)\n"
+	"  new [-t TITLE] [-m BODY] [-l LABEL]... [--status S] [PLANNING]   create ($EDITOR without -t)\n"
 	"  ls [--all] [--status S]... [--label L] [--author ID] [--assignee RES] [--under ID]\n"
+	"     [--sort status|wbs|updated|newest]   (default: active first, then WBS order)\n"
 	"  show ID\n"
 	"  comment ID [-m TEXT] [--edit COMMENT-ID]\n"
 	"  edit ID [--title T] [--body B] [--status S] [+LABEL]... [-LABEL]... [PLANNING]\n"
@@ -201,6 +202,10 @@ int main(int argc, char **argv)
 	cli c = {0};
 	if (argc >= 2 && !strcmp(argv[1], "web"))
 		return exec_web(argc, argv);
+	if (argc == 2 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "version"))) {
+		printf("tix %s (git.git %s)\n", TIX_VERSION, tix_store_libgit_git_version());
+		return EXIT_OK;
+	}
 	if (argc < 2 || !strcmp(argv[1], "help") || !strcmp(argv[1], "--help") || !strcmp(argv[1], "-h")) {
 		fputs(usage_text, argc < 2 ? stderr : stdout);
 		return argc < 2 ? EXIT_USAGE : EXIT_OK;

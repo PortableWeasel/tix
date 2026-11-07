@@ -810,8 +810,65 @@ static void test_text_query(void)
 	tix_store_destroy(s);
 }
 
+/* Put t under parent (NULL = top level) at pos, as the CLI's --parent/--rank do. */
+static void place(tix_repo *r, const tix_oid *t, const tix_oid *parent, tix_rank_pos pos, const tix_oid *anchor)
+{
+	tix_buf rank = TIX_BUF_INIT;
+	TK_OK(tix_ticket_rank(r, parent, t, pos, anchor, &rank, &e), &e);
+	tix_op ops[2] = {tix_op_set(TIX_F_PARENT, parent ? tix_value_id(parent) : tix_value_null()),
+			 tix_op_set(TIX_F_RANK, tix_value_str(tix_buf_cstr(&rank)))};
+	TK_OK(tix_entity_apply(r, TIX_ENTITY_TICKET, t, ops, 2, &e), &e);
+	tix_op_free(&ops[0]);
+	tix_op_free(&ops[1]);
+	tix_buf_free(&rank);
+}
+
+static void expect_order(tix_repo *r, tix_ticket_query q, const tix_oid *want, size_t n)
+{
+	tix_entity_list l;
+	TK_OK(tix_ticket_list(r, &q, &l, &e), &e);
+	TK_CHECK(l.n == n);
+	for (size_t i = 0; i < n && i < l.n; i++)
+		if (!tix_oid_eq(&l.v[i]->id, &want[i]))
+			tk_fail(__FILE__, __LINE__, "sort %d: position %zu is '%s'", (int)q.sort, i, l.v[i]->u.ticket.title);
+	tix_entity_list_free(&l);
+}
+
+static void test_sort(void)
+{
+	fake_env env = {1700000000, 9};
+	tix_store *s = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_repo *r = open_repo(s, &env, NULL);
+	tix_oid me, root, c1, c2, top2;
+	TK_OK(tix_identity_create(r, "Ada", "a@x", &me, &e), &e);
+	TK_OK(tix_repo_set_identity(r, &me, &e), &e);
+	TK_OK(tix_ticket_create(r, "Root", "", NULL, &root, &e), &e);
+	TK_OK(tix_ticket_create(r, "First child", "", NULL, &c1, &e), &e);
+	TK_OK(tix_ticket_create(r, "Second child", "", NULL, &c2, &e), &e);
+	TK_OK(tix_ticket_create(r, "Top two", "", NULL, &top2, &e), &e);
+	place(r, &root, NULL, TIX_RANK_LAST, NULL);
+	place(r, &top2, NULL, TIX_RANK_LAST, NULL);
+	place(r, &c1, &root, TIX_RANK_LAST, NULL);
+	place(r, &c2, &root, TIX_RANK_BEFORE, &c1); /* c2 sorts first among the children */
+	tix_op op = tix_op_set_status(TIX_TICKET_IN_PROGRESS);
+	TK_OK(tix_entity_apply(r, TIX_ENTITY_TICKET, &c1, &op, 1, &e), &e);
+	tix_op_free(&op);
+
+	expect_order(r, (tix_ticket_query){.sort = TIX_SORT_WBS}, (tix_oid[]){root, c2, c1, top2}, 4);
+	expect_order(r, (tix_ticket_query){.sort = TIX_SORT_STATUS}, (tix_oid[]){c1, root, c2, top2}, 4);
+	expect_order(r, (tix_ticket_query){.sort = TIX_SORT_NEWEST}, (tix_oid[]){top2, c2, c1, root}, 4);
+	expect_order(r, (tix_ticket_query){.sort = TIX_SORT_UPDATED}, (tix_oid[]){c1, c2, top2, root}, 4);
+	/* the parent is filtered out, but its rank still orders what's left */
+	expect_order(r, (tix_ticket_query){.sort = TIX_SORT_WBS, .under = &root}, (tix_oid[]){c2, c1}, 2);
+	expect_order(r, (tix_ticket_query){.sort = TIX_SORT_WBS, .status_mask = 1u << TIX_TICKET_OPEN},
+		     (tix_oid[]){root, c2, top2}, 3);
+	tix_repo_close(r);
+	tix_store_destroy(s);
+}
+
 int main(void)
 {
+	test_sort();
 	test_flow();
 	test_resolve();
 	test_retry();

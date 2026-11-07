@@ -428,6 +428,15 @@ static void test_pages(void)
 	HAS(&c, ">Dig<");
 	HASNT(&c, "Pour");
 	TK_CHECK(call(&c, "GET", "/tickets?under=deadbeef", NULL) == 404);
+	/* sort: active first by default; wbs puts a parent before its children; junk falls back */
+	TK_CHECK(call(&c, "GET", "/tickets", NULL) == 200);
+	HAS(&c, "<option value=\"status\" selected>");
+	TK_CHECK(call(&c, "GET", "/tickets?sort=wbs", NULL) == 200);
+	HAS(&c, "<option value=\"wbs\" selected>");
+	TK_CHECK(strstr(body(&c), "House &lt;") && strstr(body(&c), ">Dig<") &&
+		 strstr(body(&c), "House &lt;") < strstr(body(&c), ">Dig<"));
+	TK_CHECK(call(&c, "GET", "/tickets?sort=%3Cx%3E", NULL) == 200);
+	HAS(&c, "<option value=\"status\" selected>");
 
 	/* one ticket */
 	snprintf(target, sizeof(target), "/t/%s", tix_oid_hex(&dig, hex));

@@ -44,7 +44,8 @@ int cmd_new(cli *c, int argc, char **argv)
 	tix_buf title = TIX_BUF_INIT, body = TIX_BUF_INIT, text = TIX_BUF_INIT;
 	tix_strs labels = {0};
 	tix_input pl = {0};
-	bool have_title = false, have_body = false;
+	bool have_title = false, have_body = false, have_status = false;
+	tix_ticket_status status = TIX_TICKET_OPEN;
 	int rc = EXIT_OK;
 	for (int i = 1; i < argc && rc == EXIT_OK; i++) {
 		int prc = cli_input_opt(c, TIX_ENTITY_TICKET, false, argc, argv, &i, &pl);
@@ -58,6 +59,10 @@ int cmd_new(cli *c, int argc, char **argv)
 			have_body = true;
 		} else if (!strcmp(argv[i], "-l") && need_value(i, argc, argv[i])) {
 			tix_strs_add(&labels, argv[++i]);
+		} else if (!strcmp(argv[i], "--status") && need_value(i, argc, argv[i])) {
+			if (!tix_ticket_status_parse(argv[++i], &status))
+				rc = cli_usage("unknown status '%s'", argv[i]);
+			have_status = true;
 		} else {
 			rc = cli_usage("new: unexpected '%s'", argv[i]);
 		}
@@ -92,8 +97,12 @@ int cmd_new(cli *c, int argc, char **argv)
 		TIX_VEC_PUSH(&ops, tix_op_ticket_create(NULL, tix_buf_cstr(&title), tix_buf_cstr(&body), &labels));
 		for (size_t k = 0; k < pl.ops.n; k++)
 			TIX_VEC_PUSH(&ops, pl.ops.v[k]); /* borrowed: freed with pl */
+		if (have_status && status != TIX_TICKET_OPEN)
+			TIX_VEC_PUSH(&ops, tix_op_set_status(status));
 		tix_status st = tix_entity_create(c->repo, TIX_ENTITY_TICKET, ops.v, ops.n, &id, &c->err);
 		tix_op_free(&ops.v[0]);
+		if (have_status && status != TIX_TICKET_OPEN)
+			tix_op_free(&ops.v[ops.n - 1]);
 		free(ops.v);
 		if (st)
 			rc = cli_fail(c, st);
@@ -120,7 +129,7 @@ static void print_labels(const tix_strs *l)
 
 int cmd_ls(cli *c, int argc, char **argv)
 {
-	tix_ticket_query q = {.status_mask = TIX_STATUS_MASK_ACTIVE};
+	tix_ticket_query q = {.status_mask = TIX_STATUS_MASK_ACTIVE, .sort = TIX_SORT_STATUS};
 	tix_oid author, assignee, under;
 	bool all = false, explicit_status = false;
 	for (int i = 1; i < argc; i++) {
@@ -134,6 +143,15 @@ int cmd_ls(cli *c, int argc, char **argv)
 			explicit_status = true;
 		} else if (!strcmp(argv[i], "--label") && need_value(i, argc, argv[i])) {
 			q.label = argv[++i];
+		} else if (!strcmp(argv[i], "--sort") && need_value(i, argc, argv[i])) {
+			static const char *const sorts[] = {"newest", "updated", "wbs", "status"};
+			const char *v = argv[++i];
+			size_t k = 0;
+			while (k < 4 && strcmp(v, sorts[k]))
+				k++;
+			if (k == 4)
+				return cli_usage("ls: --sort is newest, updated, wbs or status, not '%s'", v);
+			q.sort = (tix_ticket_sort)k;
 		} else if (!strcmp(argv[i], "--author") && need_value(i, argc, argv[i])) {
 			int rc = cli_resolve(c, TIX_ENTITY_IDENTITY, argv[++i], &author);
 			if (rc)

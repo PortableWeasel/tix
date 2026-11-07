@@ -38,7 +38,7 @@ tix tracks its own work: `tix pull && tix wbs` in a clone of this repo.
 ```bash
 tix id new                                # identity from git config user.name/email
 tix new -t "Crash on save" -l bug         # or just `tix new` to use $EDITOR
-tix ls                                    # active tickets (--all, --status, --label, --author)
+tix ls                                    # active tickets, in progress first (--all, --status, --label, --sort)
 tix show 7a3fe37
 tix comment 7a3fe37 -m "looking into it"
 tix edit 7a3fe37 --status in-progress +p1 -ui

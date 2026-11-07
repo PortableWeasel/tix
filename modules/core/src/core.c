@@ -690,6 +690,104 @@ static bool matches(const tix_ticket_query *q, const tix_entity *e, const tix_en
 	return true;
 }
 
+/* One ticket to order, with its parent chain from the root (chain[depth-1] == e). */
+typedef struct sort_item {
+	tix_entity *e;
+	const tix_entity **chain;
+	size_t depth;
+} sort_item;
+
+static tix_ticket_sort sort_mode; /* qsort context; single-threaded (rule 8) */
+
+static int cmp_oid_ptr(const void *pa, const void *pb)
+{
+	return tix_oid_cmp(&(*(tix_entity *const *)pa)->id, &(*(tix_entity *const *)pb)->id);
+}
+
+/* Sibling order, as plan's: ranked first (by rank), then unranked; ties by id. */
+static int cmp_siblings(const tix_entity *a, const tix_entity *b)
+{
+	const char *ra = a->u.ticket.plan.rank, *rb = b->u.ticket.plan.rank;
+	if (ra && rb) {
+		int c = strcmp(ra, rb);
+		if (c)
+			return c;
+	} else if (ra || rb) {
+		return ra ? -1 : 1;
+	}
+	return tix_oid_cmp(&a->id, &b->id);
+}
+
+static int cmp_wbs(const sort_item *a, const sort_item *b)
+{
+	for (size_t k = 0; k < a->depth && k < b->depth; k++)
+		if (a->chain[k] != b->chain[k])
+			return cmp_siblings(a->chain[k], b->chain[k]);
+	return a->depth < b->depth ? -1 : a->depth > b->depth ? 1 : 0;
+}
+
+static int status_order(tix_ticket_status s)
+{
+	static const int order[] = {[TIX_TICKET_IN_PROGRESS] = 0, [TIX_TICKET_BLOCKED] = 1, [TIX_TICKET_OPEN] = 2,
+				    [TIX_TICKET_DONE] = 3, [TIX_TICKET_CANCELLED] = 4};
+	return (unsigned)s < sizeof(order) / sizeof(*order) ? order[s] : 5;
+}
+
+static int cmp_item(const void *pa, const void *pb)
+{
+	const sort_item *a = pa, *b = pb;
+	switch (sort_mode) {
+	case TIX_SORT_UPDATED:
+		if (a->e->updated != b->e->updated)
+			return a->e->updated > b->e->updated ? -1 : 1;
+		return tix_oid_cmp(&a->e->id, &b->e->id);
+	case TIX_SORT_STATUS: {
+		int sa = status_order(a->e->u.ticket.status), sb = status_order(b->e->u.ticket.status);
+		if (sa != sb)
+			return sa < sb ? -1 : 1;
+	}
+		/* fall through */
+	case TIX_SORT_WBS:
+		return cmp_wbs(a, b);
+	default:
+		return cmp_ticket(&a->e, &b->e);
+	}
+}
+
+/* Parent chains for items, looked up in all (sorted by id here). Cycles and missing
+ * parents end a chain, so remote data can't loop. */
+static void build_chains(tix_entity_list *all, sort_item *items, size_t n)
+{
+	tix_entity **byid = tix_xcalloc(all->n ? all->n : 1, sizeof(*byid));
+	memcpy(byid, all->v, all->n * sizeof(*byid));
+	qsort(byid, all->n, sizeof(*byid), cmp_oid_ptr);
+	TIX_VEC(const tix_entity *) up = {0};
+	for (size_t i = 0; i < n; i++) {
+		up.n = 0;
+		const tix_entity *cur = items[i].e;
+		while (cur && up.n <= all->n) {
+			bool seen = false;
+			for (size_t k = 0; k < up.n && !seen; k++)
+				seen = up.v[k] == cur;
+			if (seen)
+				break;
+			TIX_VEC_PUSH(&up, cur);
+			const tix_oid *p = &cur->u.ticket.plan.parent;
+			if (tix_oid_is_null(p))
+				break;
+			tix_entity key = {.id = *p}, *kp = &key;
+			tix_entity **hit = bsearch(&kp, byid, all->n, sizeof(*byid), cmp_oid_ptr);
+			cur = hit ? *hit : NULL;
+		}
+		items[i].depth = up.n;
+		items[i].chain = tix_xcalloc(up.n, sizeof(*items[i].chain));
+		for (size_t k = 0; k < up.n; k++)
+			items[i].chain[k] = up.v[up.n - 1 - k];
+	}
+	free(up.v);
+	free(byid);
+}
+
 tix_status tix_ticket_list(tix_repo *r, const tix_ticket_query *q, tix_entity_list *out, tix_error *err)
 {
 	tix_status st = list_all(r, TIX_ENTITY_TICKET, out, err);
@@ -697,19 +795,26 @@ tix_status tix_ticket_list(tix_repo *r, const tix_ticket_query *q, tix_entity_li
 		return st;
 	/* decide first (the WBS walk needs every ticket), then drop */
 	bool *keep_it = tix_xcalloc(out->n ? out->n : 1, sizeof(bool));
-	for (size_t i = 0; i < out->n; i++)
-		keep_it[i] = matches(q, out->v[i], out);
+	sort_item *items = tix_xcalloc(out->n ? out->n : 1, sizeof(*items));
 	size_t keep = 0;
-	for (size_t i = 0; i < out->n; i++) {
-		if (keep_it[i])
-			out->v[keep++] = out->v[i];
-		else
+	for (size_t i = 0; i < out->n; i++)
+		if ((keep_it[i] = matches(q, out->v[i], out)))
+			items[keep++].e = out->v[i];
+	/* order while the dropped tickets still exist: their chains may pass through them */
+	sort_mode = q ? q->sort : TIX_SORT_NEWEST;
+	if (sort_mode == TIX_SORT_WBS || sort_mode == TIX_SORT_STATUS)
+		build_chains(out, items, keep);
+	qsort(items, keep, sizeof(*items), cmp_item);
+	for (size_t i = 0; i < out->n; i++)
+		if (!keep_it[i])
 			tix_entity_free(out->v[i]);
+	for (size_t i = 0; i < keep; i++) {
+		out->v[i] = items[i].e;
+		free(items[i].chain);
 	}
+	free(items);
 	free(keep_it);
 	out->n = keep;
-	if (out->n)
-		qsort(out->v, out->n, sizeof(*out->v), cmp_ticket);
 	return TIX_OK;
 }
 

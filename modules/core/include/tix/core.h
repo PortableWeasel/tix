@@ -111,6 +111,13 @@ typedef struct tix_entity_list {
 
 void tix_entity_list_free(tix_entity_list *l);
 
+typedef enum tix_ticket_sort {
+	TIX_SORT_NEWEST = 0, /* created desc, then id */
+	TIX_SORT_UPDATED,    /* last change desc, then id */
+	TIX_SORT_WBS,        /* tree order: parents before children, siblings by rank then id */
+	TIX_SORT_STATUS,     /* in-progress, blocked, open, done, cancelled; then WBS order */
+} tix_ticket_sort;
+
 typedef struct tix_ticket_query {
 	unsigned status_mask;    /* bit (1u << status); 0 = any */
 	const char *label;       /* NULL = any */
@@ -119,13 +126,15 @@ typedef struct tix_ticket_query {
 	const tix_oid *under;    /* only tickets below this one in the WBS; NULL = any */
 	const char *text;        /* id prefix (lowercase hex) or title substring, ASCII
 				    case-insensitive; NULL or "" = any (M6) */
+	tix_ticket_sort sort;    /* order of the result */
 } tix_ticket_query;
 
 /* Statuses still "open" in the broad sense: open, in-progress, blocked. */
 #define TIX_STATUS_MASK_ACTIVE \
 	((1u << TIX_TICKET_OPEN) | (1u << TIX_TICKET_IN_PROGRESS) | (1u << TIX_TICKET_BLOCKED))
 
-/* All tickets matching q (NULL = all), newest first (created desc, then id). */
+/* All tickets matching q (NULL = all), ordered by q->sort (NULL: newest first). WBS
+ * order uses every ticket's parent chain, also for parents the query filters out. */
 tix_status tix_ticket_list(tix_repo *r, const tix_ticket_query *q, tix_entity_list *out, tix_error *err);
 /* All identities, ordered by name, then id. */
 tix_status tix_identity_list(tix_repo *r, tix_entity_list *out, tix_error *err);

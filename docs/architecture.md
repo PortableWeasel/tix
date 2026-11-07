@@ -480,8 +480,9 @@ and `--load` draws per-resource daily load. `$EDITOR` resolution: `TIX_EDITOR`, 
 
 ```
 tix id    new | ls | show <id> | use <id> | edit <id> [--name] [--email] [+key/-key]
-tix new   [-t title] [-l label]... [--parent P] [--kind milestone]
-tix ls    [--status s] [--label l] [--assignee r] [--under P]
+tix new   [-t title] [-l label]... [--status s] [--parent P] [--kind milestone]
+tix ls    [--status s] [--label l] [--assignee r] [--under P] [--sort status|wbs|updated|newest]
+          (default status: in-progress, blocked, open, done, cancelled, each in WBS order)
 tix show  <id>
 tix comment <id> [-m msg]
 tix edit  <id> [--title] [--status] [+label|-label] [--parent P] [--rank first|last|before:X|after:X]
@@ -497,6 +498,7 @@ tix wbs   [root]                       tree with WBS codes and rollups
 tix plan  [root] [--gantt] [--critical] [--load]   ASCII Gantt / resource load
 tix export [root] --format mermaid|csv|json
 tix pull | push | sync [remote]
+tix --version                          tix and the linked git.git version
 ```
 
 Also installed as `git-tix`, so `git tix …` works.

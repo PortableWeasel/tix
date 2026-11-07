@@ -22,6 +22,7 @@
 #include "strbuf.h"
 #include "strvec.h"
 #include "tree-walk.h"
+#include "version.h"
 
 #include "tix/store_libgit.h"
 
@@ -511,4 +512,9 @@ tix_status tix_store_libgit_local_path(tix_store *s, const char *name, tix_buf *
 	strbuf_release(&dir);
 	strbuf_release(&path);
 	return st;
+}
+
+const char *tix_store_libgit_git_version(void)
+{
+	return git_version_string;
 }

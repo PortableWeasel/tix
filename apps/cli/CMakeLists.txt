@@ -4,6 +4,7 @@ add_executable(tix src/main.c src/cmd_id.c src/cmd_ticket.c src/cmd_sync.c src/c
   src/cmd_res.c src/planopts.c src/editor.c)
 target_link_libraries(tix PRIVATE tix::core tix::input tix::export tix::index_sqlite tix::store_libgit)
 tix_apply_warnings(tix)
+target_compile_definitions(tix PRIVATE TIX_VERSION="${PROJECT_VERSION}")
 
 add_custom_command(TARGET tix POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E create_symlink tix $<TARGET_FILE_DIR:tix>/git-tix

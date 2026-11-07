@@ -33,4 +33,7 @@ tix_status tix_store_libgit_config_set(tix_store *s, const char *key, const char
  * such as the index cache. REQUIRES name is a local name or that plus ".db". */
 tix_status tix_store_libgit_local_path(tix_store *s, const char *name, tix_buf *out, tix_error *err);
 
+/* The version of the linked git.git library, e.g. "2.47.3". Static storage. */
+const char *tix_store_libgit_git_version(void);
+
 #endif

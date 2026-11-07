@@ -26,6 +26,12 @@ void page_tickets(web_ctx *x)
 	}
 	if (!filtered)
 		q.status_mask = TIX_STATUS_MASK_ACTIVE; /* the default view: what's still open */
+	static const char *const sorts[] = {"newest", "updated", "wbs", "status"};
+	const char *sort = web_kvs_get(&req->query, "sort");
+	q.sort = TIX_SORT_STATUS;
+	for (size_t k = 0; sort && k < 4; k++)
+		if (!strcmp(sort, sorts[k]))
+			q.sort = (tix_ticket_sort)k;
 	tix_oid assignee, under;
 	bool have_assignee, have_under;
 	if (!query_id(x, "assignee", TIX_ENTITY_RESOURCE, &assignee, &have_assignee) ||
@@ -72,7 +78,19 @@ void page_tickets(web_ctx *x)
 	HL(h, "</select></label> <label>Under <input name=\"under\" size=\"10\" placeholder=\"ticket id\" value=\"");
 	if (have_under)
 		h_short(h, &under);
-	HL(h, "\"></label> <button>Filter</button> <a href=\"/tickets\">reset</a></form>\n");
+	HL(h, "\"></label> <label>Sort <select name=\"sort\">");
+	static const char *const sort_labels[] = {"newest", "last updated", "WBS order", "active first"};
+	for (int k = 3; k >= 0; k--) {
+		HL(h, "<option value=\"");
+		h_text(h, sorts[k]);
+		HL(h, "\"");
+		if ((int)q.sort == k)
+			HL(h, " selected");
+		HL(h, ">");
+		h_text(h, sort_labels[k]);
+		HL(h, "</option>");
+	}
+	HL(h, "</select></label> <button>Filter</button> <a href=\"/tickets\">reset</a></form>\n");
 	if (!x->app->cfg.read_only)
 		HL(h, "<p><a href=\"/new\">New ticket</a></p>\n");
 
