@@ -561,10 +561,10 @@ static size_t verify_gpg(const char *dir, const struct strbuf *payload, const ch
 		goto out;
 	for (size_t i = 0; i < n; i++)
 		if (!strcmp(keys[i].kind, "gpg")) {
-			const char *argv[] = {"gpg", "--homedir", home.buf, "--batch", "--quiet", "--import", NULL};
+			const char *argv[] = {"gpg", "--homedir", home.buf, "--batch", "--quiet", "--no-autostart", "--import", NULL};
 			run_tool(argv, keys[i].pubkey, strlen(keys[i].pubkey), NULL);
 		}
-	const char *argv[] = {"gpg", "--homedir", home.buf, "--batch", "--status-fd", "1", "--verify", sigpath, "-", NULL};
+	const char *argv[] = {"gpg", "--homedir", home.buf, "--batch", "--no-autostart", "--status-fd", "1", "--verify", sigpath, "-", NULL};
 	run_tool(argv, payload->buf, payload->len, &status);
 	const char *v = strstr(status.buf, "[GNUPG:] VALIDSIG ");
 	if (!v)
