@@ -551,7 +551,7 @@ Also installed as `git-tix`, so `git tix …` works.
 8. ✅ **M7 web UI enhancements** (done 2026-11-07, §13.4): search as you type, Gantt editing,
    live refresh.
 9. **After v1** (approved 2026-11-07, §14): MS Project XML export ✅, plan baselines ✅, commit
-   signature enforcement ✅, Forgejo issue bridge ✅, TUI ✅, hosted web mode.
+   signature enforcement ✅, Forgejo issue bridge ✅, TUI ✅, hosted web mode ✅.
 
 ## 12. Resolved decisions (2026-11-06)
 
@@ -814,18 +814,11 @@ Loopback alone doesn't keep other local users or web pages out.
     rightly refuses, so the test polls instead.)
   - The no-JS paths are the M6 tests, unchanged: the forms JS posts are the same forms.
 
-### 13.8 Hosted mode later (not built in M6–M7)
+### 13.8 Hosted mode ✅ (after v1, §14.6)
 
-- **Trusted-proxy auth**: `--trust-proxy` lets the server bind beyond loopback, and only
-  then. It requires TLS at the reverse proxy and takes the user from a configured
-  header (e.g. Authentik's `X-authentik-username`).
-- **Identity mapping**: logins map to tix identities through a mapping file, and writes
-  use the requesting user's identity instead of `tix.identity`. Edits are then
-  attributable per user.
-- **Multiple repos**: one server serving several repositories under `/r/<name>/`.
-
-Everything in M6–M7 stays compatible with this. Handlers receive the identity and the repo
-from the request context rather than from globals. The auth check is one function.
+Built as planned, with one change: libgit allows one repository per process, so "several
+repositories under `/r/<name>/`" became one `tix-web` per repository, each on its own host
+name behind the proxy. Details in §14.6.
 
 ### 13.9 Milestones
 
@@ -1045,4 +1038,40 @@ parent goes through `tix/input.h` exactly as `tix edit --parent` does. No rule l
   pyte doesn't implement `CSI n S/T`, which ncurses uses for scrolling with xterm. Also
   found and fixed in `plan`: a summary whose children are all unscheduled had dates of day
   0 (1970-01-01) instead of none (golden case added).
+
+### 14.6 Hosted web mode behind SSO ✅
+
+`tix web --trust-proxy HEADER --public-url https://tix.example.org [--proxy-from ADDR]...
+[--users FILE] [--logout-url URL]` serves the web UI behind a reverse proxy that signs
+people in (Authentik's proxy outpost sends `X-authentik-username`).
+
+- **Who is asking**: the login comes from the configured header, and only on connections
+  from the proxy's addresses (`--proxy-from`, default 127.0.0.1 and ::1). Anything else
+  gets 403, a missing or unusable login 401. The HTTP port carries the peer address and
+  one extra header for this, still without naming the library.
+- **Where**: `Host` must be the public URL's host (421 otherwise), and POSTs need that
+  exact `Origin` (or `Referer`) plus the session's form token, as in local mode. There is
+  no login token and no cookie: one session per login, made on first sight (least recently
+  used dropped at 64), holds the form token. `/login` and `/logout` don't exist; the
+  page shows the login and the proxy's sign-out link.
+- **As whom**: `--users` lists `LOGIN IDENTITY-ID` lines (resolved at start; a bad line
+  stops the server). Every request sets the repository's identity to the requester's, or
+  clears it, so a write is authored by the person who made it and nothing carries over
+  between requests (single-threaded, rule 8). Logins not in the file can read, see no
+  forms (`web_can_write`), and get 403 on any POST.
+- `--listen` takes any address in this mode (e.g. `0.0.0.0:7480` for a proxy in a
+  container network); outside it, loopback only, as before.
+- **Several repositories**: one `tix-web` per repository, each on its own host name behind
+  the proxy (libgit has process-wide state, §7). A path prefix would have meant
+  rewriting every link for little gain.
+- **Not deployed**: putting a repository on the internet behind Authentik (DNS, proxy
+  provider, firewall) is an operations decision left to the owner. The mode is built and
+  tested, ready for it.
+- **Tested**: handler tests (only from the proxy, only under its host, a login with a
+  control character refused, no token login; Ada's and Bob's writes authored by Ada and
+  Bob; another login's token and a foreign origin refused; Eve reads without forms and is
+  refused on POST; no identity left behind after a request; disabling the peer check or
+  the per-request identity fails them), the real `tix-web` over HTTP with a users file
+  (401 without a login, a write by ada authored by her identity, 403 for an unmapped
+  login), and the CLI's flag rules.
 

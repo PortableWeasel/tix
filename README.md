@@ -36,8 +36,9 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
   (`tix baseline take`, then `tix plan --baseline B` shows what slipped; also on the web),
   and commit signatures (`git config tix.sign true`, `tix id edit --add-signing-key`,
   `git config tix.verify require`, `tix verify`), a Forgejo issue bridge (`tix bridge sync
-  --url https://host/owner/repo`) and a terminal UI (`tix tui`). In progress: a hosted web
-  mode behind SSO.
+  --url https://host/owner/repo`), a terminal UI (`tix tui`), and a hosted web mode behind
+  an SSO proxy (`tix web --trust-proxy X-authentik-username --public-url https://... --users
+  FILE`; see docs/architecture.md §14.6).
 
 tix tracks its own work: `tix pull && tix wbs` in a clone of this repo.
 

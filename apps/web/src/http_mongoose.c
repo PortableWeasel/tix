@@ -103,12 +103,14 @@ static const char *get_header(void *ctx, const char *name, size_t *len)
 
 static void on_message(struct mg_connection *c, server *sv, struct mg_http_message *hm)
 {
+	char peer[64];
+	mg_snprintf(peer, sizeof(peer), "%M", mg_print_ip, &c->rem);
 	web_raw raw = {
 		.method = hm->method.buf, .method_len = hm->method.len,
 		.uri = hm->uri.buf, .uri_len = hm->uri.len,
 		.query = hm->query.buf, .query_len = hm->query.len,
 		.body = hm->body.buf, .body_len = hm->body.len,
-		.header = get_header, .ctx = hm,
+		.header = get_header, .ctx = hm, .peer = peer, .extra_name = sv->o->extra_header,
 	};
 	web_request req;
 	char why[128] = "";

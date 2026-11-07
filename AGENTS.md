@@ -24,7 +24,7 @@ change and say why. Never let the code and the doc drift apart silently.
 | M5: SQLite `index` | ✅ done |
 | M6: web UI without JavaScript (`input`, Mongoose, `tix web`, §13) | ✅ done |
 | M7: web UI JavaScript enhancements (§13.4) | ✅ done |
-| Later: signature enforcement, baselines, TUI, issue bridges (§11) | tracked in tix |
+| After v1 (§14): MSPDI export, baselines, signatures, Forgejo bridge, TUI, hosted web mode | ✅ done |
 
 Work on the current milestone unless asked otherwise. Don't build ahead into later
 milestones "while you're there".
@@ -222,6 +222,8 @@ cmake --preset release && cmake --build --preset release
 - Treat remote ticket data as untrusted input (it is parsed C on attacker-controlled bytes):
   bounds-check everything and fuzz parsers when they exist.
 - Child processes: argv arrays only, no shell interpolation of user or remote strings.
+- Hosted web mode (§14.6) trusts its login header only on connections from `--proxy-from`
+  addresses and sets the repository identity per request; keep both on every path.
 - Never log secrets. Credential helpers and ssh keys belong to the child `git` process.
   tix never handles them. Signing goes through git's own machinery (agents included);
   verification runs `ssh-keygen`/`gpg` with keys from identities only, in throwaway files

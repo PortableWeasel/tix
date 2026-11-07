@@ -190,6 +190,8 @@ bool web_request_decode(const web_raw *raw, web_request *req, char *why, size_t 
 	req->method = tix_xstrndup(raw->method, raw->method_len);
 	req->path = tix_xstrndup(raw->uri, raw->uri_len);
 	req->host = header_dup(raw, "Host");
+	req->peer = raw->peer ? tix_xstrdup(raw->peer) : NULL;
+	req->extra = raw->extra_name ? header_dup(raw, raw->extra_name) : NULL;
 	req->origin = header_dup(raw, "Origin");
 	req->referer = header_dup(raw, "Referer");
 	req->content_type = header_dup(raw, "Content-Type");
@@ -220,6 +222,8 @@ void web_request_free(web_request *req)
 	free(req->method);
 	free(req->path);
 	free(req->host);
+	free(req->peer);
+	free(req->extra);
 	free(req->origin);
 	free(req->referer);
 	free(req->content_type);

@@ -54,6 +54,13 @@ void web_app_init(web_app *app, const web_app_config *cfg)
 
 void web_app_set_listen(web_app *app, const char *host, int port)
 {
+	if (app->cfg.hosted) { /* the proxy's public name, not where we listen */
+		const char *o = app->cfg.hosted->origin, *h = strstr(o, "://");
+		h = h ? h + 3 : o;
+		app->nhosts = 0;
+		snprintf(app->hosts[app->nhosts++], sizeof(app->hosts[0]), "%.*s", (int)strcspn(h, "/"), h);
+		return;
+	}
 	app->nhosts = 0;
 	bool v6 = strchr(host, ':') != NULL;
 	snprintf(app->hosts[app->nhosts++], sizeof(app->hosts[0]), v6 ? "[%s]:%d" : "%s:%d", host, port);
@@ -72,6 +79,7 @@ static bool host_ok(const web_app *app, const char *host)
 
 static web_session *session_new(web_app *app)
 {
+	/* (hosted sessions also go through here; their id is never sent anywhere) */
 	web_session *s;
 	if (app->nsessions < WEB_MAX_SESSIONS) {
 		s = &app->sessions[app->nsessions++];
@@ -100,11 +108,56 @@ static web_session *session_find(web_app *app, const web_request *req)
 	return NULL;
 }
 
-/* The request comes from one of our own pages: Origin, or failing that Referer. */
-static bool same_origin(const web_request *req)
+/* ---- hosted mode (§13.8) ---------------------------------------------------------- */
+
+static bool peer_ok(const web_app *app, const char *peer)
 {
-	char want[96];
-	snprintf(want, sizeof(want), "http://%s", req->host);
+	for (size_t i = 0; peer && i < app->cfg.hosted->nfrom; i++)
+		if (!strcmp(peer, app->cfg.hosted->from[i]))
+			return true;
+	return false;
+}
+
+/* A usable login: 1-128 bytes of printable text (the header is the proxy's, but be strict). */
+static bool login_ok(const char *u)
+{
+	size_t n = u ? strlen(u) : 0;
+	if (!n || n > WEB_MAX_USER)
+		return false;
+	for (size_t i = 0; i < n; i++)
+		if ((unsigned char)u[i] < 0x20 || u[i] == 0x7f)
+			return false;
+	return true;
+}
+
+/* The session of the login the proxy vouches for (made on first sight; LRU like any). */
+static web_session *hosted_session(web_app *app, const char *user)
+{
+	for (size_t i = 0; i < app->nsessions; i++)
+		if (!strcmp(app->sessions[i].user, user)) {
+			app->sessions[i].used = ++app->clock;
+			return &app->sessions[i];
+		}
+	web_session *s = session_new(app);
+	snprintf(s->user, sizeof(s->user), "%s", user);
+	s->mapped = false;
+	memset(&s->identity, 0, sizeof(s->identity));
+	for (size_t i = 0; i < app->cfg.hosted->nusers; i++)
+		if (!strcmp(app->cfg.hosted->users[i].login, user)) {
+			s->mapped = true;
+			s->identity = app->cfg.hosted->users[i].identity;
+		}
+	return s;
+}
+
+/* The request comes from one of our own pages: Origin, or failing that Referer. */
+static bool same_origin(const web_app *app, const web_request *req)
+{
+	char want[160];
+	if (app->cfg.hosted)
+		snprintf(want, sizeof(want), "%s", app->cfg.hosted->origin);
+	else
+		snprintf(want, sizeof(want), "http://%s", req->host);
 	if (req->origin)
 		return !strcasecmp(req->origin, want);
 	if (req->referer) {
@@ -136,7 +189,7 @@ void page_begin(web_ctx *x, const char *title)
 		h_text(h, stamp);
 		HL(h, "\"");
 	}
-	if (x->app->cfg.read_only)
+	if (!web_can_write(x))
 		HL(h, " data-read-only");
 	HL(h, ">\n");
 	if (x->session) {
@@ -153,12 +206,28 @@ void page_begin(web_ctx *x, const char *title)
 			h_text(h, q);
 			HL(h, "\"");
 		}
-		HL(h, "></label> <button>Go</button></form>"
-		      "<form class=\"logout\" method=\"post\" action=\"/logout\">");
-		form_csrf(x);
-		HL(h, "<button>Log out</button></form>");
+		HL(h, "></label> <button>Go</button></form>");
+		if (x->app->cfg.hosted) {
+			/* the proxy signs people in and out; the token rides along for app.js */
+			HL(h, "<span class=\"user\">");
+			h_text(h, x->session->user);
+			HL(h, "</span><form class=\"logout\" hidden>");
+			form_csrf(x);
+			HL(h, "</form>");
+			if (x->app->cfg.hosted->logout_url) {
+				HL(h, " <a href=\"");
+				h_text(h, x->app->cfg.hosted->logout_url);
+				HL(h, "\">Sign out</a>");
+			}
+		} else {
+			HL(h, "<form class=\"logout\" method=\"post\" action=\"/logout\">");
+			form_csrf(x);
+			HL(h, "<button>Log out</button></form>");
+		}
 		if (x->app->cfg.read_only)
 			HL(h, "<p class=\"note\">Read-only: this server doesn't accept changes.</p>");
+		else if (x->app->cfg.hosted && !x->session->mapped)
+			HL(h, "<p class=\"note\">Your login isn't linked to a tix identity: you can read, not change.</p>");
 		HL(h, "</header>\n");
 	}
 	HL(h, "<main>\n<h1>");
@@ -188,6 +257,11 @@ void web_redirect(web_ctx *x, const char *path)
 	x->res->status = 303;
 	web_header(x->res, "Location", path);
 	web_header(x->res, "Cache-Control", "no-store");
+}
+
+bool web_can_write(const web_ctx *x)
+{
+	return !x->app->cfg.read_only && (!x->app->cfg.hosted || (x->session && x->session->mapped));
 }
 
 void form_csrf(web_ctx *x)
@@ -221,7 +295,7 @@ static void login(web_ctx *x)
 	const web_request *req = x->req;
 	bool post = !strcmp(req->method, "POST");
 	const char *t = post ? web_kvs_get(&req->form, "t") : web_kvs_get(&req->query, "t");
-	if (post && !same_origin(req)) {
+	if (post && !same_origin(x->app, req)) {
 		page_error(x, 403, "Forbidden", "This form must be sent from this server's own page.");
 		return;
 	}
@@ -369,6 +443,10 @@ void web_app_handle(void *vapp, const web_request *req, web_response *res)
 		page_error(&x, 421, "Wrong address", "This server only answers on the address it printed at start.");
 		return;
 	}
+	if (app->cfg.hosted && !peer_ok(app, req->peer)) {
+		page_error(&x, 403, "Forbidden", "This server only answers through its proxy.");
+		return;
+	}
 	if (!split_path(&x)) {
 		page_error(&x, 404, "Not found", "No such page.");
 		return;
@@ -387,29 +465,50 @@ void web_app_handle(void *vapp, const web_request *req, web_response *res)
 		serve_asset(&x);
 		return;
 	}
-	if (is(&x, 0, "login") && x.nsegs == 1) {
+	if (is(&x, 0, "login") && x.nsegs == 1 && !app->cfg.hosted) {
 		login(&x);
 		return;
 	}
-	x.session = session_find(app, req);
+	if (app->cfg.hosted) {
+		if (!login_ok(req->extra)) {
+			page_error(&x, 401, "Sign in", "Sign in through this site's login (the proxy didn't say who you are).");
+			return;
+		}
+		x.session = hosted_session(app, req->extra);
+		/* every write is authored by the requester's identity, or refused without one */
+		if (x.session->mapped)
+			tix_repo_set_identity(app->cfg.repo, &x.session->identity, NULL);
+		else
+			tix_repo_clear_identity(app->cfg.repo);
+	} else {
+		x.session = session_find(app, req);
+	}
 	if (!x.session) {
 		login_form(&x, 401, "Log in first.");
 		return;
 	}
 	if (post) {
 		const char *csrf = web_kvs_get(&req->form, "csrf");
-		if (!same_origin(req) || !csrf || !secret_eq(csrf, x.session->csrf)) {
+		if (!same_origin(app, req) || !csrf || !secret_eq(csrf, x.session->csrf)) {
 			page_error(&x, 403, "Forbidden",
 				   "This form was not sent from this server's own page, or the page is too old. "
 				   "Go back, reload and try again.");
 			return;
 		}
-		if (is(&x, 0, "logout") && x.nsegs == 1) {
+		if (is(&x, 0, "logout") && x.nsegs == 1 && !app->cfg.hosted) {
 			logout(&x);
 			return;
 		}
 		if (app->cfg.read_only) {
 			page_error(&x, 405, "Read-only", "This server was started with --read-only.");
+			return;
+		}
+		if (app->cfg.hosted && !x.session->mapped) {
+			char msg[300];
+			snprintf(msg, sizeof(msg),
+				 "Your login (%s) isn't linked to a tix identity, so you can read but not change anything. "
+				 "Ask whoever runs this server to add you to its users file.", x.session->user);
+			page_error(&x, 403, "Read only for you", msg);
 			return;
 		}
 	}

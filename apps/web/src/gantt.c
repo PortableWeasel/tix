@@ -153,7 +153,7 @@ void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_on
 	HL(h, "\" data-headh=\"");
 	num(h, HEAD_H);
 	HL(h, "\"");
-	if (!x->app->cfg.read_only)
+	if (web_can_write(x))
 		HL(h, " data-edit");
 	HL(h, "><defs><marker id=\"arr\" viewBox=\"0 0 6 6\" refX=\"6\" refY=\"3\" markerWidth=\"6\" "
 	      "markerHeight=\"6\" orient=\"auto\"><path class=\"head\" d=\"M0,0 L6,3 L0,6 z\"/></marker></defs>\n");

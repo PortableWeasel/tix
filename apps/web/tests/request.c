@@ -26,7 +26,7 @@ static bool decode(const char *method, const char *uri, const char *query, const
 		   web_request *req, char *why)
 {
 	web_raw raw = {method, uri, query ? query : "", body ? body : "", strlen(method), strlen(uri),
-		       query ? strlen(query) : 0, body ? strlen(body) : 0, hdr, h};
+		       query ? strlen(query) : 0, body ? strlen(body) : 0, hdr, h, NULL, NULL};
 	return web_request_decode(&raw, req, why, 128);
 }
 

@@ -45,7 +45,7 @@ void page_baselines(web_ctx *x)
 			else
 				HL(h, "<span class=\"note\">whole plan</span>");
 			HL(h, "</td><td>");
-			if (!x->app->cfg.read_only) {
+			if (web_can_write(x)) {
 				HL(h, "<form class=\"inline\" method=\"post\" action=\"/baselines/");
 				h_id(h, &e->id);
 				HL(h, "\">");
@@ -58,7 +58,7 @@ void page_baselines(web_ctx *x)
 		}
 		HL(h, "</tbody></table>\n");
 	}
-	if (!x->app->cfg.read_only) {
+	if (web_can_write(x)) {
 		HL(h, "<h2>Take a baseline</h2>\n<form method=\"post\" action=\"/baselines\">");
 		form_csrf(x);
 		HL(h, "<label>Name <input name=\"name\" required size=\"24\"></label> "

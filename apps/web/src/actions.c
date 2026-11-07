@@ -233,7 +233,7 @@ void page_sync(web_ctx *x)
 	HL(h, "<p>Pull from <code>");
 	h_text(h, x->app->cfg.remote);
 	HL(h, "</code>, merge, and push. The page waits while <code>git</code> talks to the remote.</p>\n");
-	if (!x->app->cfg.read_only) {
+	if (web_can_write(x)) {
 		HL(h, "<form method=\"post\" action=\"/sync\">");
 		form_csrf(x);
 		HL(h, "<button>Sync now</button></form>\n");

@@ -66,7 +66,7 @@ void page_resources(web_ctx *x)
 	}
 	page_begin(x, "Resources");
 	html *h = &x->h;
-	if (!x->app->cfg.read_only)
+	if (web_can_write(x))
 		HL(h, "<p><a href=\"/res/new\">New resource</a></p>\n");
 	HL(h, "<table><thead><tr><th>Name</th><th>Kind</th><th class=\"num\">Capacity</th><th>Calendar</th>"
 	      "<th>Rate</th><th>Active</th></tr></thead><tbody>\n");
@@ -133,7 +133,7 @@ void page_resource(web_ctx *x)
 	else
 		HL(h, "no");
 	HL(h, "</td></tr>\n</tbody></table>\n");
-	if (!x->app->cfg.read_only) {
+	if (web_can_write(x)) {
 		HL(h, "<p><a href=\"/res/");
 		h_id(h, &e->id);
 		HL(h, "/edit\">Edit</a></p>\n");
@@ -167,7 +167,7 @@ void page_calendars(web_ctx *x)
 		return;
 	page_begin(x, "Calendars");
 	html *h = &x->h;
-	if (!x->app->cfg.read_only)
+	if (web_can_write(x))
 		HL(h, "<p><a href=\"/cal/new\">New calendar</a></p>\n");
 	HL(h, "<p class=\"note\">Tasks without a calendar (and without an ancestor's) use Mon-Fri, 8 hours.</p>\n"
 	      "<table><thead><tr><th>Name</th><th>Working days</th><th class=\"num\">Hours</th>"
@@ -204,7 +204,7 @@ void page_calendar(web_ctx *x)
 	HL(h, "</td></tr>\n<tr><th>Hours per day</th><td>");
 	h_int(h, c->hours);
 	HL(h, "</td></tr>\n</tbody></table>\n");
-	bool w = !x->app->cfg.read_only;
+	bool w = web_can_write(x);
 	if (w) {
 		HL(h, "<p><a href=\"/cal/");
 		h_id(h, &e->id);

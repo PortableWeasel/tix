@@ -92,7 +92,7 @@ void page_tickets(web_ctx *x)
 		HL(h, "</option>");
 	}
 	HL(h, "</select></label> <button>Filter</button> <a href=\"/tickets\">reset</a></form>\n");
-	if (!x->app->cfg.read_only)
+	if (web_can_write(x))
 		HL(h, "<p><a href=\"/new\">New ticket</a></p>\n");
 
 	HL(h, "<table class=\"tickets\"><thead><tr><th>ID</th><th>Status</th><th>Title</th><th>Labels</th>"
@@ -143,7 +143,7 @@ void page_tickets(web_ctx *x)
 
 static bool writable(const web_ctx *x)
 {
-	return !x->app->cfg.read_only;
+	return web_can_write(x);
 }
 
 /* <form method=post action="/t/ID/<what>"> with the csrf token */

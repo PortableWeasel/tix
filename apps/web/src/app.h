@@ -11,13 +11,35 @@
 #include "web_http.h"
 
 #define WEB_TOKEN_HEX 64 /* 32 random bytes */
-#define WEB_MAX_SESSIONS 16
+#define WEB_MAX_SESSIONS 64
 #define WEB_MAX_HOSTS 3
+#define WEB_MAX_USER 128
+
+/* A login the proxy may send, and the tix identity its writes are authored by. */
+typedef struct web_user {
+	const char *login;
+	tix_oid identity;
+} web_user;
+
+/* Hosted mode (architecture §13.8): behind a reverse proxy that authenticates (Authentik). */
+typedef struct web_hosted {
+	const char *header;       /* request header with the login, e.g. "X-authentik-username" */
+	const char *origin;       /* "https://tix.example.org": the only Host/Origin accepted */
+	const char *const *from;  /* peer addresses the proxy connects from (exact) */
+	size_t nfrom;
+	const web_user *users;    /* logins that may write; anyone else the proxy lets in may read */
+	size_t nusers;
+	const char *logout_url;   /* optional "Sign out" link (the proxy's) */
+} web_hosted;
 
 typedef struct web_session {
 	char id[WEB_TOKEN_HEX + 1];
 	char csrf[WEB_TOKEN_HEX + 1];
 	uint64_t used; /* last use, as a counter (for eviction) */
+	/* hosted mode: whose session this is (one per login; no cookie) */
+	char user[WEB_MAX_USER + 1];
+	bool mapped;     /* the login maps to a tix identity: may write */
+	tix_oid identity;
 } web_session;
 
 typedef struct web_app_config {
@@ -28,6 +50,7 @@ typedef struct web_app_config {
 	void *today_ctx;
 	bool read_only;
 	const char *remote; /* for sync: git config tix.remote, else "origin" */
+	const web_hosted *hosted; /* NULL: local mode (loopback, login token) */
 } web_app_config;
 
 typedef struct web_app {
@@ -75,6 +98,9 @@ void page_end(web_ctx *x);
 void page_error(web_ctx *x, int status, const char *title, const char *msg);
 /* 303 to a path we built ourselves (no CR/LF). */
 void web_redirect(web_ctx *x, const char *path);
+/* Whether forms that change things should be shown: not --read-only, and in hosted mode
+ * only to logins linked to an identity. (The POST checks are in web_app_handle.) */
+bool web_can_write(const web_ctx *x);
 /* <input type=hidden name=csrf ...> for this session's forms. */
 void form_csrf(web_ctx *x);
 

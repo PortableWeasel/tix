@@ -79,6 +79,9 @@ bool tix_repo_identity(const tix_repo *r, tix_oid *out);
 /* Makes id the identity new ops are written as (in memory; persisting the choice,
  * e.g. git config tix.identity, is the frontend's job). The identity must load. */
 tix_status tix_repo_set_identity(tix_repo *r, const tix_oid *id, tix_error *err);
+/* No identity: writes fail with TIX_ERR_NOT_FOUND until one is set (hosted web mode sets
+ * the requester's per request, §13.8). */
+void tix_repo_clear_identity(tix_repo *r);
 
 /* ---- generic entity operations ------------------------------------------ */
 

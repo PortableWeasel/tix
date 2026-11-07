@@ -19,6 +19,7 @@
 
 static int port;
 static char cookie[160], csrf[80], origin[64], hostport[64];
+static const char *extra_hdr = ""; /* hosted mode: "X-User: ada\r\n" */
 
 static int run(char *const argv[], char *out, size_t cap)
 {
@@ -59,7 +60,8 @@ static int http(const char *method, const char *path, const char *body, char *ou
 		return -1;
 	}
 	char req[8192];
-	int n = snprintf(req, sizeof(req), "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n", method, path, hostport);
+	int n = snprintf(req, sizeof(req), "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n%s", method, path, hostport,
+			 extra_hdr);
 	if (cookie[0])
 		n += snprintf(req + n, sizeof(req) - (size_t)n, "Cookie: %s\r\n", cookie);
 	if (body)
@@ -258,6 +260,59 @@ int main(int argc, char **argv)
 		tk_fail(__FILE__, __LINE__, "tix-web exited with %d (ASan/LSan reports above?)",
 			WIFEXITED(status) ? WEXITSTATUS(status) : -1);
 	fclose(f);
+
+	/* hosted mode (§13.8): behind a proxy on 127.0.0.1 that sends X-User; ada may write */
+	{
+		char *idls[] = {tix, "id", "ls", NULL};
+		TK_CHECK(run(idls, out, sizeof(out)) == 0);
+		char ada[16] = "";
+		grab(out, "* ", " ", ada, sizeof(ada)); /* "* <short id>  name <email>": the current identity */
+		FILE *uf = fopen("users", "w");
+		TK_CHECK(uf != NULL);
+		if (uf) {
+			fprintf(uf, "# login identity\nada %s\n", ada);
+			fclose(uf);
+		}
+		int hp[2];
+		TK_CHECK(pipe(hp) == 0);
+		pid_t hs = fork();
+		if (hs == 0) {
+			dup2(hp[1], 1);
+			close(hp[0]);
+			execl(web, "tix-web", "--listen", "127.0.0.1:0", "--trust-proxy", "X-User", "--public-url",
+			      "https://tix.test", "--users", "users", (char *)NULL);
+			_exit(127);
+		}
+		close(hp[1]);
+		FILE *hf = fdopen(hp[0], "r");
+		char hl[512] = "";
+		TK_CHECK(hf && fgets(hl, sizeof(hl), hf));
+		TK_CHECK(sscanf(hl, "tix web: hosted on 127.0.0.1 port %d", &port) == 1);
+		CONTAINS(hl, "1 may write");
+		snprintf(hostport, sizeof(hostport), "tix.test");
+		snprintf(origin, sizeof(origin), "https://tix.test");
+		cookie[0] = '\0';
+		TK_CHECK(http("GET", "/tickets", NULL, out, sizeof(out)) == 401);
+		extra_hdr = "X-User: ada\r\n";
+		TK_CHECK(http("GET", "/tickets", NULL, out, sizeof(out)) == 200);
+		CONTAINS(out, "<span class=\"user\">ada</span>");
+		grab(out, "name=\"csrf\" value=\"", "\"", csrf, sizeof(csrf));
+		snprintf(body, sizeof(body), "csrf=%s&title=Hosted+write&o.title=", csrf);
+		TK_CHECK(http("POST", "/new", body, out, sizeof(out)) == 303);
+		grab(out, "Location: ", "\r", loc, sizeof(loc));
+		char *hshow[] = {tix, "show", loc + 3, NULL};
+		TK_CHECK(run(hshow, out, sizeof(out)) == 0);
+		CONTAINS(out, "Hosted write");
+		extra_hdr = "X-User: mallory\r\n";
+		TK_CHECK(http("GET", "/tickets", NULL, out, sizeof(out)) == 200);
+		grab(out, "name=\"csrf\" value=\"", "\"", csrf, sizeof(csrf));
+		snprintf(body, sizeof(body), "csrf=%s&title=Nope&o.title=", csrf);
+		TK_CHECK(http("POST", "/new", body, out, sizeof(out)) == 403);
+		extra_hdr = "";
+		kill(hs, SIGTERM);
+		TK_CHECK(waitpid(hs, &status, 0) == hs && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+		fclose(hf);
+	}
 	char *rm[] = {"rm", "-rf", dir, NULL};
 	run(rm, NULL, 0);
 	return tk_finish();

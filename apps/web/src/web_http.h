@@ -36,6 +36,8 @@ typedef struct web_request {
 	web_kvs form;       /* decoded body, for POSTs with that content type; else empty */
 	web_kvs cookies;
 	char *host, *origin, *referer, *content_type; /* NULL when absent */
+	char *peer;         /* remote address of the connection (hosted mode checks it), or NULL */
+	char *extra;        /* the header named by web_raw.extra_name, or NULL */
 	bool form_body;     /* the body was a form (urlencoded); false for no body */
 } web_request;
 
@@ -45,6 +47,8 @@ typedef struct web_raw {
 	size_t method_len, uri_len, query_len, body_len;
 	const char *(*header)(void *ctx, const char *name, size_t *len); /* NULL when absent */
 	void *ctx;
+	const char *peer; /* the connection's remote address ("127.0.0.1", "::1"), NULL if unknown */
+	const char *extra_name; /* one more header to decode into web_request.extra (hosted mode) */
 } web_raw;
 
 /* Decodes raw into req. RETURNS false with a short reason in why (for a 400) on malformed
@@ -97,6 +101,7 @@ typedef struct web_server_opts {
 	void (*tick)(void *app, tix_buf *event);
 	int tick_ms;
 	int ping_ms;         /* 0: WEB_PING_MS */
+	const char *extra_header; /* decoded into web_request.extra (hosted mode's user header) */
 } web_server_opts;
 
 /* Runs the server on the calling thread until keep_going returns false or *stop is set

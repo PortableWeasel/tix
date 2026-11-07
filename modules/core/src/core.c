@@ -221,6 +221,12 @@ bool tix_repo_identity(const tix_repo *r, tix_oid *out)
 	return true;
 }
 
+void tix_repo_clear_identity(tix_repo *r)
+{
+	TIX_REQUIRE(r);
+	memset(&r->identity, 0, sizeof(r->identity));
+}
+
 tix_status tix_repo_set_identity(tix_repo *r, const tix_oid *id, tix_error *err)
 {
 	tix_entity *e;

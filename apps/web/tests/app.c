@@ -46,6 +46,8 @@ typedef struct client {
 	char cookie[128];
 	char csrf[WEB_TOKEN_HEX + 1];
 	const char *host, *origin, *referer;
+	const char *peer; /* NULL: 127.0.0.1 */
+	const char *user; /* hosted mode: the proxy header value, NULL: none sent */
 	web_response res;
 	char loc[256];
 } client;
@@ -91,10 +93,13 @@ static int call(client *c, const char *method, const char *target, const char *b
 		add_hdr(&h, "Origin", c->origin);
 	if (c->referer)
 		add_hdr(&h, "Referer", c->referer);
+	if (c->user && c->app->cfg.hosted)
+		add_hdr(&h, c->app->cfg.hosted->header, c->user);
 	if (body)
 		add_hdr(&h, "Content-Type", "application/x-www-form-urlencoded");
 	web_raw raw = {method, target, q ? q + 1 : "", body ? body : "", strlen(method), plen,
-		       q ? strlen(q + 1) : 0, body ? strlen(body) : 0, hdr, &h};
+		       q ? strlen(q + 1) : 0, body ? strlen(body) : 0, hdr, &h, c->peer ? c->peer : "127.0.0.1",
+		       c->app->cfg.hosted ? c->app->cfg.hosted->header : NULL};
 	web_request req;
 	char why[128];
 	TK_CHECK(web_request_decode(&raw, &req, why, sizeof(why)));
@@ -968,8 +973,101 @@ static void test_external(void)
 	world_close(&w);
 }
 
+/* The csrf token from the last page. */
+static void grab_csrf(client *c)
+{
+	const char *f = strstr(body(c), "name=\"csrf\" value=\"");
+	c->csrf[0] = '\0';
+	if (f)
+		snprintf(c->csrf, sizeof(c->csrf), "%.*s", WEB_TOKEN_HEX, f + 19);
+}
+
+/* §13.8: behind a proxy that names the user; writes authored by each user's identity. */
+static void test_hosted(void)
+{
+	world w;
+	world_open(&w, false);
+	tix_oid bob;
+	TK_OK(tix_identity_create(w.repo, "Bob", "bob@example.org", &bob, &e), &e);
+	static const char *const from[] = {"10.0.0.5"};
+	web_user users[] = {{"ada", w.me}, {"bob", bob}};
+	web_hosted hosted = {.header = "X-Test-User", .origin = "https://tix.example.org", .from = from, .nfrom = 1,
+			     .users = users, .nusers = 2, .logout_url = "/outpost.goauthentik.io/sign_out"};
+	web_app_config acfg = {.repo = w.repo, .random = fake_random, .random_ctx = &w.env, .today = fixed_today,
+			       .hosted = &hosted};
+	web_app_init(&w.app, &acfg);
+	web_app_set_listen(&w.app, "0.0.0.0", 7480);
+	client a = {.app = &w.app, .host = "tix.example.org", .origin = "https://tix.example.org", .peer = "10.0.0.5",
+		    .user = "ada", .res = WEB_RESPONSE_INIT};
+	client b = a, v = a, x = a;
+	b.user = "bob";
+	v.user = "eve"; /* signed in at the proxy, but not in the users file */
+
+	/* only through the proxy, only under its name, only with a login */
+	x.user = NULL;
+	TK_CHECK(call(&x, "GET", "/tickets", NULL) == 401);
+	x.user = "ada";
+	x.peer = "10.0.0.9";
+	TK_CHECK(call(&x, "GET", "/tickets", NULL) == 403);
+	x.peer = "10.0.0.5";
+	x.host = "127.0.0.1:7480";
+	TK_CHECK(call(&x, "GET", "/tickets", NULL) == 421);
+	x.host = "tix.example.org";
+	x.user = "ada\x01";
+	TK_CHECK(call(&x, "GET", "/tickets", NULL) == 401);
+	TK_CHECK(call(&a, "GET", "/login?t=whatever", NULL) == 404); /* no token login here */
+
+	/* Ada writes as Ada, Bob as Bob */
+	TK_CHECK(call(&a, "GET", "/tickets", NULL) == 200);
+	HAS(&a, "<span class=\"user\">ada</span>");
+	HAS(&a, "href=\"/outpost.goauthentik.io/sign_out\">Sign out</a>");
+	HAS(&a, "New ticket");
+	grab_csrf(&a);
+	TK_CHECK(call(&b, "GET", "/tickets", NULL) == 200);
+	grab_csrf(&b);
+	TK_CHECK(strcmp(a.csrf, b.csrf) != 0); /* a token per login */
+	TK_CHECK(call(&a, "POST", "/new", form(&a, "title", "By Ada", "o.title", "", NULL)) == 303);
+	TK_CHECK(call(&b, "POST", "/new", form(&b, "title", "By Bob", "o.title", "", NULL)) == 303);
+	tix_entity_list l;
+	TK_OK(tix_ticket_list(w.repo, NULL, &l, &e), &e);
+	size_t seen = 0;
+	for (size_t i = 0; i < l.n; i++) {
+		if (!strcmp(l.v[i]->u.ticket.title, "By Ada"))
+			seen += tix_oid_eq(&l.v[i]->u.ticket.author, &w.me);
+		if (!strcmp(l.v[i]->u.ticket.title, "By Bob"))
+			seen += tix_oid_eq(&l.v[i]->u.ticket.author, &bob);
+	}
+	TK_CHECK(seen == 2);
+	tix_entity_list_free(&l);
+	/* another login's token, or another origin, is refused */
+	char bob_csrf[sizeof(b.csrf)];
+	memcpy(bob_csrf, b.csrf, sizeof(bob_csrf));
+	memcpy(b.csrf, a.csrf, sizeof(b.csrf));
+	TK_CHECK(call(&b, "POST", "/new", form(&b, "title", "x", "o.title", "", NULL)) == 403);
+	memcpy(b.csrf, bob_csrf, sizeof(b.csrf));
+	b.origin = "http://tix.example.org";
+	TK_CHECK(call(&b, "POST", "/new", form(&b, "title", "x", "o.title", "", NULL)) == 403);
+
+	/* Eve may read, sees no forms, and can't write */
+	TK_CHECK(call(&v, "GET", "/tickets", NULL) == 200);
+	HAS(&v, "isn't linked to a tix identity");
+	HASNT(&v, "New ticket");
+	HAS(&v, "data-read-only");
+	grab_csrf(&v);
+	TK_CHECK(call(&v, "POST", "/new", form(&v, "title", "By Eve", "o.title", "", NULL)) == 403);
+	HAS(&v, "Your login (eve) isn&#39;t linked");
+	tix_oid now;
+	TK_CHECK(!tix_repo_identity(w.repo, &now)); /* nobody's identity left behind */
+	web_response_free(&a.res);
+	web_response_free(&b.res);
+	web_response_free(&v.res);
+	web_response_free(&x.res);
+	world_close(&w);
+}
+
 int main(void)
 {
+	test_hosted();
 	test_external();
 	test_baselines();
 	test_api();
