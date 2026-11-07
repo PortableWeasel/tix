@@ -14,7 +14,7 @@ static const char usage_text[] =
 	"identities\n"
 	"  id new [--name N] [--email E]     create an identity (defaults from git config)\n"
 	"  id ls | id show [ID] | id use ID   list / show / choose the identity you write as\n"
-	"  id edit [--name N] [--email E] [--add-key KIND FPR PUBKEY] [--remove-key FPR]\n"
+	"  id edit [--name N] [--email E] [--add-key KIND FPR PUBKEY] [--add-signing-key] [--remove-key FPR]\n"
 	"\n"
 	"tickets\n"
 	"  new [-t TITLE] [-m BODY] [-l LABEL]... [--status S] [PLANNING]   create ($EDITOR without -t)\n"
@@ -46,6 +46,11 @@ static const char usage_text[] =
 	"\n"
 	"baselines (snapshots of the plan that sync)\n"
 	"  baseline take NAME [ROOT] [--today D]   baseline ls | show B | rename B NAME\n"
+	"\n"
+	"signatures (git config tix.sign, tix.verify off|warn|require)\n"
+	"  id edit --add-signing-key          add your git signing key (user.signingkey) to your identity\n"
+	"  verify [ID]...                     check commit signatures (default: every entity)\n"
+	"  pull | sync [--verify off|warn|require] [REMOTE]\n"
 	"\n"
 	"sync (REMOTE defaults to git config tix.remote, else origin)\n"
 	"  pull [REMOTE]    fetch, validate and merge the remote's tickets and identities\n"
@@ -223,7 +228,7 @@ int main(int argc, char **argv)
 		{"push", cmd_push}, {"sync", cmd_sync}, {"assign", cmd_assign},
 		{"unassign", cmd_unassign}, {"res", cmd_res}, {"cal", cmd_cal},
 		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"export", cmd_export}, {"index", cmd_index},
-		{"baseline", cmd_baseline},
+		{"baseline", cmd_baseline}, {"verify", cmd_verify},
 	};
 	int (*fn)(cli *, int, char **) = NULL;
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(*cmds); i++)
@@ -238,6 +243,14 @@ int main(int argc, char **argv)
 	open_index(&c);
 	tix_repo_config cfg = {.store = c.store, .env = {env_now, env_random, NULL}, .index = c.index};
 	configured_identity(&c, &cfg.identity);
+	tix_buf vb = TIX_BUF_INIT;
+	if (!tix_store_libgit_config_get(c.store, "tix.verify", &vb, NULL)) {
+		bool ok;
+		cfg.verify = tix_verify_policy_parse(vb.data, &ok);
+		if (!ok)
+			fprintf(stderr, "tix: ignoring tix.verify '%s' (off, warn or require)\n", vb.data);
+	}
+	tix_buf_free(&vb);
 	if ((st = tix_repo_open(&c.repo, &cfg, &c.err))) {
 		if (tix_oid_is_null(&cfg.identity))
 			return cli_fail(&c, st);

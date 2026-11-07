@@ -16,3 +16,13 @@ foreach(fmt sha1-files sha256-reftable)
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run-contract.sh $<TARGET_FILE:test_store_libgit_contract> ${fmt})
   set_tests_properties(store_libgit.contract_${fmt} PROPERTIES LABELS store_libgit TIMEOUT 60)
 endforeach()
+
+# Signed commits with real ssh and gpg keys (skipped, 77, when the tool is missing).
+add_executable(test_store_libgit_signing tests/signing.c)
+target_link_libraries(test_store_libgit_signing PRIVATE tix::store_libgit tix::testkit)
+tix_apply_warnings(test_store_libgit_signing)
+foreach(kind ssh gpg)
+  add_test(NAME store_libgit.signing_${kind}
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run-signing.sh $<TARGET_FILE:test_store_libgit_signing> ${kind})
+  set_tests_properties(store_libgit.signing_${kind} PROPERTIES LABELS store_libgit TIMEOUT 60 SKIP_RETURN_CODE 77)
+endforeach()

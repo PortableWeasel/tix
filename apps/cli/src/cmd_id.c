@@ -133,6 +133,18 @@ static int id_edit(cli *c, int argc, char **argv)
 				TIX_VEC_PUSH(&ops, tix_op_key_add(argv[i + 1], argv[i + 2], argv[i + 3]));
 				i += 3;
 			}
+		} else if (!strcmp(argv[i], "--add-signing-key")) {
+			tix_buf kind = TIX_BUF_INIT, fpr = TIX_BUF_INIT, pub = TIX_BUF_INIT;
+			tix_status st = tix_store_libgit_signing_key(c->store, &kind, &fpr, &pub, &c->err);
+			if (st) {
+				rc = cli_fail(c, st);
+			} else {
+				TIX_VEC_PUSH(&ops, tix_op_key_add(kind.data, fpr.data, pub.data));
+				printf("Adding %s key %s\n", kind.data, fpr.data);
+			}
+			tix_buf_free(&kind);
+			tix_buf_free(&fpr);
+			tix_buf_free(&pub);
 		} else if (!strcmp(argv[i], "--remove-key") && need_value(i, argc, argv[i])) {
 			TIX_VEC_PUSH(&ops, tix_op_key_remove(argv[++i]));
 		} else {

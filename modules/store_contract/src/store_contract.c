@@ -16,6 +16,16 @@ static void commits(tix_store *s)
 	TK_OK(tix_store_commit_write(s, &a, 1, "p2\n", 3, "contract child", &b, &e), &e);
 	TK_CHECK(!tix_oid_eq(&a, &b));
 
+	/* an unsigned commit verifies as NONE whatever the keys; a missing one is NOT_FOUND */
+	tix_sig_key k = {"ssh", "SHA256:contract", "ssh-ed25519 AAAA"};
+	tix_sig_status sig;
+	size_t which;
+	TK_OK(tix_store_commit_verify(s, &a, &k, 1, &sig, &which, &e), &e);
+	TK_CHECK(sig == TIX_SIG_NONE && which == SIZE_MAX);
+	tix_oid missing = a;
+	missing.bytes[0] ^= 0xff;
+	TK_STATUS(tix_store_commit_verify(s, &missing, NULL, 0, &sig, &which, &e), TIX_ERR_NOT_FOUND, &e);
+
 	TK_OK(tix_store_commit_read(s, &a, &c, &e), &e);
 	TK_CHECK(c.nparents == 0 && tix_oid_eq(&c.oid, &a));
 	TK_STR_EQ(tix_buf_cstr(&c.pack), pack);

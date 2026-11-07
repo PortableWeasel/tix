@@ -3,16 +3,28 @@
 
 #include <string.h>
 
-/* REMOTE argument, else git config tix.remote, else "origin". */
-static int pick_remote(cli *c, int argc, char **argv, const char *cmd, tix_buf *out)
+/* [--verify P] [REMOTE]: REMOTE, else git config tix.remote, else "origin". */
+static int pick_remote(cli *c, int argc, char **argv, const char *cmd, bool pulls, tix_buf *out)
 {
-	if (argc > 2)
-		return cli_usage("usage: tix %s [REMOTE]", cmd);
+	const char *name = NULL;
+	for (int i = 1; i < argc; i++) {
+		if (pulls && !strcmp(argv[i], "--verify") && i + 1 < argc) {
+			bool ok;
+			tix_verify_policy v = tix_verify_policy_parse(argv[++i], &ok);
+			if (!ok)
+				return cli_usage("--verify is off, warn or require");
+			tix_repo_set_verify(c->repo, v);
+		} else if (argv[i][0] == '-') {
+			return cli_usage("unknown option '%s'", argv[i]);
+		} else if (!name) {
+			name = argv[i];
+		} else {
+			return cli_usage("usage: tix %s [REMOTE]", cmd);
+		}
+	}
 	tix_buf_reset(out);
-	if (argc == 2) {
-		if (argv[1][0] == '-')
-			return cli_usage("unknown option '%s'", argv[1]);
-		tix_buf_adds(out, argv[1]);
+	if (name) {
+		tix_buf_adds(out, name);
 	} else if (tix_store_libgit_config_get(c->store, "tix.remote", out, NULL)) {
 		tix_buf_reset(out);
 		tix_buf_adds(out, "origin");
@@ -33,6 +45,9 @@ static int report(const char *remote, const tix_sync_report *rep, bool pulled, b
 		printf("%s: pushed %zu\n", remote, rep->pushed);
 	if (rep->skipped)
 		fprintf(stderr, "tix: %zu ref(s) of an unknown kind ignored (newer tix?)\n", rep->skipped);
+	if (rep->unsigned_commits || rep->bad_signatures)
+		fprintf(stderr, "tix: %zu unsigned and %zu badly signed incoming commit(s)\n", rep->unsigned_commits,
+			rep->bad_signatures);
 	for (size_t i = 0; i < rep->problems.n; i++)
 		fprintf(stderr, "tix: warning: %s\n", rep->problems.v[i]);
 	return rep->problems.n ? EXIT_ERR : EXIT_OK;
@@ -42,7 +57,7 @@ static int run(cli *c, int argc, char **argv, bool pull, bool push)
 {
 	tix_buf remote = TIX_BUF_INIT;
 	tix_sync_report rep = {0};
-	int rc = pick_remote(c, argc, argv, argv[0], &remote);
+	int rc = pick_remote(c, argc, argv, argv[0], pull, &remote);
 	if (rc) {
 		tix_buf_free(&remote);
 		return rc;

@@ -26,11 +26,24 @@ typedef struct tix_env {
 	void *ctx;
 } tix_env;
 
+/*
+ * Signature policy for commits arriving by pull (architecture §14.3). Each commit is checked
+ * against the keys of the identity it is authored by (for an identity's own history, the
+ * incoming version of that identity). History already here isn't re-checked.
+ *   OFF: no checks.  WARN: report unsigned and bad commits, adopt anyway.
+ *   REQUIRE: an unsigned or badly signed commit rejects the whole incoming ref.
+ */
+typedef enum tix_verify_policy { TIX_VERIFY_OFF = 0, TIX_VERIFY_WARN, TIX_VERIFY_REQUIRE } tix_verify_policy;
+/* "off"/"warn"/"require" (also true/false/yes/no); *ok = false for anything else. */
+tix_verify_policy tix_verify_policy_parse(const char *s, bool *ok);
+
+
 typedef struct tix_repo_config {
 	tix_store *store; /* BORROWS: must outlive the repo */
 	tix_env env;
 	tix_oid identity; /* the local user's identity, or null if none chosen yet */
 	tix_index *index; /* BORROWS, optional: cache of replayed entities (M5); NULL = none */
+	tix_verify_policy verify;
 } tix_repo_config;
 
 typedef struct tix_repo tix_repo;
@@ -55,6 +68,11 @@ tix_status tix_repo_refresh(tix_repo *r, tix_error *err);
  * tix_repo_refresh first to see other processes' changes. */
 #define TIX_STAMP_LEN 17
 tix_status tix_repo_stamp(tix_repo *r, char out[TIX_STAMP_LEN], tix_error *err);
+
+/* Changes the signature policy of an open repo (e.g. one `tix pull --verify warn` to trust
+ * a new clone's existing history on first use). */
+void tix_repo_set_verify(tix_repo *r, tix_verify_policy v);
+tix_verify_policy tix_repo_verify(const tix_repo *r);
 
 /* RETURNS false (and leaves *out alone) when no identity is set. */
 bool tix_repo_identity(const tix_repo *r, tix_oid *out);
@@ -176,6 +194,15 @@ tix_status tix_baseline_take(tix_repo *r, const char *name, const tix_oid *root,
 /* All baselines, newest first (taken date, then creation time, then id). */
 tix_status tix_baseline_list(tix_repo *r, tix_entity_list *out, tix_error *err);
 
+/* Signature audit of one entity's whole local history (architecture §14.3). */
+typedef struct tix_verify_report {
+	size_t good, unsigned_commits, bad;
+} tix_verify_report;
+/* Adds to *rep (callers may sum over many entities). RETURNS TIX_ERR_NOT_FOUND for an
+ * unknown entity, TIX_ERR_IO when a verifier (ssh-keygen, gpg) can't run. */
+tix_status tix_entity_verify(tix_repo *r, tix_entity_type t, const tix_oid *id, tix_verify_report *rep,
+			     tix_error *err);
+
 /* A schedule plus the entities it borrows. Free with tix_plan_result_free. */
 typedef struct tix_plan_result {
 	tix_schedule *schedule;
@@ -198,6 +225,7 @@ typedef struct tix_sync_report {
 	size_t skipped;   /* refs of a type this version doesn't know */
 	size_t pushed;    /* refs sent by the last push */
 	size_t unpushable; /* local refs that failed validation (never pushed) */
+	size_t unsigned_commits, bad_signatures; /* incoming, when verifying (warn or require) */
 	tix_strs problems; /* one line per rejected/unpushable ref, sorted */
 } tix_sync_report;
 

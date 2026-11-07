@@ -196,6 +196,7 @@ tix_status tix_repo_open(tix_repo **out, const tix_repo_config *cfg, tix_error *
 	r->store = cfg->store;
 	r->env = cfg->env;
 	r->index = cfg->index;
+	r->verify = cfg->verify;
 	tix_status st = clock_load(r, err);
 	if (!st && !tix_oid_is_null(&cfg->identity))
 		st = tix_repo_set_identity(r, &cfg->identity, err);

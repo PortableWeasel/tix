@@ -21,6 +21,8 @@
 #include "setup.h"
 #include "strbuf.h"
 #include "strvec.h"
+#include "dir.h"
+#include "gpg-interface.h"
 #include "tree-walk.h"
 #include "version.h"
 
@@ -36,6 +38,7 @@ int common_exit(const char *file, int line, int code)
 
 typedef struct git_store {
 	tix_store base; /* must be first */
+	bool sign;      /* git config tix.sign: sign every commit with user.signingkey (gpg.format) */
 } git_store;
 
 static const tix_store_vt git_vt;
@@ -88,9 +91,19 @@ static tix_status git_commit_write(tix_store *s, const tix_oid *parents, size_t 
 	/* Non-strict idents: fall back to git's defaults rather than die(). */
 	strbuf_addstr(&author, git_author_info(0));
 	strbuf_addstr(&committer, git_committer_info(0));
-	if (commit_tree_extended(msg, strlen(msg), &tree_oid, list, &commit, author.buf, committer.buf,
-				 NULL, NULL)) {
-		st = tix_error_set(err, TIX_ERR_IO, "cannot write commit");
+	char *key = ((git_store *)s)->sign ? get_signing_key() : NULL;
+	if (((git_store *)s)->sign && (!key || !*key)) {
+		free(key);
+		st = tix_error_set(err, TIX_ERR_INVALID, "tix.sign is set but there is no user.signingkey");
+		goto out;
+	}
+	int failed = commit_tree_extended(msg, strlen(msg), &tree_oid, list, &commit, author.buf, committer.buf,
+					  key, NULL);
+	free(key);
+	if (failed) {
+		st = tix_error_set(err, TIX_ERR_IO, ((git_store *)s)->sign
+							    ? "cannot sign the commit (see user.signingkey and gpg.format)"
+							    : "cannot write commit");
 		goto out;
 	}
 	from_git(&commit, out);
@@ -480,6 +493,151 @@ static void git_refresh(tix_store *s)
 	forget_caches();
 }
 
+/* ---- signatures (architecture §14.3) ------------------------------------------------ */
+
+/* argv only, never a shell; stdin from `in`. RETURNS the exit status (non-zero also when it
+ * couldn't run); stdout goes to out (may be NULL). */
+static int run_tool(const char *const *argv, const char *in, size_t in_len, struct strbuf *out)
+{
+	struct child_process cp = CHILD_PROCESS_INIT;
+	struct strbuf o = STRBUF_INIT, e = STRBUF_INIT;
+	for (size_t i = 0; argv[i]; i++)
+		strvec_push(&cp.args, argv[i]);
+	if (!in)
+		cp.no_stdin = 1;
+	int rc = pipe_command(&cp, in, in_len, &o, 0, &e, 0);
+	if (out)
+		strbuf_addbuf(out, &o);
+	strbuf_release(&o);
+	strbuf_release(&e);
+	return rc;
+}
+
+static bool write_tmp(const char *dir, const char *name, const char *data, size_t len, struct strbuf *path)
+{
+	strbuf_reset(path);
+	strbuf_addf(path, "%s/%s", dir, name);
+	int fd = open(path->buf, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	if (fd < 0)
+		return false;
+	bool ok = write_in_full(fd, data, len) >= 0;
+	return !close(fd) && ok;
+}
+
+/* Upper-case hex digits only: "ab12 CD34" -> "AB12CD34". REQUIRES in is not out's buffer. */
+static void norm_fpr(const char *in, struct strbuf *out)
+{
+	strbuf_reset(out);
+	for (; *in; in++)
+		if (isxdigit((unsigned char)*in))
+			strbuf_addch(out, (char)toupper((unsigned char)*in));
+}
+
+static bool verify_ssh(const char *dir, const struct strbuf *payload, const char *sigpath, const tix_sig_key *k)
+{
+	struct strbuf signers = STRBUF_INIT, path = STRBUF_INIT;
+	strbuf_addf(&signers, "tix %s\n", k->pubkey);
+	bool good = !strchr(k->pubkey, '\n') && write_tmp(dir, "allowed", signers.buf, signers.len, &path);
+	if (good) {
+		const char *argv[] = {"ssh-keygen", "-Y", "verify", "-f", path.buf, "-I", "tix", "-n", "git", "-s",
+				      sigpath, NULL};
+		good = run_tool(argv, payload->buf, payload->len, NULL) == 0;
+	}
+	if (path.len)
+		unlink(path.buf);
+	strbuf_release(&signers);
+	strbuf_release(&path);
+	return good;
+}
+
+/* RETURNS the index of the gpg key whose fingerprint gpg reports as VALIDSIG, or SIZE_MAX. */
+static size_t verify_gpg(const char *dir, const struct strbuf *payload, const char *sigpath, const tix_sig_key *keys,
+			 size_t n)
+{
+	struct strbuf home = STRBUF_INIT, status = STRBUF_INIT, want = STRBUF_INIT, got = STRBUF_INIT;
+	size_t which = SIZE_MAX;
+	strbuf_addf(&home, "%s/gnupg", dir);
+	if (mkdir(home.buf, 0700))
+		goto out;
+	for (size_t i = 0; i < n; i++)
+		if (!strcmp(keys[i].kind, "gpg")) {
+			const char *argv[] = {"gpg", "--homedir", home.buf, "--batch", "--quiet", "--import", NULL};
+			run_tool(argv, keys[i].pubkey, strlen(keys[i].pubkey), NULL);
+		}
+	const char *argv[] = {"gpg", "--homedir", home.buf, "--batch", "--status-fd", "1", "--verify", sigpath, "-", NULL};
+	run_tool(argv, payload->buf, payload->len, &status);
+	const char *v = strstr(status.buf, "[GNUPG:] VALIDSIG ");
+	if (!v)
+		goto out;
+	v += strlen("[GNUPG:] VALIDSIG ");
+	char *raw = xstrndup(v, strcspn(v, " \n"));
+	norm_fpr(raw, &got); /* not in place: norm_fpr resets its output first */
+	free(raw);
+	for (size_t i = 0; i < n && which == SIZE_MAX; i++) {
+		if (strcmp(keys[i].kind, "gpg"))
+			continue;
+		norm_fpr(keys[i].fingerprint, &want);
+		/* the full fingerprint, or its long key id (last 16 digits) */
+		if (want.len >= 16 && got.len >= want.len && !strcmp(got.buf + got.len - want.len, want.buf))
+			which = i;
+	}
+out:
+	strbuf_release(&home);
+	strbuf_release(&status);
+	strbuf_release(&want);
+	strbuf_release(&got);
+	return which;
+}
+
+static tix_status git_commit_verify(tix_store *s, const tix_oid *oid, const tix_sig_key *keys, size_t n,
+				    tix_sig_status *out, size_t *which, tix_error *err)
+{
+	struct object_id g;
+	to_git(oid, &g);
+	struct commit *c = lookup_commit(the_repository, &g);
+	if (oid_object_info(the_repository, &g, NULL) != OBJ_COMMIT || !c || repo_parse_commit(the_repository, c))
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no commit %s", oid_to_hex(&g));
+	struct strbuf payload = STRBUF_INIT, sig = STRBUF_INIT, dir = STRBUF_INIT, path = STRBUF_INIT;
+	tix_status st = TIX_OK;
+	if (parse_signed_commit(c, &payload, &sig, the_hash_algo) <= 0)
+		goto out; /* unsigned: NONE */
+	*out = TIX_SIG_BAD;
+	bool ssh = starts_with(sig.buf, "-----BEGIN SSH SIGNATURE-----");
+	bool pgp = starts_with(sig.buf, "-----BEGIN PGP SIGNATURE-----");
+	const char *tmp = getenv("TMPDIR");
+	strbuf_addf(&dir, "%s/tix-verify-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+	if (!mkdtemp(dir.buf)) {
+		st = tix_error_set(err, TIX_ERR_IO, "cannot make a temporary directory: %s", strerror(errno));
+		strbuf_reset(&dir);
+		goto out;
+	}
+	if (!write_tmp(dir.buf, "sig", sig.buf, sig.len, &path)) {
+		st = tix_error_set(err, TIX_ERR_IO, "cannot write %s", path.buf);
+		goto out;
+	}
+	if (ssh) {
+		for (size_t i = 0; i < n && *out != TIX_SIG_GOOD; i++)
+			if (!strcmp(keys[i].kind, "ssh") && verify_ssh(dir.buf, &payload, path.buf, &keys[i])) {
+				*out = TIX_SIG_GOOD;
+				*which = i;
+			}
+	} else if (pgp) {
+		size_t k = verify_gpg(dir.buf, &payload, path.buf, keys, n);
+		if (k != SIZE_MAX) {
+			*out = TIX_SIG_GOOD;
+			*which = k;
+		}
+	}
+out:
+	if (dir.len)
+		remove_dir_recursively(&dir, 0);
+	strbuf_release(&payload);
+	strbuf_release(&sig);
+	strbuf_release(&dir);
+	strbuf_release(&path);
+	return st;
+}
+
 static void git_destroy(tix_store *s)
 {
 	free(s);
@@ -496,6 +654,7 @@ static const tix_store_vt git_vt = {
 	.remote_fetch = git_remote_fetch,
 	.remote_push = git_remote_push,
 	.refresh = git_refresh,
+	.commit_verify = git_commit_verify,
 	.destroy = git_destroy,
 };
 
@@ -518,6 +677,8 @@ tix_status tix_store_libgit_open(tix_store **out, tix_error *err)
 	git_store *g = tix_xcalloc(1, sizeof(*g));
 	g->base.vt = &git_vt;
 	g->base.algo = algo == GIT_HASH_SHA1 ? TIX_HASH_SHA1 : TIX_HASH_SHA256;
+	int sign = 0;
+	g->sign = !repo_config_get_bool(the_repository, "tix.sign", &sign) && sign;
 	*out = &g->base;
 	return TIX_OK;
 }
@@ -576,3 +737,119 @@ const char *tix_store_libgit_git_version(void)
 {
 	return git_version_string;
 }
+
+/* The public half of user.signingkey under gpg.format ssh: "key::<pubkey>" or a key file
+ * (a .pub file, or a private key whose .pub sits next to it). */
+static bool ssh_pubkey(const char *key, struct strbuf *pub)
+{
+	strbuf_reset(pub);
+	if (skip_prefix(key, "key::", &key)) {
+		strbuf_addstr(pub, key);
+	} else {
+		struct strbuf path = STRBUF_INIT;
+		strbuf_addstr(&path, key);
+		if (strbuf_read_file(pub, path.buf, 0) < 0 || !starts_with(pub->buf, "ssh-")) {
+			strbuf_reset(pub);
+			strbuf_addstr(&path, ".pub");
+			if (strbuf_read_file(pub, path.buf, 0) < 0)
+				strbuf_reset(pub);
+		}
+		strbuf_release(&path);
+	}
+	strbuf_trim(pub);
+	/* keep "type base64": a trailing comment is not part of the key */
+	const char *sp = strchr(pub->buf, ' ');
+	if (sp && (sp = strchr(sp + 1, ' ')))
+		strbuf_setlen(pub, (size_t)(sp - pub->buf));
+	return starts_with(pub->buf, "ssh-") || starts_with(pub->buf, "ecdsa-") || starts_with(pub->buf, "sk-");
+}
+
+tix_status tix_store_libgit_signing_key(tix_store *s, tix_buf *kind, tix_buf *fingerprint, tix_buf *pubkey,
+				       tix_error *err)
+{
+	check_store(s);
+	char *format = NULL, *key = get_signing_key();
+	struct strbuf pub = STRBUF_INIT, out = STRBUF_INIT, dir = STRBUF_INIT, path = STRBUF_INIT;
+	tix_status st = TIX_OK;
+	repo_config_get_string(the_repository, "gpg.format", &format);
+	if (!key || !*key) {
+		st = tix_error_set(err, TIX_ERR_NOT_FOUND, "no signing key: set git config user.signingkey");
+		goto out;
+	}
+	tix_buf_reset(kind);
+	tix_buf_reset(fingerprint);
+	tix_buf_reset(pubkey);
+	if (format && !strcmp(format, "ssh")) {
+		if (!ssh_pubkey(key, &pub)) {
+			st = tix_error_set(err, TIX_ERR_NOT_FOUND, "cannot read the public key of user.signingkey");
+			goto out;
+		}
+		const char *tmp = getenv("TMPDIR");
+		strbuf_addf(&dir, "%s/tix-key-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+		if (!mkdtemp(dir.buf)) {
+			strbuf_reset(&dir);
+			st = tix_error_set(err, TIX_ERR_IO, "cannot make a temporary directory");
+			goto out;
+		}
+		strbuf_addch(&pub, '\n');
+		if (!write_tmp(dir.buf, "key.pub", pub.buf, pub.len, &path)) {
+			st = tix_error_set(err, TIX_ERR_IO, "cannot write %s", path.buf);
+			goto out;
+		}
+		const char *argv[] = {"ssh-keygen", "-l", "-E", "sha256", "-f", path.buf, NULL};
+		if (run_tool(argv, NULL, 0, &out)) {
+			st = tix_error_set(err, TIX_ERR_IO, "ssh-keygen could not read the key");
+			goto out;
+		}
+		strbuf_trim(&pub);
+		const char *f = strchr(out.buf, ' '); /* "256 SHA256:... comment (ED25519)" */
+		if (!f || !starts_with(f + 1, "SHA256:")) {
+			st = tix_error_set(err, TIX_ERR_IO, "unexpected ssh-keygen output");
+			goto out;
+		}
+		tix_buf_adds(kind, "ssh");
+		tix_buf_add(fingerprint, f + 1, strcspn(f + 1, " \n"));
+		tix_buf_adds(pubkey, pub.buf);
+	} else if (!format || !strcmp(format, "openpgp")) {
+		const char *argv[] = {"gpg", "--batch", "--with-colons", "--fingerprint", key, NULL};
+		if (run_tool(argv, NULL, 0, &out)) {
+			st = tix_error_set(err, TIX_ERR_NOT_FOUND, "gpg doesn't know the key %s", key);
+			goto out;
+		}
+		const char *f = strstr(out.buf, "\nfpr:");
+		if (!f) {
+			st = tix_error_set(err, TIX_ERR_IO, "no fingerprint in gpg's output");
+			goto out;
+		}
+		f += 1;
+		for (int i = 0; i < 9 && f; i++) /* fpr:::::::::<fingerprint>: */
+			f = strchr(f, ':') ? strchr(f, ':') + 1 : NULL;
+		size_t n = f ? strcspn(f, ":\n") : 0;
+		if (!n) {
+			st = tix_error_set(err, TIX_ERR_IO, "no fingerprint in gpg's output");
+			goto out;
+		}
+		tix_buf_add(fingerprint, f, n);
+		const char *exp[] = {"gpg", "--batch", "--armor", "--export", fingerprint->data, NULL};
+		strbuf_reset(&pub);
+		if (run_tool(exp, NULL, 0, &pub) || !starts_with(pub.buf, "-----BEGIN PGP PUBLIC KEY BLOCK-----")) {
+			st = tix_error_set(err, TIX_ERR_IO, "gpg could not export the key");
+			goto out;
+		}
+		tix_buf_adds(kind, "gpg");
+		tix_buf_adds(pubkey, pub.buf);
+	} else {
+		st = tix_error_set(err, TIX_ERR_UNSUPPORTED, "gpg.format %s is not supported (ssh or openpgp)", format);
+	}
+out:
+	if (dir.len)
+		remove_dir_recursively(&dir, 0);
+	free(format);
+	free(key);
+	strbuf_release(&pub);
+	strbuf_release(&out);
+	strbuf_release(&dir);
+	strbuf_release(&path);
+	return st;
+}
+

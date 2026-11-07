@@ -170,6 +170,14 @@ int main(int argc, char **argv)
 		index = NULL;
 	tix_buf_free(&path);
 	tix_repo_config cfg = {.store = store, .env = {env_now, env_random, NULL}, .index = index};
+	tix_buf vb = TIX_BUF_INIT;
+	if (!tix_store_libgit_config_get(store, "tix.verify", &vb, NULL)) {
+		bool vok;
+		cfg.verify = tix_verify_policy_parse(vb.data, &vok); /* signatures on sync (§14.3) */
+		if (!vok)
+			fprintf(stderr, "tix web: ignoring tix.verify '%s' (off, warn or require)\n", vb.data);
+	}
+	tix_buf_free(&vb);
 	tix_buf idb = TIX_BUF_INIT;
 	if (!tix_store_libgit_config_get(store, "tix.identity", &idb, NULL) &&
 	    !tix_oid_from_hex(&cfg.identity, idb.data, idb.len))

@@ -258,9 +258,11 @@ void post_sync(web_ctx *x)
 	}
 	HL(h, "<table class=\"fields\"><tbody>");
 	static const char *const names[] = {"new here", "caught up", "merged", "rejected (invalid)",
-					    "skipped (unknown kind)", "pushed", "not pushed (invalid)"};
-	size_t vals[] = {rep.created, rep.forwarded, rep.merged, rep.rejected, rep.skipped, rep.pushed, rep.unpushable};
-	for (size_t i = 0; i < 7; i++) {
+					    "skipped (unknown kind)", "pushed", "not pushed (invalid)",
+					    "unsigned incoming commits", "badly signed incoming commits"};
+	size_t vals[] = {rep.created, rep.forwarded, rep.merged, rep.rejected, rep.skipped, rep.pushed, rep.unpushable,
+			 rep.unsigned_commits, rep.bad_signatures};
+	for (size_t i = 0; i < sizeof(vals) / sizeof(*vals); i++) {
 		HL(h, "<tr><th>");
 		h_text(h, names[i]);
 		HL(h, "</th><td class=\"num\">");

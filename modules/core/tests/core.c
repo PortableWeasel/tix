@@ -53,8 +53,10 @@ static tix_status f_cas(tix_store *s, const char *n, const tix_oid *old, const t
 static tix_status f_rf(tix_store *s, const char *r, tix_error *er) { return tix_store_remote_fetch(inner(s), r, er); }
 static tix_status f_rp(tix_store *s, const char *r, const char *const *refs, size_t n, tix_error *er) { return tix_store_remote_push(inner(s), r, refs, n, er); }
 static void f_refresh(tix_store *s) { tix_store_refresh(inner(s)); }
+static tix_status f_cv(tix_store *s, const tix_oid *o, const tix_sig_key *k, size_t n, tix_sig_status *st, size_t *w,
+		       tix_error *er) { return tix_store_commit_verify(inner(s), o, k, n, st, w, er); }
 static void f_destroy(tix_store *s) { (void)s; }
-static const tix_store_vt flaky_vt = {f_cw, f_cr, f_rr, f_rl, f_cas, f_lg, f_ls, f_rf, f_rp, f_refresh, f_destroy};
+static const tix_store_vt flaky_vt = {f_cw, f_cr, f_rr, f_rl, f_cas, f_lg, f_ls, f_rf, f_rp, f_refresh, f_cv, f_destroy};
 
 static tix_repo *open_repo(tix_store *s, fake_env *env, const tix_oid *identity)
 {
@@ -311,6 +313,92 @@ static void apply1(clone *c, const tix_oid *t, tix_op op)
 {
 	TK_OK(tix_entity_apply(c->r, TIX_ENTITY_TICKET, t, &op, 1, &e), &e);
 	tix_op_free(&op);
+}
+
+static void clone_open_verify(clone *c, tix_store *server, uint64_t seed, tix_verify_policy v)
+{
+	c->env = (fake_env){1700000000, seed};
+	c->s = tix_store_mem_new(server->algo);
+	tix_store_mem_add_remote(c->s, "origin", server);
+	tix_repo_config cfg = {.store = c->s, .env = {fake_now, fake_random, &c->env}, .verify = v};
+	TK_OK(tix_repo_open(&c->r, &cfg, &e), &e);
+}
+
+static bool has_problem(const tix_sync_report *rep, const char *needle)
+{
+	for (size_t i = 0; i < rep->problems.n; i++)
+		if (strstr(rep->problems.v[i], needle))
+			return true;
+	return false;
+}
+
+/* §14.3: incoming commits are checked against their author identity's keys. */
+static void test_signatures(void)
+{
+	tix_store *server = tix_store_mem_new(TIX_HASH_SHA1);
+	clone a, b, w;
+	tix_oid ada, t;
+	tix_sync_report rep = {0};
+	clone_open(&a, server, 21);
+	clone_open_verify(&b, server, 22, TIX_VERIFY_REQUIRE);
+	clone_open_verify(&w, server, 23, TIX_VERIFY_WARN);
+
+	/* Ada signs from the start; her key arrives in a later op than her identity's root,
+	 * and the root still verifies (against the incoming identity's keys) */
+	tix_store_mem_sign_as(a.s, "SHA256:ada");
+	TK_OK(tix_identity_create(a.r, "Ada", "a@x", &ada, &e), &e);
+	TK_OK(tix_repo_set_identity(a.r, &ada, &e), &e);
+	tix_op key = tix_op_key_add("ssh", "SHA256:ada", "ssh-ed25519 AAAAada");
+	TK_OK(tix_entity_apply(a.r, TIX_ENTITY_IDENTITY, &ada, &key, 1, &e), &e);
+	tix_op_free(&key);
+	TK_OK(tix_ticket_create(a.r, "Signed", "", NULL, &t, &e), &e);
+	TK_OK(tix_push(a.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_pull(b.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.created == 2 && rep.rejected == 0 && rep.unsigned_commits == 0 && rep.bad_signatures == 0);
+	tix_sync_report_free(&rep);
+
+	/* an unsigned edit is refused under require: the whole incoming ref stays out */
+	tix_store_mem_sign_as(a.s, NULL);
+	apply1(&a, &t, tix_op_text(TIX_OP_SET_TITLE, "Unsigned title"));
+	/* and one signed by a key that isn't Ada's */
+	tix_store_mem_sign_as(a.s, "SHA256:mallory");
+	apply1(&a, &t, tix_op_set_status(TIX_TICKET_DONE));
+	tix_store_mem_sign_as(a.s, "SHA256:ada");
+	TK_OK(tix_push(a.r, "origin", &rep, &e), &e);
+	tix_sync_report_free(&rep);
+	TK_OK(tix_pull(b.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.rejected == 1 && rep.unsigned_commits == 1 && rep.bad_signatures == 1);
+	TK_CHECK(has_problem(&rep, "1 unsigned and 1 badly signed"));
+	tix_sync_report_free(&rep);
+	tix_entity *bt = load_ticket(b.r, &t);
+	TK_CHECK(bt && !strcmp(bt->u.ticket.title, "Signed") && bt->u.ticket.status == TIX_TICKET_OPEN);
+	tix_entity_free(bt);
+
+	/* warn adopts, but says so */
+	TK_OK(tix_pull(w.r, "origin", &rep, &e), &e);
+	TK_CHECK(rep.rejected == 0 && rep.created == 2 && rep.unsigned_commits == 1 && rep.bad_signatures == 1);
+	TK_CHECK(has_problem(&rep, "warning:"));
+	tix_sync_report_free(&rep);
+	tix_entity *wt = load_ticket(w.r, &t);
+	TK_CHECK(wt && !strcmp(wt->u.ticket.title, "Unsigned title"));
+	tix_entity_free(wt);
+
+	/* the audit of a whole history */
+	tix_verify_report vr = {0};
+	TK_OK(tix_entity_verify(a.r, TIX_ENTITY_TICKET, &t, &vr, &e), &e);
+	TK_CHECK(vr.good == 1 && vr.unsigned_commits == 1 && vr.bad == 1);
+	memset(&vr, 0, sizeof(vr));
+	TK_OK(tix_entity_verify(a.r, TIX_ENTITY_IDENTITY, &ada, &vr, &e), &e);
+	TK_CHECK(vr.good == 2 && vr.unsigned_commits == 0 && vr.bad == 0);
+	bool ok;
+	TK_CHECK(tix_verify_policy_parse("require", &ok) == TIX_VERIFY_REQUIRE && ok);
+	TK_CHECK(tix_verify_policy_parse("warn", &ok) == TIX_VERIFY_WARN && ok);
+	TK_CHECK(tix_verify_policy_parse("sometimes", &ok) == TIX_VERIFY_OFF && !ok);
+	clone_close(&a);
+	clone_close(&b);
+	clone_close(&w);
+	tix_store_destroy(server);
 }
 
 static void test_sync_basic(void)
@@ -976,6 +1064,7 @@ static void test_sort(void)
 
 int main(void)
 {
+	test_signatures();
 	test_sort();
 	test_stamp();
 	test_baseline();

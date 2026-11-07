@@ -33,6 +33,15 @@ tix_status tix_store_libgit_config_set(tix_store *s, const char *key, const char
  * such as the index cache. REQUIRES name is a local name or that plus ".db". */
 tix_status tix_store_libgit_local_path(tix_store *s, const char *name, tix_buf *out, tix_error *err);
 
+/*
+ * The configured git signing key (user.signingkey under gpg.format ssh or openpgp) as an
+ * identity key: kind "ssh"/"gpg", its fingerprint, and the public key (ssh: "type base64";
+ * gpg: armored export). For `tix id edit --add-signing-key` (architecture §14.3).
+ * RETURNS TIX_ERR_NOT_FOUND without a usable key.
+ */
+tix_status tix_store_libgit_signing_key(tix_store *s, tix_buf *kind, tix_buf *fingerprint, tix_buf *pubkey,
+				       tix_error *err);
+
 /* The version of the linked git.git library, e.g. "2.47.3". Static storage. */
 const char *tix_store_libgit_git_version(void);
 

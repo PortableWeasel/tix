@@ -351,5 +351,38 @@ git clone -q "$T/bl.git" "$T/bl2" 2>/dev/null && cd "$T/bl2"
 expect 0 "$TIX" pull; expect 0 "$TIX" baseline ls; has "Approved"; has "Build only"
 expect 0 "$TIX" baseline show "$bl"; has "2400.00 EUR"
 
+# ---- commit signatures (ssh): sign, audit, require on pull, trust on first use ----------
+if command -v ssh-keygen >/dev/null; then
+	git init -q "$T/sg" && cd "$T/sg"
+	ssh-keygen -q -t ed25519 -N "" -C ada -f "$T/ada_key"
+	git config gpg.format ssh && git config user.signingkey "$T/ada_key.pub" && git config tix.sign true
+	expect 0 "$TIX" id new --name Ada --email ada@example.org
+	expect 0 "$TIX" id edit --add-signing-key; has "Adding ssh key SHA256:"
+	expect 0 "$TIX" id show; has "key:    ssh SHA256:"
+	expect 0 "$TIX" new -t "Signed work"; st=$(sed -n 's/^Created ticket //p' <<<"$out")
+	git cat-file -p "refs/tix/tickets/$(git for-each-ref --format='%(refname:lstrip=3)' "refs/tix/tickets/$st*")" |
+		grep -q '^gpgsig ' || fail "ticket commit not signed"
+	expect 0 "$TIX" verify; has "0 unsigned, 0 bad"; hasnt "ticket "
+	git init -q --bare "$T/sg.git" && git remote add origin "$T/sg.git"
+	expect 0 "$TIX" push
+	git clone -q "$T/sg.git" "$T/sg2" 2>/dev/null && cd "$T/sg2" && git config tix.verify require
+	expect 0 "$TIX" pull; has "2 new"
+	cd "$T/sg" && git config tix.sign false
+	expect 0 "$TIX" edit "$st" --title "Unsigned edit"
+	expect 0 "$TIX" push
+	expect 0 "$TIX" verify; has "1 unsigned"; has "ticket   $st"   # policy off: reported, not an error
+	git config tix.verify require
+	expect 1 "$TIX" verify; has "1 unsigned"
+	cd "$T/sg2"
+	expect 1 "$TIX" pull; has "rejected refs/tix-remotes/origin/tickets/"; has "1 unsigned and 0 badly signed"
+	expect 0 "$TIX" show "$st"; has "Signed work"; hasnt "Unsigned edit"
+	expect 2 "$TIX" pull --verify sometimes; has "--verify is off, warn or require"
+	git clone -q "$T/sg.git" "$T/sg3" 2>/dev/null && cd "$T/sg3" && git config tix.verify require
+	expect 1 "$TIX" pull; has "rejected"
+	expect 1 "$TIX" pull --verify warn; has "warning: refs/tix-remotes/origin/tickets/"   # trust on first use
+	expect 0 "$TIX" show "$st"; has "Unsigned edit"
+	expect 0 "$TIX" pull; has "nothing new"   # require again, nothing new to check
+fi
+
 if [ $fails -gt 0 ]; then echo "$fails failure(s)"; exit 1; fi
 echo "cli end-to-end OK"

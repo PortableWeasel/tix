@@ -551,7 +551,7 @@ Also installed as `git-tix`, so `git tix …` works.
 8. ✅ **M7 web UI enhancements** (done 2026-11-07, §13.4): search as you type, Gantt editing,
    live refresh.
 9. **After v1** (approved 2026-11-07, §14): MS Project XML export ✅, plan baselines ✅, commit
-   signature enforcement, Forgejo issue bridge, TUI, hosted web mode.
+   signature enforcement ✅, Forgejo issue bridge, TUI, hosted web mode.
 
 ## 12. Resolved decisions (2026-11-06)
 
@@ -912,4 +912,47 @@ clients see an unknown kind and ignore it (§6).
   the cache codec, a 1,100-task chain under one ref in core, golden cost and slip cases in
   plan, the CLI end to end including a clone that pulls the baselines, web handler tests
   with a hostile name, and MPXJ reading the MSPDI baseline and cost fields back.
+
+### 14.3 Commit signatures ✅
+
+Identities carry ssh and gpg keys (`key-add`, §4.1). tix now signs op-pack commits and
+checks incoming ones against the keys of the identity each commit is authored by.
+
+- **Signing**: `git config tix.sign true` makes store_libgit sign every commit it writes
+  with git's own machinery (`user.signingkey`, `gpg.format` ssh or openpgp, so ssh-agent or
+  gpg-agent work as for `git commit -S`). `tix id edit --add-signing-key` adds that key
+  to your identity: the public half (ssh: `type base64`; gpg: an armored export) and its
+  fingerprint (`ssh-keygen -l -E sha256`, `gpg --with-colons`).
+- **Verifying** (store port `commit_verify`): the adapter extracts the signature and the
+  signed payload (`parse_signed_commit`) and runs the verifier itself, as child processes
+  with argv only, against keys passed in, never the user's keyring:
+  - ssh: `ssh-keygen -Y verify -n git` with a one-line allowed-signers file per candidate key;
+  - gpg: a throwaway `--homedir` with the identity's keys imported, `--status-fd`, and
+    the `VALIDSIG` fingerprint compared with the key's (full, or its long key id).
+  - Result: NONE (unsigned), GOOD (and which key), BAD (invalid, or by no given key,
+    including a key of the wrong kind). store_mem simulates signatures for core tests.
+- **Whose keys**: the identity named as the pack's author, as it is locally. For an
+  identity's own history (whose root has no author), the incoming version of that identity,
+  so an identity can sign its root with a key it adds in a later op. Pull integrates
+  identities before everything else, so key changes arrive before the commits they sign.
+  Key removal is not retroactive: old commits are then checked against the current keys.
+- **Policy** (`git config tix.verify` off|warn|require, default off; `tix pull/sync
+  --verify P` for one run): only commits new to this clone are checked (trust on first
+  use; history already here is never re-judged).
+  - warn: count, report and adopt.
+  - require: an unsigned or badly signed new commit rejects the whole incoming ref (the
+    same path as an invalid one: reported, never adopted, never pushed on).
+  - A new clone of a repository with unsigned history pulls once with `--verify warn`.
+    Pack times and Lamport values are author-controlled, so no date cut-off is offered:
+    it would be forgeable.
+- **Audit**: `tix verify [ID]...` checks whole local histories and prints per-entity
+  counts for anything unsigned or bad, plus a total. It exits 1 on a bad signature, or on
+  unsigned commits under require. The web sync page shows the incoming counts.
+- **Tested**: the store contract (unsigned → NONE, missing → NOT_FOUND);
+  store_libgit with real ed25519 ssh keys and real gpg keys in a throwaway home (good, the
+  right key among several, another key, no keys, the wrong kind, unsigned, and a tampered
+  copy of a signed commit → BAD); core on store_mem (an identity signing its own root with
+  a later key, require rejecting unsigned and foreign-key commits as a whole ref, warn
+  adopting with a note, the audit; disabling the check fails it); and cli.sh with real ssh
+  keys end to end, including the trust-on-first-use pull.
 

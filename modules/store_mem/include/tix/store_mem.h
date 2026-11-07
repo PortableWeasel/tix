@@ -30,4 +30,9 @@ void tix_store_mem_add_remote(tix_store *s, const char *name, tix_store *peer);
 /* RETURNS number of commits stored (for tests). */
 size_t tix_store_mem_count(tix_store *s);
 
+/* Test hook: commits written from now on carry a simulated signature by this key
+ * fingerprint ("" = a forged signature that matches no key; NULL = unsigned again).
+ * commit_verify reports GOOD for a key with exactly that fingerprint. */
+void tix_store_mem_sign_as(tix_store *s, const char *fingerprint);
+
 #endif

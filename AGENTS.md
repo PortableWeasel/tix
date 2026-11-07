@@ -214,4 +214,6 @@ cmake --preset release && cmake --build --preset release
   bounds-check everything and fuzz parsers when they exist.
 - Child processes: argv arrays only, no shell interpolation of user or remote strings.
 - Never log secrets. Credential helpers and ssh keys belong to the child `git` process.
-  tix never handles them.
+  tix never handles them. Signing goes through git's own machinery (agents included);
+  verification runs `ssh-keygen`/`gpg` with keys from identities only, in throwaway files
+  and gpg homes, never the user's keyring (architecture §14.3).

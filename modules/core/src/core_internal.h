@@ -12,6 +12,7 @@ struct tix_repo {
 	tix_oid identity;
 	uint64_t clock;
 	tix_index *index; /* optional */
+	tix_verify_policy verify;
 };
 
 /* Open-addressing set of oids. Zero-initialise; free with core_oidset_free. */
@@ -64,6 +65,20 @@ bool core_summary_decode(const char *data, size_t len, tix_hash_algo algo, core_
 /* Takes ownership of e (f->e). */
 void core_facets_from_entity(tix_entity *e, core_facets *f);
 void core_facets_free(core_facets *f);
+
+/* Identities looked up while verifying, loaded once per run (verify.c). */
+typedef struct core_key_entry {
+	tix_oid id;
+	tix_entity *identity; /* OWNS; NULL if it didn't load */
+} core_key_entry;
+typedef TIX_VEC(core_key_entry) core_keys;
+void core_keys_free(core_keys *k);
+
+/* Verifies commit c of entity (t, entity) against its author identity's keys. For an
+ * identity's own history pass self = that identity as of the history being checked (the
+ * incoming one on pull). *out is BAD for an author that doesn't load locally. */
+tix_status core_verify_commit(tix_repo *r, tix_entity_type t, const tix_oid *entity, const tix_commit *c,
+			      const tix_entity *self, core_keys *cache, tix_sig_status *out, tix_error *err);
 
 /* "refs/tix/<type>/<hex id>" into out[n]. */
 void core_ref_of(tix_entity_type t, const tix_oid *id, char *out, size_t n);

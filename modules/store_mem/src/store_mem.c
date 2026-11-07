@@ -11,6 +11,7 @@ typedef struct mem_commit {
 	char *pack;
 	size_t pack_len;
 	char *message;
+	char *sig; /* simulated signature: the signer's fingerprint, "" for a forged one; NULL unsigned */
 } mem_commit;
 
 typedef struct mem_store {
@@ -21,6 +22,7 @@ typedef struct mem_store {
 	TIX_VEC(tix_buf) local_val;
 	TIX_VEC(tix_ref) remotes;    /* name -> peer (oid unused; peer in a parallel vec) */
 	TIX_VEC(tix_store *) peers;  /* BORROWED */
+	char *sign_as;               /* tix_store_mem_sign_as */
 } mem_store;
 
 static const tix_store_vt mem_vt;
@@ -41,7 +43,7 @@ static void hash_bytes(uint64_t lane[4], const void *data, size_t n)
 }
 
 static void compute_oid(tix_hash_algo algo, const tix_oid *parents, size_t np, const char *pack,
-			size_t len, const char *msg, tix_oid *out)
+			size_t len, const char *msg, const char *sig, tix_oid *out)
 {
 	uint64_t lane[4] = {0xcbf29ce484222325ull, 0x84222325cbf29ce4ull, 0x9ce484222325cbf2ull,
 			    0x2325cbf29ce48422ull};
@@ -52,6 +54,8 @@ static void compute_oid(tix_hash_algo algo, const tix_oid *parents, size_t np, c
 	hash_bytes(lane, &len, sizeof(len));
 	hash_bytes(lane, pack, len);
 	hash_bytes(lane, msg, strlen(msg));
+	if (sig) /* part of the commit, as a git signature is */
+		hash_bytes(lane, sig, strlen(sig) + 1);
 	memset(out, 0, sizeof(*out));
 	out->algo = (uint8_t)algo;
 	for (size_t i = 0; i < raw; i++)
@@ -77,7 +81,7 @@ static mem_commit *find_commit(mem_store *m, const tix_oid *oid, size_t *at)
 }
 
 static void insert_commit(mem_store *m, const tix_oid *oid, const tix_oid *parents, size_t np,
-			  const char *pack, size_t len, const char *msg)
+			  const char *pack, size_t len, const char *msg, const char *sig)
 {
 	size_t at = 0;
 	if (find_commit(m, oid, &at))
@@ -94,6 +98,7 @@ static void insert_commit(mem_store *m, const tix_oid *oid, const tix_oid *paren
 	c->pack = tix_xstrndup(pack ? pack : "", len);
 	c->pack_len = len;
 	c->message = tix_xstrdup(msg);
+	c->sig = sig ? tix_xstrdup(sig) : NULL;
 }
 
 static tix_status mem_commit_write(tix_store *s, const tix_oid *parents, size_t np, const char *pack,
@@ -105,9 +110,34 @@ static tix_status mem_commit_write(tix_store *s, const tix_oid *parents, size_t 
 		if (!find_commit(m, &parents[i], NULL))
 			return tix_error_set(err, TIX_ERR_NOT_FOUND, "parent commit not in store");
 	}
-	compute_oid(s->algo, parents, np, pack ? pack : "", len, msg, out);
-	insert_commit(m, out, parents, np, pack, len, msg);
+	compute_oid(s->algo, parents, np, pack ? pack : "", len, msg, m->sign_as, out);
+	insert_commit(m, out, parents, np, pack, len, msg, m->sign_as);
 	return TIX_OK;
+}
+
+static tix_status mem_commit_verify(tix_store *s, const tix_oid *oid, const tix_sig_key *keys, size_t nkeys,
+				    tix_sig_status *out, size_t *which, tix_error *err)
+{
+	mem_commit *c = find_commit(as_mem(s), oid, NULL);
+	if (!c)
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no such commit");
+	if (!c->sig)
+		return TIX_OK; /* NONE */
+	*out = TIX_SIG_BAD;
+	for (size_t i = 0; i < nkeys && *c->sig; i++)
+		if (!strcmp(keys[i].fingerprint, c->sig)) {
+			*out = TIX_SIG_GOOD;
+			*which = i;
+			break;
+		}
+	return TIX_OK;
+}
+
+void tix_store_mem_sign_as(tix_store *s, const char *fingerprint)
+{
+	mem_store *m = as_mem(s);
+	free(m->sign_as);
+	m->sign_as = fingerprint ? tix_xstrdup(fingerprint) : NULL;
 }
 
 static tix_status mem_commit_read(tix_store *s, const tix_oid *oid, tix_commit *out, tix_error *err)
@@ -277,7 +307,7 @@ static void copy_commits(mem_store *dst, const mem_store *src)
 {
 	for (size_t i = 0; i < src->commits.n; i++) {
 		const mem_commit *c = &src->commits.v[i];
-		insert_commit(dst, &c->oid, c->parents, c->nparents, c->pack, c->pack_len, c->message);
+		insert_commit(dst, &c->oid, c->parents, c->nparents, c->pack, c->pack_len, c->message, c->sig);
 	}
 }
 
@@ -312,6 +342,7 @@ static void mem_destroy(tix_store *s)
 		free(m->remotes.v[i].name);
 	free(m->remotes.v);
 	free(m->peers.v);
+	free(m->sign_as);
 	for (size_t i = 0; i < m->local.n; i++) {
 		free(m->local.v[i].name);
 		tix_buf_free(&m->local_val.v[i]);
@@ -322,6 +353,7 @@ static void mem_destroy(tix_store *s)
 		free(m->commits.v[i].parents);
 		free(m->commits.v[i].pack);
 		free(m->commits.v[i].message);
+		free(m->commits.v[i].sig);
 	}
 	free(m->commits.v);
 	for (size_t i = 0; i < m->refs.n; i++)
@@ -346,6 +378,7 @@ static const tix_store_vt mem_vt = {
 	.remote_fetch = mem_remote_fetch,
 	.remote_push = mem_remote_push,
 	.refresh = mem_refresh,
+	.commit_verify = mem_commit_verify,
 	.destroy = mem_destroy,
 };
 
@@ -364,7 +397,7 @@ void tix_store_mem_fetch(tix_store *dst, tix_store *src, const char *remote)
 	TIX_REQUIRE(dst->algo == src->algo && remote && !strchr(remote, '/'));
 	for (size_t i = 0; i < s->commits.n; i++) {
 		mem_commit *c = &s->commits.v[i];
-		insert_commit(d, &c->oid, c->parents, c->nparents, c->pack, c->pack_len, c->message);
+		insert_commit(d, &c->oid, c->parents, c->nparents, c->pack, c->pack_len, c->message, c->sig);
 	}
 	char pfx[128];
 	tix_remote_mirror_prefix(remote, pfx, sizeof(pfx));

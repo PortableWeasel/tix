@@ -42,6 +42,19 @@ typedef struct tix_refs {
 
 void tix_refs_free(tix_refs *r);
 
+/* A public key a commit may be signed with (from an identity, architecture §14.3). BORROWS. */
+typedef struct tix_sig_key {
+	const char *kind;        /* "ssh" or "gpg" */
+	const char *fingerprint; /* ssh: "SHA256:..."; gpg: hex, spaces ignored, any case */
+	const char *pubkey;      /* ssh: "ssh-ed25519 AAAA..."; gpg: an armored public key block */
+} tix_sig_key;
+
+typedef enum tix_sig_status {
+	TIX_SIG_NONE = 0, /* not signed */
+	TIX_SIG_GOOD,     /* a valid signature by one of the given keys */
+	TIX_SIG_BAD,      /* signed, but not validly by any given key (or no key of its kind) */
+} tix_sig_status;
+
 typedef struct tix_store tix_store;
 
 typedef struct tix_store_vt {
@@ -60,6 +73,8 @@ typedef struct tix_store_vt {
 	tix_status (*remote_push)(tix_store *s, const char *remote, const char *const *refs, size_t n,
 				  tix_error *err);
 	void (*refresh)(tix_store *s);
+	tix_status (*commit_verify)(tix_store *s, const tix_oid *oid, const tix_sig_key *keys, size_t nkeys,
+				    tix_sig_status *out, size_t *which, tix_error *err);
 	void (*destroy)(tix_store *s);
 } tix_store_vt;
 
@@ -113,6 +128,22 @@ static inline tix_status tix_store_commit_read(tix_store *s, const tix_oid *oid,
 {
 	TIX_REQUIRE(s && oid && out);
 	return s->vt->commit_read(s, oid, out, err);
+}
+
+/*
+ * Checks the commit's signature against keys (architecture §14.3). *out is NONE for an
+ * unsigned commit, GOOD when the signature verifies with keys[*which], BAD otherwise
+ * (including a signature kind none of the keys has). Whether commits get signed when
+ * written is the adapter's configuration (store_libgit: git config tix.sign).
+ * RETURNS TIX_ERR_NOT_FOUND for a missing commit, TIX_ERR_IO when the verifier can't run.
+ */
+static inline tix_status tix_store_commit_verify(tix_store *s, const tix_oid *oid, const tix_sig_key *keys,
+						 size_t nkeys, tix_sig_status *out, size_t *which, tix_error *err)
+{
+	TIX_REQUIRE(s && oid && (keys || !nkeys) && out && which);
+	*out = TIX_SIG_NONE;
+	*which = SIZE_MAX;
+	return s->vt->commit_verify(s, oid, keys, nkeys, out, which, err);
 }
 
 /* RETURNS TIX_ERR_NOT_FOUND if the ref doesn't exist, TIX_ERR_INVALID for a bad name. */

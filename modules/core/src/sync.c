@@ -56,6 +56,59 @@ static tix_status reaches(tix_repo *r, const tix_oid *head, const tix_oid *targe
 	return TIX_OK;
 }
 
+/*
+ * Signature policy (§14.3) for the commits of rh's history that the local ref doesn't have.
+ * RETURNS false when the ref must be rejected (REQUIRE); counts and notes either way.
+ */
+static bool signatures_ok(tix_repo *r, tix_entity_type t, const tix_oid *id, const char *local,
+			  const tix_ref *incoming, tix_sync_report *rep, tix_status *st, tix_error *err)
+{
+	if (r->verify == TIX_VERIFY_OFF)
+		return true;
+	core_dag remote, mine = {0};
+	core_oidset have = {0};
+	tix_oid lh;
+	tix_entity *self = NULL;
+	size_t unsig = 0, bad = 0;
+	if ((*st = core_dag_load(r, &incoming->oid, &remote, err)))
+		return false;
+	if (!tix_store_ref_read(r->store, local, &lh, NULL) && !core_dag_load(r, &lh, &mine, NULL))
+		for (size_t i = 0; i < mine.commits.n; i++)
+			core_oidset_add(&have, &mine.commits.v[i].oid);
+	if (t == TIX_ENTITY_IDENTITY && core_load_at(r, t, &incoming->oid, &self, NULL))
+		self = NULL;
+	core_keys cache = {0};
+	for (size_t i = 0; i < remote.commits.n && !*st; i++) {
+		if (core_oidset_has(&have, &remote.commits.v[i].oid))
+			continue;
+		tix_sig_status s;
+		if ((*st = core_verify_commit(r, t, id, &remote.commits.v[i], self, &cache, &s, err)))
+			break;
+		unsig += s == TIX_SIG_NONE;
+		bad += s == TIX_SIG_BAD;
+	}
+	core_keys_free(&cache);
+	tix_entity_free(self);
+	core_oidset_free(&have);
+	core_dag_free(&remote);
+	core_dag_free(&mine);
+	if (*st)
+		return false;
+	rep->unsigned_commits += unsig;
+	rep->bad_signatures += bad;
+	if (!unsig && !bad)
+		return true;
+	tix_error why = TIX_ERROR_INIT;
+	tix_error_set(&why, TIX_ERR_INVALID, "%zu unsigned and %zu badly signed new commit(s)", unsig, bad);
+	if (r->verify == TIX_VERIFY_REQUIRE) {
+		problem(rep, "rejected", incoming->name, &why);
+		rep->rejected++;
+		return false;
+	}
+	problem(rep, "warning:", incoming->name, &why);
+	return true;
+}
+
 /* Integrates remote head `rh` for entity (t, id) into the local ref. */
 static tix_status integrate(tix_repo *r, tix_entity_type t, const tix_oid *id, const char *local,
 			    const tix_oid *rh, tix_sync_report *rep, tix_error *err)
@@ -150,7 +203,9 @@ tix_status tix_pull(tix_repo *r, const char *remote, tix_sync_report *rep, tix_e
 	if ((st = tix_store_ref_list(r->store, prefix, &refs, err)))
 		return st;
 	size_t plen = strlen(prefix);
-	/* order doesn't matter: references between entities are resolved at read time */
+	/* Identities first: verifying any other commit needs its author's current keys. Beyond
+	 * that, order doesn't matter (references between entities are resolved at read time). */
+	for (int pass = 0; pass < 2 && !st; pass++)
 	for (size_t i = 0; i < refs.n && !st; i++) {
 		const char *rest = refs.v[i].name + plen;
 		tix_entity_type t;
@@ -158,7 +213,12 @@ tix_status tix_pull(tix_repo *r, const char *remote, tix_sync_report *rep, tix_e
 		tix_entity *e = NULL;
 		tix_error why = TIX_ERROR_INIT;
 		char local[160];
-		if (!parse_entity_ref(r, rest, &t, &id)) {
+		bool known = parse_entity_ref(r, rest, &t, &id);
+		if (pass == 0 && (!known || t != TIX_ENTITY_IDENTITY))
+			continue;
+		if (pass == 1 && known && t == TIX_ENTITY_IDENTITY)
+			continue;
+		if (!known) {
 			rep->skipped++;
 			continue;
 		}
@@ -176,6 +236,8 @@ tix_status tix_pull(tix_repo *r, const char *remote, tix_sync_report *rep, tix_e
 			continue;
 		}
 		core_ref_of(t, &id, local, sizeof(local));
+		if (!signatures_ok(r, t, &id, local, &refs.v[i], rep, &st, err))
+			continue;
 		st = integrate(r, t, &id, local, &refs.v[i].oid, rep, err);
 	}
 	tix_refs_free(&refs);
