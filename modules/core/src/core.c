@@ -394,6 +394,33 @@ static char **create_nonce(tix_op *op)
 static tix_status precheck(tix_repo *r, tix_entity_type t, const tix_entity *e, const tix_op *ops, size_t n,
 			   tix_error *err);
 
+/*
+ * Older readers don't know set-state, so each one is written right after a
+ * set-status of the same phase (§15.1). RETURNS a new array of shallow copies
+ * (free only the array) with the missing set-status ops added, or NULL when
+ * nothing was missing.
+ */
+static tix_op *with_status_ops(const tix_op *ops, size_t n, size_t *nout)
+{
+	size_t missing = 0;
+	for (size_t i = 0; i < n; i++)
+		if (ops[i].kind == TIX_OP_SET_STATE &&
+		    !(i && ops[i - 1].kind == TIX_OP_SET_STATUS && ops[i - 1].u.set_status.status == ops[i].u.set_state.status))
+			missing++;
+	if (!missing)
+		return NULL;
+	tix_op *v = tix_xcalloc(n + missing, sizeof(*v));
+	size_t k = 0;
+	for (size_t i = 0; i < n; i++) {
+		if (ops[i].kind == TIX_OP_SET_STATE &&
+		    !(i && ops[i - 1].kind == TIX_OP_SET_STATUS && ops[i - 1].u.set_status.status == ops[i].u.set_state.status))
+			v[k++] = tix_op_set_status(ops[i].u.set_state.status); /* owns nothing */
+		v[k++] = ops[i];
+	}
+	*nout = k;
+	return v;
+}
+
 tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t n, tix_oid *out, tix_error *err)
 {
 	TIX_REQUIRE(ops && n >= 1 && out);
@@ -416,7 +443,10 @@ tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t
 
 	uint64_t lamport;
 	char ref[128];
-	tix_status st = core_write_pack(r, t, author, NULL, 0, ops, n, out, &lamport, err);
+	size_t nx = n;
+	tix_op *x = with_status_ops(ops, n, &nx);
+	tix_status st = core_write_pack(r, t, author, NULL, 0, x ? x : ops, nx, out, &lamport, err);
+	free(x);
 	if (st)
 		return st;
 	core_ref_of(t, out, ref, sizeof(ref));
@@ -454,7 +484,11 @@ tix_status tix_entity_apply(tix_repo *r, tix_entity_type t, const tix_oid *id, c
 		tix_entity_free(e);
 		if (st)
 			return st;
-		if ((st = core_write_pack(r, t, &r->identity, &head, 1, ops, n, &commit, &lamport, err)))
+		size_t nx = n;
+		tix_op *x = with_status_ops(ops, n, &nx);
+		st = core_write_pack(r, t, &r->identity, &head, 1, x ? x : ops, nx, &commit, &lamport, err);
+		free(x);
+		if (st)
 			return st;
 		st = tix_store_ref_cas(r->store, ref, &head, &commit, err);
 		if (!st) {
@@ -589,9 +623,126 @@ static tix_status precheck_ticket(tix_repo *r, const tix_entity *e, const tix_op
 			if (tix_oid_eq(&e->u.ticket.plan.assignments[k].resource, &op->u.unref.target))
 				return TIX_OK;
 		return tix_error_set(err, TIX_ERR_NOT_FOUND, "%s is not assigned", short_hex(&op->u.unref.target, a));
+	case TIX_OP_STAGE_REMOVE:
+		if (e && tix_stage_find(e, op->u.stage_remove.name))
+			return TIX_OK;
+		return tix_error_set(err, TIX_ERR_NOT_FOUND, "no stage '%s' on this ticket", op->u.stage_remove.name);
 	default:
 		return TIX_OK;
 	}
+}
+
+const tix_stage_def *tix_stage_find(const tix_entity *owner, const char *stage)
+{
+	if (!owner || owner->type != TIX_ENTITY_TICKET || !stage)
+		return NULL;
+	for (size_t i = 0; i < owner->u.ticket.nstages; i++)
+		if (!strcmp(owner->u.ticket.stages[i].name, stage))
+			return &owner->u.ticket.stages[i];
+	return NULL;
+}
+
+tix_status tix_ticket_stages(tix_repo *r, const tix_oid *id, const tix_oid *parent, tix_entity **owner,
+			     tix_error *err)
+{
+	TIX_REQUIRE(owner && (id || parent));
+	*owner = NULL;
+	tix_oid cur;
+	bool have = false;
+	if (parent) {
+		have = !tix_oid_is_null(parent);
+		if (have)
+			cur = *parent;
+	} else {
+		cur = *id;
+		have = true;
+	}
+	/* a parent chain longer than the number of tickets is a cycle (read-time rule §4.5) */
+	for (size_t depth = 0; have && depth < 100000; depth++) {
+		tix_entity *e;
+		tix_status st = tix_entity_load(r, TIX_ENTITY_TICKET, &cur, &e, err);
+		if (st == TIX_ERR_NOT_FOUND)
+			return TIX_OK; /* unresolved parent: no list known */
+		if (st)
+			return st;
+		if (e->u.ticket.nstages) {
+			*owner = e;
+			return TIX_OK;
+		}
+		have = !tix_oid_is_null(&e->u.ticket.plan.parent);
+		cur = e->u.ticket.plan.parent;
+		tix_entity_free(e);
+	}
+	return TIX_OK;
+}
+
+/* A set-state must name a stage on the effective list (§15.1). The batch's own
+ * stage-add/remove ops and set-parent count as already applied. */
+static tix_status precheck_states(tix_repo *r, const tix_entity *e, const tix_op *ops, size_t n, tix_error *err)
+{
+	bool any = false, list_ops = false, moved = false;
+	tix_oid parent;
+	memset(&parent, 0, sizeof(parent));
+	if (e)
+		parent = e->u.ticket.plan.parent;
+	for (size_t i = 0; i < n; i++) {
+		any |= ops[i].kind == TIX_OP_SET_STATE && ops[i].u.set_state.stage;
+		list_ops |= ops[i].kind == TIX_OP_STAGE_ADD || ops[i].kind == TIX_OP_STAGE_REMOVE;
+		if (ops[i].kind == TIX_OP_SET_FIELD && ops[i].u.set.field == TIX_F_PARENT) {
+			moved = true;
+			parent = ops[i].u.set.v.kind == TIX_V_ID ? ops[i].u.set.v.id : (tix_oid){0};
+		}
+	}
+	if (!any)
+		return TIX_OK;
+	/* the ticket's own list, as the batch leaves it */
+	TIX_VEC(tix_stage_def) own = {0};
+	for (size_t i = 0; e && i < e->u.ticket.nstages; i++)
+		TIX_VEC_PUSH(&own, e->u.ticket.stages[i]);
+	for (size_t i = 0; list_ops && i < n; i++) {
+		const char *name = ops[i].kind == TIX_OP_STAGE_ADD	   ? ops[i].u.stage_add.name
+				   : ops[i].kind == TIX_OP_STAGE_REMOVE ? ops[i].u.stage_remove.name
+									: NULL;
+		if (!name)
+			continue;
+		for (size_t k = 0; k < own.n; k++)
+			if (!strcmp(own.v[k].name, name)) {
+				own.v[k] = own.v[--own.n];
+				break;
+			}
+		if (ops[i].kind == TIX_OP_STAGE_ADD) {
+			tix_stage_def d = {ops[i].u.stage_add.name, ops[i].u.stage_add.phase, ops[i].u.stage_add.human,
+					   ops[i].u.stage_add.rank};
+			TIX_VEC_PUSH(&own, d);
+		}
+	}
+	tix_entity *owner = NULL;
+	tix_status st = TIX_OK;
+	if (!own.n && (moved || !e || !tix_oid_is_null(&parent)))
+		st = tix_ticket_stages(r, NULL, &parent, &owner, err);
+	for (size_t i = 0; i < n && !st; i++) {
+		const tix_op *op = &ops[i];
+		if (op->kind != TIX_OP_SET_STATE || !op->u.set_state.stage)
+			continue;
+		const tix_stage_def *d = NULL;
+		bool have_list = own.n || owner;
+		for (size_t k = 0; k < own.n && !d; k++)
+			if (!strcmp(own.v[k].name, op->u.set_state.stage))
+				d = &own.v[k];
+		if (!own.n)
+			d = tix_stage_find(owner, op->u.set_state.stage);
+		if (!have_list)
+			continue;
+		if (!d)
+			st = tix_error_set(err, TIX_ERR_INVALID, "'%s' is not on this project's stage list (see `tix stage ls`)",
+					   op->u.set_state.stage);
+		else if (d->phase != op->u.set_state.status)
+			st = tix_error_set(err, TIX_ERR_INVALID, "stage '%s' belongs to %s, not %s", d->name,
+					   tix_ticket_status_name(d->phase), tix_ticket_status_name(op->u.set_state.status));
+	}
+	tix_entity_free(owner);
+	free(own.v);
+	return st;
 }
 
 /* Rules that model would silently ignore get a clear error up front instead.
@@ -600,7 +751,7 @@ static tix_status precheck(tix_repo *r, tix_entity_type t, const tix_entity *e, 
 			   tix_error *err)
 {
 	tix_entity_list all = {0};
-	tix_status st = TIX_OK;
+	tix_status st = t == TIX_ENTITY_TICKET ? precheck_states(r, e, ops, n, err) : TIX_OK;
 	for (size_t i = 0; i < n && !st; i++) {
 		const tix_op *op = &ops[i];
 		if (t == TIX_ENTITY_TICKET) {
@@ -750,6 +901,8 @@ static bool facets_match(const tix_ticket_query *q, const core_facets *f, const 
 			return false;
 	}
 	if (q->status_mask && !(q->status_mask & (1u << f->status)))
+		return false;
+	if (q->stage && (!f->stage || strcmp(q->stage, f->stage)))
 		return false;
 	if (q->label && !tix_strs_contains(&f->labels, q->label))
 		return false;

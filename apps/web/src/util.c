@@ -69,6 +69,47 @@ void h_status(html *h, tix_ticket_status s)
 	HL(h, "</span>");
 }
 
+void h_state(html *h, tix_ticket_status s, const char *stage)
+{
+	char st[TIX_STATE_STR];
+	HL(h, "<span class=\"status s-");
+	h_text(h, tix_ticket_status_name(s));
+	HL(h, "\">");
+	h_text(h, tix_state_str(s, stage, st));
+	HL(h, "</span>");
+}
+
+static void state_option(html *h, const char *v, const char *cur, bool *seen)
+{
+	HL(h, "<option");
+	if (!strcmp(v, cur)) {
+		HL(h, " selected");
+		*seen = true;
+	}
+	HL(h, ">");
+	h_text(h, v);
+	HL(h, "</option>");
+}
+
+void h_state_options(web_ctx *x, const tix_oid *id, const tix_oid *parent, const char *cur)
+{
+	html *h = &x->h;
+	tix_entity *owner = NULL;
+	bool seen = false;
+	char st[TIX_STATE_STR];
+	if (id || parent)
+		(void)tix_ticket_stages(x->app->cfg.repo, id, id ? NULL : parent, &owner, NULL);
+	for (int s = 0; s <= TIX_TICKET_CANCELLED; s++) {
+		state_option(h, tix_ticket_status_name((tix_ticket_status)s), cur, &seen);
+		for (size_t k = 0; owner && k < owner->u.ticket.nstages; k++)
+			if ((int)owner->u.ticket.stages[k].phase == s)
+				state_option(h, tix_state_str((tix_ticket_status)s, owner->u.ticket.stages[k].name, st), cur, &seen);
+	}
+	if (!seen && *cur)
+		state_option(h, cur, cur, &seen); /* an unlisted stage stays selectable */
+	tix_entity_free(owner);
+}
+
 const tix_entity *list_find(const tix_entity_list *l, const tix_oid *id)
 {
 	for (size_t i = 0; l && i < l->n; i++)

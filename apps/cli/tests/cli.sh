@@ -271,6 +271,39 @@ expect 1 "$TIX" cal edit "$cal" --clear 2026-12-01; has "no such exception"
 git fsck --strict --no-dangling --no-progress >/dev/null 2>&1 || fail "plan repo fsck"
 unset TIX_TODAY
 
+# ---- workflow stages (§15.1): phase/stage, stage lists inherited down the WBS ---------
+cd "$T/a"
+expect 0 "$TIX" new -t "Workflow root"; wr=$(sed -n 's/^Created ticket //p' <<<"$out")
+expect 0 "$TIX" stage ls "$wr"; has "no stage list applies"
+expect 0 "$TIX" stage add "$wr" draft --phase open --human
+expect 0 "$TIX" stage add "$wr" ready --phase open
+expect 0 "$TIX" stage add "$wr" review --phase in-progress --rank 30
+expect 2 "$TIX" stage add "$wr" Bad --phase open; has "stage names are"
+expect 2 "$TIX" stage add "$wr" x; has "usage: tix stage add"
+expect 2 "$TIX" stage add "$wr" x --phase later; has "unknown phase"
+expect 0 "$TIX" stage ls "$wr"; has "open/draft"; has "human   10"; has "open/ready"; has "20"; has "in-progress/review"
+expect 0 "$TIX" stage ls; has "$wr  Workflow root  (3 stages)"
+expect 0 "$TIX" new -t "Stage child" --parent "$wr" --status open/draft; wc=$(sed -n 's/^Created ticket //p' <<<"$out")
+expect 1 "$TIX" new -t "Bad stage" --parent "$wr" --status open/nope; has "not on this project's stage list"
+expect 0 "$TIX" stage ls "$wc"; has "stages from ${wr} Workflow root"
+expect 0 "$TIX" edit "$wc" --status open/ready
+expect 1 "$TIX" edit "$wc" --status in-progress/ready; has "stage 'ready' belongs to open, not in-progress"
+expect 2 "$TIX" edit "$wc" --status open/Ready; has "unknown status"
+expect 0 "$TIX" show "$wc"; has "status:   open/ready"
+expect 0 "$TIX" show "$wr"; has "stages:   open/draft*, open/ready, in-progress/review"
+expect 0 "$TIX" ls --status open/ready; has "$wc  open/ready"; hasnt "$wr"
+expect 0 "$TIX" ls --status open; has "$wc"; has "$wr"
+expect 2 "$TIX" ls --status open/ready --status open/draft; has "only one stage"
+wid=$("$TIX" show "$wc" | sed -n 's/^id: *//p')
+out=$(git show "refs/tix/tickets/$wid:ops.ndjson")   # older readers still see the phase
+[[ $out == *'{"op":"set-status","status":"open"}'$'\n''{"op":"set-state","status":"open","stage":"ready"}'* ]] ||
+	fail "set-status must come right before set-state: $out"
+expect 0 "$TIX" edit "$wc" --status done; expect 0 "$TIX" show "$wc"; has "status:   done"; hasnt "done/"
+expect 1 "$TIX" stage rm "$wc" ready; has "no stage 'ready' on this ticket"
+expect 0 "$TIX" stage rm "$wr" ready
+expect 0 "$TIX" stage ls "$wr"; hasnt "open/ready"
+expect 0 "$TIX" new -t "Free stage" --status blocked/whatever; has "Created ticket"   # no list: any stage
+
 # ---- index cache (M5) ------------------------------------------------------------
 cd "$T/a"
 expect 0 "$TIX" index clear; has "index: 0 cached"

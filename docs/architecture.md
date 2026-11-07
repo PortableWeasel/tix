@@ -680,7 +680,7 @@ enhancement only: every request it makes is one a form or link can also make, an
 it does is needed to use tix.
 
 - **Search as you type**: `GET /api/tickets?q=&limit=&status=` returns
-  `{"tickets":[{"id","short","title","status"}],"more":bool}` from the canonical JSON
+  `{"tickets":[{"id","short","title","status","stage"}],"more":bool}` from the canonical JSON
   writer (same matching as the list; active first, then WBS order; limit ≤ 50). The header
   search box and the `parent`, `pred` and `under` fields become ARIA comboboxes. Results
   are placed with `textContent` only. Without JS they are the search form and text
@@ -1098,7 +1098,7 @@ Recorded in tix under `tix: agent workflow`. Nothing here changes the planning e
 every new piece is either orthogonal to it or sits below the five phases it already
 understands.
 
-### 15.1 Status = phase / stage
+### 15.1 Status = phase / stage ✅
 
 `status` keeps its five fixed **phases** (`open`, `in-progress`, `blocked`, `done`,
 `cancelled`). Each may carry an optional free-form **stage**, written `phase/stage`
@@ -1116,7 +1116,9 @@ stage, and `--status open/ready` matches one stage.
 - **Stage names**: `[a-z][a-z0-9-]{0,31}`.
 - **The project's stage list** is a field on a WBS root, inherited by its subtree (like
   `calendar`): `stages`, an OR-map `name → {phase, human: bool, rank}`. The CLI is
-  `tix stage ls|add|rm ROOT NAME [--phase P] [--human] [--rank …]`.
+  `tix stage ls [ID]` (the list that applies to a ticket, and where it comes from; without
+  an id, every ticket that has one), `tix stage add ID NAME --phase P [--human] [--rank N]`
+  (rank defaults to 10 past the phase's last stage) and `tix stage rm ID NAME`.
   - `human` marks a stage that waits for a person. The inbox (§15.6) and the guard (§15.5)
     use it.
   - Core refuses a stage that isn't on the effective list, or that is listed under another
@@ -1139,7 +1141,17 @@ stage, and `--status open/ready` matches one stage.
     autonomous mode.
   - `blocked/aborted` is unsatisfied, like every `blocked`.
 
-- **Index**: an extra `stage` column. Bump `TIX_ENTITY_CODEC_VERSION`.
+- **Core** adds the `set-status` line itself when a caller writes a lone `set-state`, so
+  frontends only push `set-state` (or `set-status` for a bare phase). The batch's own
+  `set-parent` and stage-list ops count when checking a stage, so `tix new --parent P
+  --status open/ready` checks against P's list.
+- **Index**: the stage is part of the cached ticket summary that lists filter on
+  (`tix_ticket_query.stage`); `TIX_ENTITY_CODEC_VERSION` is 4.
+- **Frontends**: CLI `--status PHASE/STAGE` on `new`, `edit` and `ls` (one stage per
+  `ls`), `show` prints the state and the ticket's own list; the web UI's status selects
+  offer each phase followed by its listed stages (an unlisted current stage stays
+  selectable), pages show `phase/stage`, and `/api/tickets` and `export --format json`
+  carry `"stage"`. The TUI shows it; its `s` key still sets bare phases.
 
 ### 15.2 Identity kind
 

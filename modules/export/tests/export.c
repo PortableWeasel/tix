@@ -203,7 +203,7 @@ int main(void)
 				"\"units\":50,\"effort\":8}]"));
 	TK_CHECK(strstr(b.data, "\"load\":[{\"resource\":\"0900000000000000000000000000000000000000\",\"name\":\"Ada\","
 				"\"capacity\":100,\"peak\":50,\"over_days\":0,\"units\":[50,50],\"working\":[true,true]}]"));
-	TK_CHECK(strstr(b.data, "\"title\":\"Someday\",\"kind\":\"task\",\"status\":\"open\",\"scheduled\":false,\"start\":null"));
+	TK_CHECK(strstr(b.data, "\"title\":\"Someday\",\"kind\":\"task\",\"status\":\"open\",\"stage\":null,\"scheduled\":false,\"start\":null"));
 	TK_CHECK(tix_utf8_valid(b.data, b.len));
 
 	/* MS Project XML */

@@ -170,7 +170,8 @@ static void build_detail(tui *t, int width)
 	char hex[TIX_OID_MAX_HEX + 1], buf[300], d1[TIX_DATE_STR], d2[TIX_DATE_STR];
 	add_text(t, T_BOLD, k->title, width, "");
 	add_line(t, T_NORMAL, "id:       %s", tix_oid_hex(&e->id, hex));
-	add_line(t, T_NORMAL, "status:   %s", tix_ticket_status_name(k->status));
+	char st[TIX_STATE_STR];
+	add_line(t, T_NORMAL, "status:   %s", tix_state_str(k->status, k->stage, st));
 	if (k->labels.n) {
 		tix_buf l = TIX_BUF_INIT;
 		for (size_t i = 0; i < k->labels.n; i++)
@@ -315,10 +316,10 @@ static void draw_list(tui *t, int rows, int cols)
 		int row = 2 + (int)(i - t->top);
 		const tix_ticket *k = &t->list.v[i]->u.ticket;
 		tattr a = i == t->sel ? T_SELECT : T_NORMAL;
-		char s[8], line[64];
+		char s[8], line[96], st[TIX_STATE_STR];
 		if (i == t->sel)
 			term_fill(row, 0, cols, T_SELECT, ' ');
-		snprintf(line, sizeof(line), "%s  %-11s  ", short_id(&t->list.v[i]->id, s), tix_ticket_status_name(k->status));
+		snprintf(line, sizeof(line), "%s  %-11s  ", short_id(&t->list.v[i]->id, s), tix_state_str(k->status, k->stage, st));
 		int x = term_text(row, 0, cols, a, line);
 		x += term_text(row, x, cols - x, i == t->sel ? T_SELECT : T_BOLD, k->title);
 		if (k->labels.n) {

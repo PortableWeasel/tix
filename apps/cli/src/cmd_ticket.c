@@ -46,6 +46,7 @@ int cmd_new(cli *c, int argc, char **argv)
 	tix_input pl = {0};
 	bool have_title = false, have_body = false, have_status = false;
 	tix_ticket_status status = TIX_TICKET_OPEN;
+	char stage[TIX_STAGE_MAX + 1] = "";
 	int rc = EXIT_OK;
 	for (int i = 1; i < argc && rc == EXIT_OK; i++) {
 		int prc = cli_input_opt(c, TIX_ENTITY_TICKET, false, argc, argv, &i, &pl);
@@ -60,7 +61,7 @@ int cmd_new(cli *c, int argc, char **argv)
 		} else if (!strcmp(argv[i], "-l") && need_value(i, argc, argv[i])) {
 			tix_strs_add(&labels, argv[++i]);
 		} else if (!strcmp(argv[i], "--status") && need_value(i, argc, argv[i])) {
-			if (!tix_ticket_status_parse(argv[++i], &status))
+			if (!tix_state_parse(argv[++i], &status, stage))
 				rc = cli_usage("unknown status '%s'", argv[i]);
 			have_status = true;
 		} else {
@@ -97,11 +98,12 @@ int cmd_new(cli *c, int argc, char **argv)
 		TIX_VEC_PUSH(&ops, tix_op_ticket_create(NULL, tix_buf_cstr(&title), tix_buf_cstr(&body), &labels));
 		for (size_t k = 0; k < pl.ops.n; k++)
 			TIX_VEC_PUSH(&ops, pl.ops.v[k]); /* borrowed: freed with pl */
-		if (have_status && status != TIX_TICKET_OPEN)
-			TIX_VEC_PUSH(&ops, tix_op_set_status(status));
+		bool state_op = have_status && (status != TIX_TICKET_OPEN || stage[0]);
+		if (state_op)
+			TIX_VEC_PUSH(&ops, stage[0] ? tix_op_set_state(status, stage) : tix_op_set_status(status));
 		tix_status st = tix_entity_create(c->repo, TIX_ENTITY_TICKET, ops.v, ops.n, &id, &c->err);
 		tix_op_free(&ops.v[0]);
-		if (have_status && status != TIX_TICKET_OPEN)
+		if (state_op)
 			tix_op_free(&ops.v[ops.n - 1]);
 		free(ops.v);
 		if (st)
@@ -132,13 +134,21 @@ int cmd_ls(cli *c, int argc, char **argv)
 	tix_ticket_query q = {.status_mask = TIX_STATUS_MASK_ACTIVE, .sort = TIX_SORT_STATUS};
 	tix_oid author, assignee, under;
 	bool all = false, explicit_status = false;
+	char stage[TIX_STAGE_MAX + 1] = "";
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--all")) {
 			all = true;
 		} else if (!strcmp(argv[i], "--status") && need_value(i, argc, argv[i])) {
 			tix_ticket_status s;
-			if (!tix_ticket_status_parse(argv[++i], &s))
+			char st1[TIX_STAGE_MAX + 1];
+			if (!tix_state_parse(argv[++i], &s, st1))
 				return cli_usage("unknown status '%s'", argv[i]);
+			if (st1[0]) {
+				if (stage[0] && strcmp(stage, st1))
+					return cli_usage("ls: only one stage at a time (--status PHASE/STAGE)");
+				memcpy(stage, st1, sizeof(stage));
+				q.stage = stage;
+			}
 			q.status_mask = (explicit_status ? q.status_mask : 0) | (1u << s);
 			explicit_status = true;
 		} else if (!strcmp(argv[i], "--label") && need_value(i, argc, argv[i])) {
@@ -177,10 +187,16 @@ int cmd_ls(cli *c, int argc, char **argv)
 	tix_status st = tix_ticket_list(c->repo, &q, &l, &c->err);
 	if (st)
 		return cli_fail(c, st);
+	int w = 11;
+	char state[TIX_STATE_STR];
+	for (size_t i = 0; i < l.n; i++) {
+		int n = (int)strlen(tix_state_str(l.v[i]->u.ticket.status, l.v[i]->u.ticket.stage, state));
+		w = n > w ? n : w;
+	}
 	for (size_t i = 0; i < l.n; i++) {
 		const tix_ticket *t = &l.v[i]->u.ticket;
 		char s[16];
-		printf("%s  %-11s  %s", cli_short(&l.v[i]->id, s), tix_ticket_status_name(t->status), t->title);
+		printf("%s  %-*s  %s", cli_short(&l.v[i]->id, s), w, tix_state_str(t->status, t->stage, state), t->title);
 		print_labels(&t->labels);
 		putchar('\n');
 	}
@@ -288,10 +304,10 @@ int cmd_show(cli *c, int argc, char **argv)
 	if (rc)
 		return rc;
 	const tix_ticket *t = &e->u.ticket;
-	char hex[TIX_OID_MAX_HEX + 1], who[300], when[32], cid[32];
+	char hex[TIX_OID_MAX_HEX + 1], who[300], when[32], cid[32], state[TIX_STATE_STR];
 	printf("%s\n", t->title);
 	printf("id:       %s\n", tix_oid_hex(&e->id, hex));
-	printf("status:   %s\n", tix_ticket_status_name(t->status));
+	printf("status:   %s\n", tix_state_str(t->status, t->stage, state));
 	printf("author:   %s\n", cli_who(c, &t->author, who, sizeof(who)));
 	printf("created:  %s\n", cli_time(e->created, when));
 	printf("updated:  %s\n", cli_time(e->updated, when));
@@ -302,6 +318,13 @@ int cmd_show(cli *c, int argc, char **argv)
 		putchar('\n');
 	}
 	show_plan(c, t);
+	if (t->nstages) {
+		fputs("stages:   ", stdout);
+		for (size_t i = 0; i < t->nstages; i++)
+			printf("%s%s%s", i ? ", " : "", tix_state_str(t->stages[i].phase, t->stages[i].name, state),
+			       t->stages[i].human ? "*" : "");
+		fputs("   (* waits for a person)\n", stdout);
+	}
 	if (t->body[0]) {
 		putchar('\n');
 		indent(t->body);
@@ -408,10 +431,11 @@ int cmd_edit(cli *c, int argc, char **argv)
 			TIX_VEC_PUSH(&ops, tix_op_text(TIX_OP_SET_BODY, argv[++i]));
 		} else if (!strcmp(a, "--status") && need_value(i, argc, a)) {
 			tix_ticket_status s;
-			if (!tix_ticket_status_parse(argv[++i], &s))
+			char stage[TIX_STAGE_MAX + 1];
+			if (!tix_state_parse(argv[++i], &s, stage))
 				rc = cli_usage("unknown status '%s'", argv[i]);
 			else
-				TIX_VEC_PUSH(&ops, tix_op_set_status(s));
+				TIX_VEC_PUSH(&ops, stage[0] ? tix_op_set_state(s, stage) : tix_op_set_status(s));
 		} else if (a[0] == '+' && a[1]) {
 			tix_strs_add(&add, a + 1);
 		} else if (a[0] == '-' && a[1] && a[1] != '-') {

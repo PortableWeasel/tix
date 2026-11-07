@@ -42,6 +42,9 @@
 #define TIX_COST_MAX (1ll << 50) /* minor currency units */
 #define TIX_CURRENCY_MAX 8      /* letters */
 #define TIX_EXTERNAL_MAX 512    /* "forgejo:host/owner/repo#12" */
+#define TIX_STAGE_MAX 32        /* stage names: [a-z][a-z0-9-]{0,31} (architecture §15.1) */
+#define TIX_STAGE_RANK_MAX 1000000
+#define TIX_STAGES_MAX 64       /* stage definitions per ticket */
 
 /* ---- entity types -------------------------------------------------------- */
 typedef enum tix_entity_type {
@@ -82,6 +85,18 @@ typedef enum tix_ticket_status {
 
 const char *tix_ticket_status_name(tix_ticket_status s);
 bool tix_ticket_status_parse(const char *s, tix_ticket_status *out);
+
+/* Stage names (architecture §15.1): [a-z][a-z0-9-]{0,31}. */
+bool tix_stage_valid(const char *s);
+/*
+ * Parses "phase" or "phase/stage" into *status and stage (NUL-terminated,
+ * empty = no stage). REQUIRES stage has TIX_STAGE_MAX + 1 bytes.
+ * RETURNS false on an unknown phase or a malformed stage.
+ */
+bool tix_state_parse(const char *s, tix_ticket_status *status, char *stage);
+/* "phase" or "phase/stage" (stage NULL or "" = none). REQUIRES out has TIX_STATE_STR bytes. RETURNS out. */
+#define TIX_STATE_STR (16 + 1 + TIX_STAGE_MAX + 1)
+const char *tix_state_str(tix_ticket_status status, const char *stage, char *out);
 
 typedef enum tix_dep_kind { TIX_DEP_FS = 0, TIX_DEP_SS, TIX_DEP_FF, TIX_DEP_SF } tix_dep_kind;
 const char *tix_dep_kind_name(tix_dep_kind k); /* "FS" ... */
@@ -197,6 +212,10 @@ typedef enum tix_op_kind {
 	TIX_OP_BASELINE_CREATE,   /* "create": nonce, name, taken, root|null */
 	TIX_OP_BASELINE_SET_NAME, /* "set-name": name */
 	TIX_OP_BASELINE_TASK,     /* "task": ticket, start, finish, duration, effort, cost, currency (null = unknown) */
+	/* ticket: agent workflow (§15) */
+	TIX_OP_SET_STATE,         /* "set-state": status, stage|null (one register with set-status) */
+	TIX_OP_STAGE_ADD,         /* "stage-add": name, phase, human, rank */
+	TIX_OP_STAGE_REMOVE,      /* "stage-remove": name */
 } tix_op_kind;
 
 /* "task" op of a baseline: one planned task as it was when the snapshot was taken. */
@@ -221,6 +240,9 @@ typedef struct tix_op {
 		struct { char *nonce, *name, *email; } identity_create;
 		struct { char *value; } text;   /* set-title/body/name/email, comment */
 		struct { tix_ticket_status status; } set_status;
+		struct { tix_ticket_status status; char *stage; /* NULL = none */ } set_state;
+		struct { char *name; tix_ticket_status phase; bool human; int32_t rank; } stage_add;
+		struct { char *name; } stage_remove;
 		struct { tix_strs add, remove; } label;
 		struct { tix_opid target; char *body; } edit_comment;
 		struct { char *kind, *fingerprint, *pubkey; } key_add;
@@ -257,6 +279,10 @@ tix_op tix_op_identity_create(const char *nonce, const char *name, const char *e
 /* kind: SET_TITLE, SET_BODY, COMMENT, SET_NAME, SET_EMAIL or BASELINE_SET_NAME */
 tix_op tix_op_text(tix_op_kind kind, const char *value);
 tix_op tix_op_set_status(tix_ticket_status s);
+/* stage NULL or "" = none. */
+tix_op tix_op_set_state(tix_ticket_status s, const char *stage);
+tix_op tix_op_stage_add(const char *name, tix_ticket_status phase, bool human, int32_t rank);
+tix_op tix_op_stage_remove(const char *name);
 tix_op tix_op_label(const tix_strs *add, const tix_strs *remove);
 tix_op tix_op_edit_comment(const tix_opid *target, const char *body);
 tix_op tix_op_key_add(const char *kind, const char *fingerprint, const char *pubkey);

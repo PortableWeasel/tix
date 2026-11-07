@@ -119,8 +119,10 @@ static void value_of(const tix_entity *e, const char *f, tix_buf *b)
 			tix_buf_adds(b, t->title);
 		else if (!strcmp(f, "body"))
 			tix_buf_adds(b, t->body ? t->body : "");
-		else if (!strcmp(f, "status"))
-			tix_buf_adds(b, tix_ticket_status_name(t->status));
+		else if (!strcmp(f, "status")) {
+			char st[TIX_STATE_STR];
+			tix_buf_adds(b, tix_state_str(t->status, t->stage, st));
+		}
 		else if (!strcmp(f, "labels"))
 			for (size_t i = 0; i < t->labels.n; i++)
 				tix_buf_addf(b, "%s%s", i ? ", " : "", t->labels.v[i]);
@@ -229,6 +231,8 @@ static const char *original(fstate *fs, size_t i, tix_buf *tmp)
 	return fs->defs[i].dflt;
 }
 
+static int find_field(const fstate *fs, const char *name);
+
 /* ---- rendering --------------------------------------------------------------------------- */
 
 static void options_entities(html *h, const tix_entity_list *l, const char *sel, const char *none_label)
@@ -275,6 +279,15 @@ static void render_fields(web_ctx *x, fstate *fs, size_t from, size_t to, const 
 			HL(h, "<select name=\"");
 			h_text(h, d->name);
 			HL(h, "\">");
+			if (fs->type == TIX_ENTITY_TICKET && !strcmp(d->name, "status")) {
+				tix_oid parent;
+				int pf = find_field(fs, "parent");
+				const char *pp = pf >= 0 ? fs->prefill[pf] : NULL;
+				bool have_parent = !fs->cur && pp && tix_oid_from_hex(&parent, pp, strlen(pp));
+				h_state_options(x, fs->cur ? &fs->cur->id : NULL, have_parent ? &parent : NULL, v);
+				HL(h, "</select>");
+				break;
+			}
 			for (size_t k = 0; d->choices[k]; k++) {
 				HL(h, "<option");
 				if (!strcmp(v, d->choices[k]))
@@ -424,11 +437,12 @@ static bool collect(web_ctx *x, fstate *fs, op_vec *ops, tix_input *in, bool *an
 					TIX_VEC_PUSH(ops, tix_op_text(TIX_OP_SET_BODY, v));
 			} else if (!strcmp(d->name, "status")) {
 				tix_ticket_status s;
-				if (!tix_ticket_status_parse(v, &s)) {
+				char stage[TIX_STAGE_MAX + 1];
+				if (!tix_state_parse(v, &s, stage)) {
 					snprintf(fs->errs[i], sizeof(fs->errs[i]), "Unknown status.");
 					ok = false;
 				} else {
-					TIX_VEC_PUSH(ops, tix_op_set_status(s));
+					TIX_VEC_PUSH(ops, stage[0] ? tix_op_set_state(s, stage) : tix_op_set_status(s));
 				}
 			} else if (!strcmp(d->name, "labels") && fs->cur) {
 				tix_strs was = {0}, now = {0}, add = {0}, rm = {0};

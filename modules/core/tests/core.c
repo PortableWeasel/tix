@@ -1062,8 +1062,104 @@ static void test_sort(void)
 	tix_store_destroy(s);
 }
 
+static tix_status apply_one(tix_repo *r, const tix_oid *t, tix_op op)
+{
+	tix_status st = tix_entity_apply(r, TIX_ENTITY_TICKET, t, &op, 1, &e);
+	tix_op_free(&op);
+	return st;
+}
+
+static void test_stages(void)
+{
+	fake_env env = {1700000000, 11};
+	tix_store *s = tix_store_mem_new(TIX_HASH_SHA1);
+	tix_repo *r = open_repo(s, &env, NULL);
+	tix_oid me, root, child, other;
+	TK_OK(tix_identity_create(r, "Ada", "a@x", &me, &e), &e);
+	TK_OK(tix_repo_set_identity(r, &me, &e), &e);
+	TK_OK(tix_ticket_create(r, "Root", "", NULL, &root, &e), &e);
+	TK_OK(tix_ticket_create(r, "Loose", "", NULL, &other, &e), &e);
+	tix_op list[] = {tix_op_stage_add("draft", TIX_TICKET_OPEN, true, 10),
+			 tix_op_stage_add("ready", TIX_TICKET_OPEN, false, 40),
+			 tix_op_stage_add("review", TIX_TICKET_IN_PROGRESS, false, 20)};
+	TK_OK(tix_entity_apply(r, TIX_ENTITY_TICKET, &root, list, 3, &e), &e);
+	for (int i = 0; i < 3; i++)
+		tix_op_free(&list[i]);
+
+	/* a child created under root with a stage gets root's list (checked on create) */
+	tix_op mk[] = {tix_op_ticket_create(NULL, "Child", "", NULL), tix_op_set(TIX_F_PARENT, tix_value_id(&root)),
+		       tix_op_set_state(TIX_TICKET_OPEN, "draft")};
+	TK_OK(tix_entity_create(r, TIX_ENTITY_TICKET, mk, 3, &child, &e), &e);
+	for (int i = 0; i < 3; i++)
+		tix_op_free(&mk[i]);
+	tix_op bad[] = {tix_op_ticket_create(NULL, "Bad", "", NULL), tix_op_set(TIX_F_PARENT, tix_value_id(&root)),
+			tix_op_set_state(TIX_TICKET_OPEN, "nope")};
+	tix_oid unused;
+	TK_STATUS(tix_entity_create(r, TIX_ENTITY_TICKET, bad, 3, &unused, &e), TIX_ERR_INVALID, &e);
+	for (int i = 0; i < 3; i++)
+		tix_op_free(&bad[i]);
+
+	TK_OK(apply_one(r, &child, tix_op_set_state(TIX_TICKET_OPEN, "ready")), &e);
+	TK_STATUS(apply_one(r, &child, tix_op_set_state(TIX_TICKET_OPEN, "bogus")), TIX_ERR_INVALID, &e);
+	TK_STATUS(apply_one(r, &child, tix_op_set_state(TIX_TICKET_IN_PROGRESS, "ready")), TIX_ERR_INVALID, &e);
+	TK_CHECK(strstr(e.msg, "belongs to open") != NULL);
+	/* no list anywhere up the chain: any stage goes */
+	TK_OK(apply_one(r, &other, tix_op_set_state(TIX_TICKET_BLOCKED, "anything")), &e);
+	/* removing a stage that isn't defined there */
+	TK_STATUS(apply_one(r, &child, tix_op_stage_remove("ready")), TIX_ERR_NOT_FOUND, &e);
+
+	/* the effective list and lookups */
+	tix_entity *owner = NULL;
+	TK_OK(tix_ticket_stages(r, &child, NULL, &owner, &e), &e);
+	TK_CHECK(owner && tix_oid_eq(&owner->id, &root));
+	const tix_stage_def *d = tix_stage_find(owner, "draft");
+	TK_CHECK(d && d->human && d->phase == TIX_TICKET_OPEN);
+	TK_CHECK(!tix_stage_find(owner, "nope"));
+	tix_entity_free(owner);
+	TK_OK(tix_ticket_stages(r, &other, NULL, &owner, &e), &e);
+	TK_CHECK(owner == NULL);
+
+	/* the stored pack carries set-status right before set-state, for older readers */
+	char ref[128];
+	char hex[TIX_OID_MAX_HEX + 1];
+	snprintf(ref, sizeof(ref), "refs/tix/tickets/%s", tix_oid_hex(&child, hex));
+	tix_oid head;
+	tix_commit c;
+	TK_OK(tix_store_ref_read(s, ref, &head, &e), &e);
+	TK_OK(tix_store_commit_read(s, &head, &c, &e), &e);
+	TK_CHECK(strstr(tix_buf_cstr(&c.pack),
+			"{\"op\":\"set-status\",\"status\":\"open\"}\n{\"op\":\"set-state\",\"status\":\"open\",\"stage\":\"ready\"}\n") != NULL);
+	tix_commit_free(&c);
+
+	/* list filters on the stage */
+	expect_order(r, (tix_ticket_query){.stage = "ready"}, (tix_oid[]){child}, 1);
+	expect_order(r, (tix_ticket_query){.stage = "anything", .status_mask = 1u << TIX_TICKET_BLOCKED},
+		     (tix_oid[]){other}, 1);
+	expect_order(r, (tix_ticket_query){.stage = "draft"}, NULL, 0);
+	/* a plain set-status clears the stage */
+	TK_OK(apply_one(r, &child, tix_op_set_status(TIX_TICKET_IN_PROGRESS)), &e);
+	tix_entity *x = load_ticket(r, &child);
+	TK_CHECK(x && !x->u.ticket.stage && x->u.ticket.status == TIX_TICKET_IN_PROGRESS);
+	tix_entity_free(x);
+	expect_order(r, (tix_ticket_query){.stage = "ready"}, NULL, 0);
+
+	/* the same filter through cached summaries (a warm index) */
+	tix_index *ix = tix_index_mem_new();
+	tix_repo *rc = NULL;
+	TK_OK(tix_repo_open(&rc, &(tix_repo_config){.store = s, .env = {fake_now, fake_random, &env}, .identity = me,
+						    .index = ix}, &e), &e);
+	for (int pass = 0; pass < 2; pass++) /* first pass fills the cache, second reads it */
+		expect_order(rc, (tix_ticket_query){.stage = "anything"}, (tix_oid[]){other}, 1);
+	TK_CHECK(tix_index_mem_hits(ix) > 0);
+	tix_repo_close(rc);
+	tix_index_destroy(ix);
+	tix_repo_close(r);
+	tix_store_destroy(s);
+}
+
 int main(void)
 {
+	test_stages();
 	test_signatures();
 	test_sort();
 	test_stamp();

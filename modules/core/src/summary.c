@@ -4,7 +4,7 @@
  * returns. The encoding is core's own and opaque to the index:
  *
  *   "tixsum <codec version> 1\n" then length-prefixed fields "<len>:<bytes>":
- *   status, author hex, parent hex ("" = top level), rank ("" = unranked), title,
+ *   status, stage ("" = none), author hex, parent hex ("" = top level), rank ("" = unranked), title,
  *   created, updated, max lamport, label count, labels..., assignee count, resource hexes...
  *
  * It is a cache of validated data written by this process, but the file is on disk, so
@@ -52,6 +52,7 @@ void core_summary_encode(const tix_entity *e, tix_buf *out)
 	tix_buf_reset(out);
 	header(out);
 	field_i(out, t->status);
+	field_s(out, t->stage);
 	field_oid(out, &t->author);
 	field_oid(out, &t->plan.parent);
 	field_s(out, t->plan.rank);
@@ -143,6 +144,13 @@ bool core_summary_decode(const char *data, size_t len, tix_hash_algo algo, core_
 		return false;
 	reader r = {data + hl, data + len, true};
 	f->status = (tix_ticket_status)next_int(&r, 0, TIX_TICKET_CANCELLED);
+	f->stage = next_str(&r);
+	if (f->stage && !*f->stage) {
+		free(f->stage);
+		f->stage = NULL;
+	} else if (f->stage && !tix_stage_valid(f->stage)) {
+		r.ok = false;
+	}
 	next_oid(&r, algo, false, &f->author);
 	next_oid(&r, algo, true, &f->parent);
 	f->rank = next_str(&r);
@@ -180,6 +188,7 @@ void core_facets_from_entity(tix_entity *e, core_facets *f)
 	const tix_ticket *t = &e->u.ticket;
 	memset(&f->status, 0, sizeof(*f) - offsetof(core_facets, status));
 	f->status = t->status;
+	f->stage = t->stage ? tix_xstrdup(t->stage) : NULL;
 	f->author = t->author;
 	f->parent = t->plan.parent;
 	f->rank = t->plan.rank ? tix_xstrdup(t->plan.rank) : NULL;
@@ -195,6 +204,7 @@ void core_facets_from_entity(tix_entity *e, core_facets *f)
 
 void core_facets_free(core_facets *f)
 {
+	free(f->stage);
 	free(f->rank);
 	free(f->title);
 	tix_strs_free(&f->labels);

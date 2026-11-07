@@ -92,6 +92,46 @@ bool tix_ticket_status_parse(const char *s, tix_ticket_status *out)
 	return false;
 }
 
+bool tix_stage_valid(const char *s)
+{
+	size_t n = 0;
+	if (!s || !(*s >= 'a' && *s <= 'z'))
+		return false;
+	for (; s[n]; n++)
+		if (!((s[n] >= 'a' && s[n] <= 'z') || (s[n] >= '0' && s[n] <= '9') || s[n] == '-'))
+			return false;
+	return n <= TIX_STAGE_MAX;
+}
+
+bool tix_state_parse(const char *s, tix_ticket_status *status, char *stage)
+{
+	char phase[16];
+	const char *slash = strchr(s, '/');
+	size_t n = slash ? (size_t)(slash - s) : strlen(s);
+	stage[0] = '\0';
+	if (n >= sizeof(phase))
+		return false;
+	memcpy(phase, s, n);
+	phase[n] = '\0';
+	if (!tix_ticket_status_parse(phase, status))
+		return false;
+	if (!slash)
+		return true;
+	if (!tix_stage_valid(slash + 1))
+		return false;
+	strcpy(stage, slash + 1);
+	return true;
+}
+
+const char *tix_state_str(tix_ticket_status status, const char *stage, char *out)
+{
+	if (stage && *stage)
+		snprintf(out, TIX_STATE_STR, "%s/%s", tix_ticket_status_name(status), stage);
+	else
+		snprintf(out, TIX_STATE_STR, "%s", tix_ticket_status_name(status));
+	return out;
+}
+
 static const char *const dep_names[] = {"FS", "SS", "FF", "SF"};
 
 const char *tix_dep_kind_name(tix_dep_kind k)
@@ -202,6 +242,15 @@ void tix_op_free(tix_op *op)
 	case TIX_OP_BASELINE_TASK:
 		free(op->u.baseline_task.currency);
 		break;
+	case TIX_OP_SET_STATE:
+		free(op->u.set_state.stage);
+		break;
+	case TIX_OP_STAGE_ADD:
+		free(op->u.stage_add.name);
+		break;
+	case TIX_OP_STAGE_REMOVE:
+		free(op->u.stage_remove.name);
+		break;
 	case TIX_OP_SET_STATUS:
 	case TIX_OP_DEP_ADD:
 	case TIX_OP_DEP_REMOVE:
@@ -254,6 +303,31 @@ tix_op tix_op_set_status(tix_ticket_status s)
 {
 	tix_op op = op_of(TIX_OP_SET_STATUS);
 	op.u.set_status.status = s;
+	return op;
+}
+
+tix_op tix_op_set_state(tix_ticket_status s, const char *stage)
+{
+	tix_op op = op_of(TIX_OP_SET_STATE);
+	op.u.set_state.status = s;
+	op.u.set_state.stage = stage && *stage ? tix_xstrdup(stage) : NULL;
+	return op;
+}
+
+tix_op tix_op_stage_add(const char *name, tix_ticket_status phase, bool human, int32_t rank)
+{
+	tix_op op = op_of(TIX_OP_STAGE_ADD);
+	op.u.stage_add.name = tix_xstrdup(name);
+	op.u.stage_add.phase = phase;
+	op.u.stage_add.human = human;
+	op.u.stage_add.rank = rank;
+	return op;
+}
+
+tix_op tix_op_stage_remove(const char *name)
+{
+	tix_op op = op_of(TIX_OP_STAGE_REMOVE);
+	op.u.stage_remove.name = tix_xstrdup(name);
 	return op;
 }
 

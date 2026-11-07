@@ -125,6 +125,12 @@ bool page_plan(web_ctx *x, const tix_oid *root, tix_plan_result *out);
 /* "2026-11-06 14:03 UTC" */
 void h_time(html *h, int64_t t);
 void h_status(html *h, tix_ticket_status s);
+/* "phase/stage" with the phase's class (§15.1); stage NULL = none. */
+void h_state(html *h, tix_ticket_status s, const char *stage);
+/* <option>s for a status select: each phase, then its stages from the list that applies
+ * to ticket id (or, for a new ticket, below parent; both may be NULL). cur is selected and
+ * always present, even when its stage isn't listed. */
+void h_state_options(web_ctx *x, const tix_oid *id, const tix_oid *parent, const char *cur);
 /* <a href="/t/ID">short</a> title, from a list (or loaded when list is NULL). */
 void h_ticket(web_ctx *x, const tix_oid *id, const tix_entity_list *known);
 void h_who(web_ctx *x, const tix_oid *identity);

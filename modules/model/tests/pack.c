@@ -423,8 +423,64 @@ static void test_baseline_ops(void)
 	}
 }
 
+static void test_workflow_ops(void)
+{
+	tix_op t[] = {
+		tix_op_set_status(TIX_TICKET_OPEN),
+		tix_op_set_state(TIX_TICKET_OPEN, "ready"),
+		tix_op_set_state(TIX_TICKET_DONE, NULL),
+		tix_op_stage_add("needs-input", TIX_TICKET_IN_PROGRESS, true, 40),
+		tix_op_stage_remove("needs-input"),
+	};
+	round_trip(TIX_ENTITY_TICKET, t, sizeof(t) / sizeof(*t),
+		"{\"tix\":1,\"type\":\"ticket\",\"author\":\"" A40 "\",\"lamport\":3,\"time\":9}\n"
+		"{\"op\":\"set-status\",\"status\":\"open\"}\n"
+		"{\"op\":\"set-state\",\"status\":\"open\",\"stage\":\"ready\"}\n"
+		"{\"op\":\"set-state\",\"status\":\"done\",\"stage\":null}\n"
+		"{\"op\":\"stage-add\",\"name\":\"needs-input\",\"phase\":\"in-progress\",\"human\":true,\"rank\":40}\n"
+		"{\"op\":\"stage-remove\",\"name\":\"needs-input\"}\n");
+
+	static const bad_case cases[] = {
+		{"stage uppercase", HDR "{\"op\":\"set-state\",\"status\":\"open\",\"stage\":\"Ready\"}\n", TIX_ERR_INVALID},
+		{"stage empty", HDR "{\"op\":\"set-state\",\"status\":\"open\",\"stage\":\"\"}\n", TIX_ERR_INVALID},
+		{"stage digit first", HDR "{\"op\":\"set-state\",\"status\":\"open\",\"stage\":\"1a\"}\n", TIX_ERR_INVALID},
+		{"stage slash", HDR "{\"op\":\"set-state\",\"status\":\"open\",\"stage\":\"a/b\"}\n", TIX_ERR_INVALID},
+		{"stage too long", HDR "{\"op\":\"set-state\",\"status\":\"open\",\"stage\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n", TIX_ERR_INVALID},
+		{"stage missing", HDR "{\"op\":\"set-state\",\"status\":\"open\"}\n", TIX_ERR_INVALID},
+		{"state bad status", HDR "{\"op\":\"set-state\",\"status\":\"wip\",\"stage\":null}\n", TIX_ERR_INVALID},
+		{"stage-add bad phase", HDR "{\"op\":\"stage-add\",\"name\":\"x\",\"phase\":\"later\",\"human\":false,\"rank\":1}\n", TIX_ERR_INVALID},
+		{"stage-add human not bool", HDR "{\"op\":\"stage-add\",\"name\":\"x\",\"phase\":\"open\",\"human\":1,\"rank\":1}\n", TIX_ERR_INVALID},
+		{"stage-add negative rank", HDR "{\"op\":\"stage-add\",\"name\":\"x\",\"phase\":\"open\",\"human\":false,\"rank\":-1}\n", TIX_ERR_INVALID},
+		{"stage-add key order", HDR "{\"op\":\"stage-add\",\"phase\":\"open\",\"name\":\"x\",\"human\":false,\"rank\":1}\n", TIX_ERR_INVALID},
+		{"stage-remove bad name", HDR "{\"op\":\"stage-remove\",\"name\":\"X\"}\n", TIX_ERR_INVALID},
+	};
+	for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+		tix_error e = TIX_ERROR_INIT;
+		tix_pack d;
+		tix_status st = tix_pack_decode(cases[i].pack, strlen(cases[i].pack), TIX_HASH_SHA1, &d, &e);
+		tk_checks++;
+		if (st != cases[i].want)
+			tk_fail(__FILE__, __LINE__, "case '%s': got %s (want %s) %s", cases[i].what,
+				tix_status_name(st), tix_status_name(cases[i].want), e.msg);
+		if (!st)
+			tix_pack_free(&d);
+	}
+
+	char stage[TIX_STAGE_MAX + 1];
+	tix_ticket_status ph;
+	TK_CHECK(tix_state_parse("open", &ph, stage) && ph == TIX_TICKET_OPEN && !stage[0]);
+	TK_CHECK(tix_state_parse("in-progress/review", &ph, stage) && ph == TIX_TICKET_IN_PROGRESS &&
+		 !strcmp(stage, "review"));
+	TK_CHECK(!tix_state_parse("open/", &ph, stage));
+	TK_CHECK(!tix_state_parse("later/x", &ph, stage));
+	TK_CHECK(!tix_state_parse("open/Ready", &ph, stage));
+	TK_CHECK(!tix_state_parse("open/a/b", &ph, stage));
+	TK_CHECK(!tix_state_parse("in-progress-and-more-than-sixteen/x", &ph, stage));
+}
+
 int main(void)
 {
+	test_workflow_ops();
 	test_baseline_ops();
 	test_round_trip();
 	test_identity_and_unknown();

@@ -247,6 +247,11 @@ static void json(const tix_schedule *s, const tix_plan_variance *v, tix_buf *out
 		tix_jw_str(&w, kind_name(t));
 		tix_jw_key(&w, "status");
 		tix_jw_str(&w, tix_ticket_status_name(tk->status));
+		tix_jw_key(&w, "stage");
+		if (tk->stage)
+			tix_jw_str(&w, tk->stage);
+		else
+			tix_jw_null(&w);
 		tix_jw_key(&w, "scheduled");
 		tix_jw_bool(&w, t->scheduled);
 		j_date(&w, "start", t->start);

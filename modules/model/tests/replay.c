@@ -422,6 +422,80 @@ static void test_planning_fields(void)
 	tix_sim_clone_free(&b);
 }
 
+static void test_stages(void)
+{
+	tix_sim_clone a, b;
+	new_clone(&a, "a", "Ada");
+	new_clone(&b, "b", "Bob");
+	tix_oid t = new_ticket(&a, "T", NULL);
+
+	/* set-state sets both; a following set-status clears the stage; the pair a
+	 * writer emits (set-status then set-state) reads as one write */
+	apply1(&a, &t, tix_op_set_state(TIX_TICKET_IN_PROGRESS, "review"));
+	tix_entity *x = loadt(&a, &t);
+	TK_CHECK(x && x->u.ticket.status == TIX_TICKET_IN_PROGRESS && x->u.ticket.stage &&
+		 !strcmp(x->u.ticket.stage, "review") && x->u.ticket.plan.started_at > 0);
+	tix_entity_free(x);
+	apply1(&a, &t, tix_op_set_status(TIX_TICKET_OPEN));
+	x = loadt(&a, &t);
+	TK_CHECK(x && x->u.ticket.status == TIX_TICKET_OPEN && !x->u.ticket.stage);
+	tix_entity_free(x);
+	tix_op pair[] = {tix_op_set_status(TIX_TICKET_DONE), tix_op_set_state(TIX_TICKET_DONE, "unaccepted")};
+	TK_OK(tix_sim_apply(&a, TIX_ENTITY_TICKET, &t, pair, 2, &e), &e);
+	tix_op_free(&pair[0]);
+	tix_op_free(&pair[1]);
+	x = loadt(&a, &t);
+	TK_CHECK(x && x->u.ticket.status == TIX_TICKET_DONE && x->u.ticket.stage &&
+		 !strcmp(x->u.ticket.stage, "unaccepted") && x->u.ticket.plan.done_at > 0);
+	tix_entity_free(x);
+
+	/* stage list: OR-map by name, sorted by (phase, rank, name) */
+	apply1(&a, &t, tix_op_stage_add("ready", TIX_TICKET_OPEN, false, 40));
+	apply1(&a, &t, tix_op_stage_add("draft", TIX_TICKET_OPEN, true, 10));
+	apply1(&a, &t, tix_op_stage_add("review", TIX_TICKET_IN_PROGRESS, false, 20));
+	sync_both(&a, &b);
+	apply1(&a, &t, tix_op_stage_remove("ready"));
+	apply1(&b, &t, tix_op_stage_add("ready", TIX_TICKET_OPEN, false, 50)); /* concurrent re-add survives */
+	apply1(&b, &t, tix_op_stage_remove("draft"));
+	apply1(&a, &t, tix_op_stage_add("draft", TIX_TICKET_OPEN, false, 5)); /* concurrent re-add survives */
+	sync_both(&a, &b);
+	tix_entity *ea = loadt(&a, &t), *eb = loadt(&b, &t);
+	tix_buf sa = TIX_BUF_INIT, sb = TIX_BUF_INIT;
+	if (ea && eb) {
+		tix_entity_snapshot(ea, &sa);
+		tix_entity_snapshot(eb, &sb);
+		TK_STR_EQ(tix_buf_cstr(&sa), tix_buf_cstr(&sb));
+		const tix_ticket *tk = &ea->u.ticket;
+		TK_CHECK(tk->nstages == 3);
+		if (tk->nstages == 3) {
+			TK_STR_EQ(tk->stages[0].name, "draft");
+			TK_CHECK(!tk->stages[0].human && tk->stages[0].rank == 5);
+			TK_STR_EQ(tk->stages[1].name, "ready");
+			TK_CHECK(tk->stages[1].rank == 50);
+			TK_STR_EQ(tk->stages[2].name, "review");
+			TK_CHECK(tk->stages[2].phase == TIX_TICKET_IN_PROGRESS);
+		}
+		/* the entity cache codec round-trips the new fields */
+		tix_buf enc = TIX_BUF_INIT, again = TIX_BUF_INIT;
+		tix_entity *dec = NULL;
+		tix_entity_encode(ea, &enc);
+		TK_OK(tix_entity_decode(enc.data, enc.len, TIX_HASH_SHA1, &dec, &e), &e);
+		if (dec) {
+			tix_entity_snapshot(dec, &again);
+			TK_STR_EQ(tix_buf_cstr(&again), tix_buf_cstr(&sa));
+		}
+		tix_entity_free(dec);
+		tix_buf_free(&enc);
+		tix_buf_free(&again);
+	}
+	tix_entity_free(ea);
+	tix_entity_free(eb);
+	tix_buf_free(&sa);
+	tix_buf_free(&sb);
+	tix_sim_clone_free(&a);
+	tix_sim_clone_free(&b);
+}
+
 static void test_resource_and_calendar(void)
 {
 	tix_sim_clone a, b;
@@ -596,6 +670,7 @@ static void test_baseline(void)
 
 int main(void)
 {
+	test_stages();
 	test_baseline();
 	test_lifecycle();
 	test_concurrent_lww();

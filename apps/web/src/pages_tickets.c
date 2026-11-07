@@ -105,13 +105,16 @@ void page_tickets(web_ctx *x)
 		HL(h, "\" data-head=\"");
 		h_id(h, &e->head);
 		HL(h, "\" data-status=\"");
-		h_text(h, tix_ticket_status_name(e->u.ticket.status));
+		{
+			char sst[TIX_STATE_STR];
+			h_text(h, tix_state_str(e->u.ticket.status, e->u.ticket.stage, sst));
+		}
 		HL(h, "\"><td class=\"id\"><a href=\"/t/");
 		h_id(h, &e->id);
 		HL(h, "\">");
 		h_short(h, &e->id);
 		HL(h, "</a></td><td class=\"st\">");
-		h_status(h, e->u.ticket.status);
+		h_state(h, e->u.ticket.status, e->u.ticket.stage);
 		HL(h, "</td><td><a href=\"/t/");
 		h_id(h, &e->id);
 		HL(h, "\">");
@@ -302,7 +305,7 @@ static void planning_table(web_ctx *x, const tix_entity *e, const tix_plan_resul
 		HL(h, " ");
 		h_ticket(x, &c->ticket->id, &pr->tickets);
 		HL(h, " ");
-		h_status(h, c->ticket->u.ticket.status);
+		h_state(h, c->ticket->u.ticket.status, c->ticket->u.ticket.stage);
 		HL(h, "</li>\n");
 	}
 	if (any)
@@ -416,7 +419,7 @@ void page_ticket(web_ctx *x)
 	page_begin(x, t->title);
 	html *h = &x->h;
 	HL(h, "<p>");
-	h_status(h, t->status);
+	h_state(h, t->status, t->stage);
 	HL(h, " ");
 	h_labels(h, &t->labels);
 	HL(h, " <span class=\"note\">opened by ");
@@ -437,17 +440,12 @@ void page_ticket(web_ctx *x)
 		small_form(x, &e->id, "");
 		HL(h, "<input type=\"hidden\" name=\"head\" value=\"");
 		h_id(h, &e->head);
+		char cur[TIX_STATE_STR];
+		tix_state_str(t->status, t->stage, cur);
 		HL(h, "\"><input type=\"hidden\" name=\"o.status\" value=\"");
-		h_text(h, tix_ticket_status_name(t->status));
+		h_text(h, cur);
 		HL(h, "\"><label>Status <select name=\"status\">");
-		for (int s = 0; s < 5; s++) {
-			HL(h, "<option");
-			if ((int)t->status == s)
-				HL(h, " selected");
-			HL(h, ">");
-			h_text(h, tix_ticket_status_name((tix_ticket_status)s));
-			HL(h, "</option>");
-		}
+		h_state_options(x, &e->id, NULL, cur);
 		HL(h, "</select></label> <button>Set</button></form></div>\n");
 	}
 	if (t->body && *t->body) {

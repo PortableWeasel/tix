@@ -61,6 +61,19 @@ static void encode_ticket(tix_jw *w, const tix_ticket *t)
 	e_str(w, "title", t->title);
 	e_str(w, "body", t->body);
 	e_int(w, "status", t->status);
+	e_str(w, "stage", t->stage);
+	tix_jw_key(w, "stages");
+	tix_jw_arr_begin(w);
+	for (size_t i = 0; i < t->nstages; i++) {
+		tix_jw_obj_begin(w);
+		e_str(w, "name", t->stages[i].name);
+		e_int(w, "phase", t->stages[i].phase);
+		tix_jw_key(w, "human");
+		tix_jw_bool(w, t->stages[i].human);
+		e_int(w, "rank", t->stages[i].rank);
+		tix_jw_obj_end(w);
+	}
+	tix_jw_arr_end(w);
 	tix_jw_key(w, "labels");
 	tix_jw_arr_begin(w);
 	for (size_t i = 0; i < t->labels.n; i++)
@@ -338,6 +351,22 @@ static void decode_ticket(dec *d, const cJSON *o, tix_ticket *t)
 	t->title = d_str(d, o, "title", false);
 	t->body = d_str(d, o, "body", false);
 	t->status = (tix_ticket_status)d_int(d, o, "status", 0, TIX_TICKET_CANCELLED);
+	t->stage = d_str(d, o, "stage", true);
+	if (t->stage && !tix_stage_valid(t->stage))
+		d->bad = true;
+	if ((a = d_arr(d, o, "stages", MAX_ITEMS, &n)) && n) {
+		t->stages = tix_xcalloc(n, sizeof(tix_stage_def));
+		cJSON_ArrayForEach(it, a)
+		{
+			tix_stage_def *x = &t->stages[t->nstages++];
+			x->name = d_str(d, it, "name", false);
+			if (!x->name || !tix_stage_valid(x->name))
+				d->bad = true;
+			x->phase = (tix_ticket_status)d_int(d, it, "phase", 0, TIX_TICKET_CANCELLED);
+			x->human = d_bool(d, it, "human");
+			x->rank = (int32_t)d_int(d, it, "rank", 0, TIX_STAGE_RANK_MAX);
+		}
+	}
 	if ((a = d_arr(d, o, "labels", MAX_ITEMS, &n)))
 		cJSON_ArrayForEach(it, a)
 		{

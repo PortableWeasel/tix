@@ -123,8 +123,12 @@ tix_status tix_entity_create(tix_repo *r, tix_entity_type t, tix_op *ops, size_t
  *     an existing entity of the right type (TIX_ERR_NOT_FOUND);
  *   - a parent that is the ticket itself or below it, or a dependency that
  *     would close a dependency cycle, is TIX_ERR_INVALID;
- *   - removing a dependency, assignment or calendar exception that isn't there
- *     is TIX_ERR_NOT_FOUND.
+ *   - removing a dependency, assignment, calendar exception or stage definition
+ *     that isn't there is TIX_ERR_NOT_FOUND;
+ *   - a set-state whose stage isn't on the ticket's effective stage list (or is
+ *     listed under another phase) is TIX_ERR_INVALID; with no list, any stage goes.
+ * Each set-state op is written right after a set-status op of the same phase
+ * (added here when the caller didn't), so older readers see the phase (§15.1).
  */
 tix_status tix_entity_apply(tix_repo *r, tix_entity_type t, const tix_oid *id, const tix_op *ops, size_t n,
 			    tix_error *err);
@@ -148,6 +152,7 @@ typedef enum tix_ticket_sort {
 
 typedef struct tix_ticket_query {
 	unsigned status_mask;    /* bit (1u << status); 0 = any */
+	const char *stage;       /* only tickets in this stage (§15.1); NULL = any */
 	const char *label;       /* NULL = any */
 	const tix_oid *author;   /* NULL = any */
 	const tix_oid *assignee; /* resource id; NULL = any */
@@ -169,6 +174,18 @@ tix_status tix_identity_list(tix_repo *r, tix_entity_list *out, tix_error *err);
 /* All resources / calendars, ordered by name, then id. */
 tix_status tix_resource_list(tix_repo *r, tix_entity_list *out, tix_error *err);
 tix_status tix_calendar_list(tix_repo *r, tix_entity_list *out, tix_error *err);
+
+/*
+ * The stage list that applies to a ticket (architecture §15.1): its own, else that of
+ * the nearest ancestor that has one. ENSURES on TIX_OK: *owner is that ticket (owned by
+ * the caller), or NULL when no ticket up the chain has a list (any stage goes then).
+ * parent: when not NULL, start the search there instead of at id's own parent (for a
+ * ticket being created or moved); id may then be NULL.
+ */
+tix_status tix_ticket_stages(tix_repo *r, const tix_oid *id, const tix_oid *parent, tix_entity **owner,
+			     tix_error *err);
+/* The definition of stage in owner's list, or NULL. */
+const tix_stage_def *tix_stage_find(const tix_entity *owner, const char *stage);
 
 /* ---- planning (architecture §5) --------------------------------------------- */
 

@@ -145,7 +145,7 @@ static void task_cells(web_ctx *x, const tix_plan_task *t)
 	if (t->summary)
 		HL(h, "</b>");
 	HL(h, "</td><td>");
-	h_status(h, t->ticket->u.ticket.status);
+	h_state(h, t->ticket->u.ticket.status, t->ticket->u.ticket.stage);
 	HL(h, "</td><td>");
 	if (t->scheduled)
 		h_date(h, t->start);

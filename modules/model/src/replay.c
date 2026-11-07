@@ -401,9 +401,51 @@ static void fold_plan(const ctx *c, const lww *f, const or_vec *dadd, const or_v
 	pl->nassignments = as.n;
 }
 
+static int cmp_stage_def(const void *pa, const void *pb)
+{
+	const tix_stage_def *a = pa, *b = pb;
+	if (a->phase != b->phase)
+		return a->phase < b->phase ? -1 : 1;
+	if (a->rank != b->rank)
+		return a->rank < b->rank ? -1 : 1;
+	return strcmp(a->name, b->name);
+}
+
+static void fold_stages(const ctx *c, const or_vec *sadd, const or_vec *srem, tix_ticket *t)
+{
+	tix_strs seen = {0};
+	TIX_VEC(tix_stage_def) defs = {0};
+	for (size_t a = 0; a < sadd->n; a++) {
+		if (!tix_strs_add(&seen, sadd->v[a].key))
+			continue;
+		size_t s = or_survivor(c, sadd, srem, sadd->v[a].key);
+		if (s == SIZE_MAX)
+			continue;
+		const tix_op *op = sadd->v[s].op;
+		tix_stage_def d = {tix_xstrdup(op->u.stage_add.name), op->u.stage_add.phase, op->u.stage_add.human,
+				   op->u.stage_add.rank};
+		TIX_VEC_PUSH(&defs, d);
+	}
+	tix_strs_free(&seen);
+	if (defs.n)
+		qsort(defs.v, defs.n, sizeof(*defs.v), cmp_stage_def);
+	t->stages = defs.v;
+	t->nstages = defs.n;
+}
+
+static void set_phase(tix_ticket *t, tix_ticket_status s, const char *stage, int64_t time)
+{
+	t->status = s;
+	free(t->stage);
+	t->stage = stage ? tix_xstrdup(stage) : NULL;
+	if (s == TIX_TICKET_IN_PROGRESS && t->plan.started_at < 0)
+		t->plan.started_at = time;
+	t->plan.done_at = s == TIX_TICKET_DONE ? time : -1;
+}
+
 static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t)
 {
-	or_vec adds = {0}, rems = {0}, dadd = {0}, drem = {0}, aadd = {0}, arem = {0};
+	or_vec adds = {0}, rems = {0}, dadd = {0}, drem = {0}, aadd = {0}, arem = {0}, sadd = {0}, srem = {0};
 	lww f[TIX_F_COUNT];
 	memset(f, 0, sizeof(f));
 	t->plan.started_at = -1;
@@ -429,12 +471,14 @@ static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t
 			free(t->body);
 			t->body = tix_xstrdup(op->u.text.value);
 			break;
-		case TIX_OP_SET_STATUS:
-			t->status = op->u.set_status.status;
-			if (t->status == TIX_TICKET_IN_PROGRESS && t->plan.started_at < 0)
-				t->plan.started_at = p->time;
-			t->plan.done_at = t->status == TIX_TICKET_DONE ? p->time : -1;
+		case TIX_OP_SET_STATUS: set_phase(t, op->u.set_status.status, NULL, p->time); break;
+		case TIX_OP_SET_STATE:
+			/* A writer puts set-status right before set-state for older readers; both
+			 * land here in a row, so together they are one write (§15.1). */
+			set_phase(t, op->u.set_state.status, op->u.set_state.stage, p->time);
 			break;
+		case TIX_OP_STAGE_ADD: push_or(&sadd, op->u.stage_add.name, r); break;
+		case TIX_OP_STAGE_REMOVE: push_or(&srem, op->u.stage_remove.name, r); break;
 		case TIX_OP_SET_FIELD: fold_field(c, r, f); break;
 		case TIX_OP_DEP_ADD: push_or_id(&dadd, &op->u.dep_add.pred, r); break;
 		case TIX_OP_DEP_REMOVE: push_or_id(&drem, &op->u.unref.target, r); break;
@@ -476,6 +520,9 @@ static void fold_ticket(const ctx *c, const op_ref *ops, size_t n, tix_ticket *t
 	t->comments = comments.v;
 	t->ncomments = comments.n;
 	fold_plan(c, f, &dadd, &drem, &aadd, &arem, &t->plan);
+	fold_stages(c, &sadd, &srem, t);
+	free(sadd.v);
+	free(srem.v);
 	free(adds.v);
 	free(rems.v);
 	free(dadd.v);
@@ -732,7 +779,7 @@ tix_status tix_replay(tix_entity_type type, const tix_dag_node *nodes, size_t n,
 			e->nops++;
 			need_anc |= (op->kind == TIX_OP_LABEL && op->u.label.remove.n) || op->kind == TIX_OP_KEY_REMOVE ||
 				    op->kind == TIX_OP_DEP_REMOVE || op->kind == TIX_OP_UNASSIGN ||
-				    op->kind == TIX_OP_EXCEPTION_REMOVE;
+				    op->kind == TIX_OP_EXCEPTION_REMOVE || op->kind == TIX_OP_STAGE_REMOVE;
 			op_ref r = {i, (uint32_t)(k + 2), op};
 			TIX_VEC_PUSH(&ops, r);
 		}
@@ -763,6 +810,10 @@ void tix_entity_free(tix_entity *e)
 		tix_ticket *t = &e->u.ticket;
 		free(t->title);
 		free(t->body);
+		free(t->stage);
+		for (size_t i = 0; i < t->nstages; i++)
+			free(t->stages[i].name);
+		free(t->stages);
 		tix_strs_free(&t->labels);
 		for (size_t i = 0; i < t->ncomments; i++)
 			free(t->comments[i].body);
@@ -901,6 +952,19 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out)
 		tix_jw_str(&w, t->body);
 		tix_jw_key(&w, "status");
 		tix_jw_str(&w, tix_ticket_status_name(t->status));
+		snap_str(&w, "stage", t->stage);
+		tix_jw_key(&w, "stages");
+		tix_jw_arr_begin(&w);
+		for (size_t i = 0; i < t->nstages; i++) {
+			tix_jw_obj_begin(&w);
+			snap_str(&w, "name", t->stages[i].name);
+			snap_str(&w, "phase", tix_ticket_status_name(t->stages[i].phase));
+			tix_jw_key(&w, "human");
+			tix_jw_bool(&w, t->stages[i].human);
+			snap_int(&w, "rank", t->stages[i].rank);
+			tix_jw_obj_end(&w);
+		}
+		tix_jw_arr_end(&w);
 		tix_jw_key(&w, "labels");
 		tix_jw_arr_begin(&w);
 		for (size_t i = 0; i < t->labels.n; i++)

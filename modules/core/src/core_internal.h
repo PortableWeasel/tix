@@ -49,6 +49,7 @@ tix_status core_clock_save(tix_repo *r, tix_error *err);
 typedef struct core_facets {
 	tix_oid id, head;
 	tix_ticket_status status;
+	char *stage;            /* NULL: none (§15.1) */
 	tix_oid author, parent; /* parent null: top level */
 	char *rank, *title;     /* rank NULL: unranked */
 	int64_t created, updated;

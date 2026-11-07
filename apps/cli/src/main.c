@@ -24,6 +24,10 @@ static const char usage_text[] =
 	"  comment ID [-m TEXT] [--edit COMMENT-ID]\n"
 	"  edit ID [--title T] [--body B] [--status S] [+LABEL]... [-LABEL]... [PLANNING]\n"
 	"\n"
+	"workflow stages (S may be PHASE/STAGE, e.g. open/ready; lists are inherited down the WBS)\n"
+	"  stage ls [ID]                        the stage list that applies to a ticket (or every list)\n"
+	"  stage add ID NAME --phase P [--human] [--rank N]   stage rm ID NAME\n"
+	"\n"
 	"planning options (new, edit; 'none' clears a value)\n"
 	"  --parent ID   --rank first|last|before:ID|after:ID   --kind task|milestone\n"
 	"  --calendar CAL   --mode auto|manual   --duration 3d   --effort 16h   --progress 40\n"
@@ -68,7 +72,7 @@ static const char usage_text[] =
 	"cache\n"
 	"  index status | index clear      $GIT_DIR/tix/index.db (disposable; TIX_NO_INDEX=1 disables)\n"
 	"\n"
-	"statuses: open, in-progress, blocked, done, cancelled\n";
+	"statuses: open, in-progress, blocked, done, cancelled, each optionally /STAGE\n";
 
 int cli_fail(cli *c, tix_status st)
 {
@@ -236,7 +240,7 @@ int main(int argc, char **argv)
 		{"push", cmd_push}, {"sync", cmd_sync}, {"assign", cmd_assign},
 		{"unassign", cmd_unassign}, {"res", cmd_res}, {"cal", cmd_cal},
 		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"export", cmd_export}, {"index", cmd_index},
-		{"baseline", cmd_baseline}, {"verify", cmd_verify}, {"bridge", cmd_bridge},
+		{"baseline", cmd_baseline}, {"verify", cmd_verify}, {"bridge", cmd_bridge}, {"stage", cmd_stage},
 	};
 	int (*fn)(cli *, int, char **) = NULL;
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(*cmds); i++)

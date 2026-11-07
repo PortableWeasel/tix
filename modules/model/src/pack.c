@@ -39,6 +39,9 @@ static const op_name op_names[] = {
 	{TIX_ENTITY_BASELINE, TIX_OP_BASELINE_CREATE, "create"},
 	{TIX_ENTITY_BASELINE, TIX_OP_BASELINE_SET_NAME, "set-name"},
 	{TIX_ENTITY_BASELINE, TIX_OP_BASELINE_TASK, "task"},
+	{TIX_ENTITY_TICKET, TIX_OP_SET_STATE, "set-state"},
+	{TIX_ENTITY_TICKET, TIX_OP_STAGE_ADD, "stage-add"},
+	{TIX_ENTITY_TICKET, TIX_OP_STAGE_REMOVE, "stage-remove"},
 };
 
 /* Set-field ops, by (type, name). */
@@ -343,6 +346,24 @@ static tix_status check_op(tix_entity_type type, const tix_op *op, tix_error *er
 			return tix_error_set(err, TIX_ERR_INVALID, "a baseline cost needs a currency, and only a cost");
 		return TIX_OK;
 	}
+	case TIX_OP_SET_STATE:
+		if ((unsigned)op->u.set_state.status > TIX_TICKET_CANCELLED)
+			return tix_error_set(err, TIX_ERR_INVALID, "bad status");
+		if (op->u.set_state.stage && !tix_stage_valid(op->u.set_state.stage))
+			return tix_error_set(err, TIX_ERR_INVALID, "stage must be [a-z][a-z0-9-]{0,%d}", TIX_STAGE_MAX - 1);
+		return TIX_OK;
+	case TIX_OP_STAGE_ADD:
+		if (!tix_stage_valid(op->u.stage_add.name))
+			return tix_error_set(err, TIX_ERR_INVALID, "stage must be [a-z][a-z0-9-]{0,%d}", TIX_STAGE_MAX - 1);
+		if ((unsigned)op->u.stage_add.phase > TIX_TICKET_CANCELLED)
+			return tix_error_set(err, TIX_ERR_INVALID, "bad phase");
+		if (op->u.stage_add.rank < 0 || op->u.stage_add.rank > TIX_STAGE_RANK_MAX)
+			return tix_error_set(err, TIX_ERR_INVALID, "stage rank outside 0..%d", TIX_STAGE_RANK_MAX);
+		return TIX_OK;
+	case TIX_OP_STAGE_REMOVE:
+		if (!tix_stage_valid(op->u.stage_remove.name))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad stage name");
+		return TIX_OK;
 	case TIX_OP_SET_FIELD:
 	case TIX_OP_UNKNOWN:
 		break;
@@ -559,6 +580,23 @@ static void encode_op(const tix_op *op, tix_buf *out)
 		else
 			tix_jw_null(&w);
 		break;
+	case TIX_OP_SET_STATE:
+		put_kv(&w, "status", tix_ticket_status_name(op->u.set_state.status));
+		tix_jw_key(&w, "stage");
+		if (op->u.set_state.stage)
+			tix_jw_str(&w, op->u.set_state.stage);
+		else
+			tix_jw_null(&w);
+		break;
+	case TIX_OP_STAGE_ADD:
+		put_kv(&w, "name", op->u.stage_add.name);
+		put_kv(&w, "phase", tix_ticket_status_name(op->u.stage_add.phase));
+		tix_jw_key(&w, "human");
+		tix_jw_bool(&w, op->u.stage_add.human);
+		tix_jw_key(&w, "rank");
+		tix_jw_int(&w, op->u.stage_add.rank);
+		break;
+	case TIX_OP_STAGE_REMOVE: put_kv(&w, "name", op->u.stage_remove.name); break;
 	case TIX_OP_UNKNOWN: TIX_REQUIRE(!"unknown op"); break;
 	}
 	tix_jw_obj_end(&w);
@@ -947,6 +985,27 @@ static tix_status fill_op(const cJSON *j, tix_op *op, tix_hash_algo algo, tix_er
 		b->currency = cJSON_IsString(cur) ? tix_xstrdup(cur->valuestring) : NULL;
 		return TIX_OK;
 	}
+	case TIX_OP_SET_STATE: {
+		const cJSON *sg = cJSON_GetObjectItemCaseSensitive(j, "stage");
+		s = get_str(j, "status");
+		if (!s || !tix_ticket_status_parse(s, &op->u.set_state.status) || !(cJSON_IsNull(sg) || cJSON_IsString(sg)))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad set-state");
+		op->u.set_state.stage = cJSON_IsString(sg) ? tix_xstrdup(sg->valuestring) : NULL;
+		return TIX_OK;
+	}
+	case TIX_OP_STAGE_ADD: {
+		int64_t rank;
+		const cJSON *hu = cJSON_GetObjectItemCaseSensitive(j, "human");
+		op->u.stage_add.name = dup_str(j, "name");
+		s = get_str(j, "phase");
+		if (!s || !tix_ticket_status_parse(s, &op->u.stage_add.phase) || !cJSON_IsBool(hu) ||
+		    !get_int(j, "rank", 0, TIX_STAGE_RANK_MAX, &rank))
+			return tix_error_set(err, TIX_ERR_INVALID, "bad stage-add");
+		op->u.stage_add.human = cJSON_IsTrue(hu);
+		op->u.stage_add.rank = (int32_t)rank;
+		return TIX_OK;
+	}
+	case TIX_OP_STAGE_REMOVE: op->u.stage_remove.name = dup_str(j, "name"); return TIX_OK;
 	case TIX_OP_UNKNOWN: break;
 	}
 	return tix_error_set(err, TIX_ERR_INVALID, "unhandled op");

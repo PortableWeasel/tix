@@ -86,11 +86,22 @@ typedef struct tix_ticket_plan {
 	int64_t done_at;    /* time of the set-status that made it done, -1 unless done */
 } tix_ticket_plan;
 
+/* One entry of a WBS root's stage list (architecture §15.1). */
+typedef struct tix_stage_def {
+	char *name;
+	tix_ticket_status phase;
+	bool human; /* waits for a person: the inbox and the autonomy guard go by it */
+	int32_t rank;
+} tix_stage_def;
+
 typedef struct tix_ticket {
 	tix_oid author; /* creator */
 	char *title;
 	char *body;
-	tix_ticket_status status;
+	tix_ticket_status status; /* the phase */
+	char *stage;              /* NULL = none; set-status clears it, set-state sets both (§15.1) */
+	tix_stage_def *stages;    /* this ticket's own stage list, sorted by (phase, rank, name) */
+	size_t nstages;
 	tix_strs labels;
 	tix_comment *comments;
 	size_t ncomments;
@@ -191,7 +202,7 @@ void tix_entity_snapshot(const tix_entity *e, tix_buf *out);
  * TIX_ENTITY_CODEC_VERSION whenever tix_entity or the replay rules change, so
  * stale cache entries miss instead of lying.
  */
-#define TIX_ENTITY_CODEC_VERSION 3
+#define TIX_ENTITY_CODEC_VERSION 4
 
 void tix_entity_encode(const tix_entity *e, tix_buf *out);
 /* Checks every field (types, ranges, UTF-8, id algo). RETURNS TIX_ERR_INVALID for

@@ -19,7 +19,7 @@ static void json_headers(web_ctx *x)
 
 /*
  * GET /api/tickets?q=TEXT&limit=N&status=S...  ->
- *   {"tickets":[{"id":"<hex>","short":"<7>","title":"...","status":"open"},...],"more":false}
+ *   {"tickets":[{"id":"<hex>","short":"<7>","title":"...","status":"open","stage":null},...],"more":false}
  * Same matching as the ticket list (id prefix or title substring), active first, then WBS
  * order. Without status, every status matches (pickers need done tickets too).
  */
@@ -76,6 +76,11 @@ void page_api_tickets(web_ctx *x)
 		tix_jw_str(&w, e->u.ticket.title); /* validated UTF-8 (model) */
 		tix_jw_key(&w, "status");
 		tix_jw_str(&w, tix_ticket_status_name(e->u.ticket.status));
+		tix_jw_key(&w, "stage");
+		if (e->u.ticket.stage)
+			tix_jw_str(&w, e->u.ticket.stage);
+		else
+			tix_jw_null(&w);
 		tix_jw_obj_end(&w);
 	}
 	tix_jw_arr_end(&w);

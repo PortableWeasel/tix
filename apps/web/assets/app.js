@@ -243,6 +243,8 @@
 
 	function statusSelect(current) {
 		const s = el('select', {class: 'inline-status', 'aria-label': 'Status'});
+		if (current && !STATUSES.includes(current)) /* phase/stage (§15.1): keep it selectable */
+			s.append(el('option', {value: current, selected: ''}, current));
 		for (const st of STATUSES) {
 			const o = el('option', {value: st}, st);
 			if (st === current) o.selected = true;

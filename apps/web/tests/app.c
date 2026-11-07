@@ -848,7 +848,7 @@ static void test_api(void)
 	char hex[TIX_OID_MAX_HEX + 1], want[400];
 	snprintf(want, sizeof(want),
 		 "{\"tickets\":[{\"id\":\"%s\",\"short\":\"%.7s\",\"title\":\"Quote \\\" back\\\\slash "
-		 "</script><b>x\",\"status\":\"open\"}],\"more\":false}",
+		 "</script><b>x\",\"status\":\"open\",\"stage\":null}],\"more\":false}",
 		 tix_oid_hex(&a, hex), hex);
 	TK_STR_EQ(body(&c), want); /* JSON-escaped, never HTML: app.js only sets textContent */
 	TK_CHECK(call(&c, "GET", "/api/tickets?limit=1", NULL) == 200);
@@ -973,6 +973,53 @@ static void test_external(void)
 	world_close(&w);
 }
 
+/* §15.1: phase/stage shown, offered from the project's list, written, and checked. */
+static void test_stages(void)
+{
+	world w;
+	world_open(&w, false);
+	tix_oid root, t;
+	TK_OK(tix_ticket_create(w.repo, "Root", "", NULL, &root, &e), &e);
+	apply1(&w, TIX_ENTITY_TICKET, &root, tix_op_stage_add("ready", TIX_TICKET_OPEN, false, 10));
+	apply1(&w, TIX_ENTITY_TICKET, &root, tix_op_stage_add("review", TIX_TICKET_IN_PROGRESS, false, 10));
+	TK_OK(tix_ticket_create(w.repo, "Child <b>", "", NULL, &t, &e), &e);
+	apply1(&w, TIX_ENTITY_TICKET, &t, tix_op_set(TIX_F_PARENT, tix_value_id(&root)));
+	client c = new_client(&w);
+	login(&c);
+	char hex[TIX_OID_MAX_HEX + 1], target[160];
+	snprintf(target, sizeof(target), "/t/%s", tix_oid_hex(&t, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "<option>open/ready</option>");
+	HAS(&c, "<option>in-progress/review</option>");
+	TK_CHECK(call(&c, "POST", target, form(&c, "status", "open/ready", "o.status", "open", NULL)) == 303);
+	tix_entity *te = ticket(&w, &t);
+	TK_CHECK(te->u.ticket.status == TIX_TICKET_OPEN && te->u.ticket.stage && !strcmp(te->u.ticket.stage, "ready"));
+	tix_entity_free(te);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "<span class=\"status s-open\">open/ready</span>");
+	HAS(&c, "name=\"o.status\" value=\"open/ready\"");
+	HAS(&c, "<option selected>open/ready</option>");
+	/* core refuses a stage that isn't listed, or listed under another phase */
+	TK_CHECK(call(&c, "POST", target, form(&c, "status", "open/nope", "o.status", "open/ready", NULL)) == 422);
+	HAS(&c, "not on this project&#39;s stage list");
+	TK_CHECK(call(&c, "POST", target, form(&c, "status", "done/ready", "o.status", "open/ready", NULL)) == 422);
+	TK_CHECK(call(&c, "POST", target, form(&c, "status", "open/<i>", "o.status", "open/ready", NULL)) == 422);
+	HASNT(&c, "<i>");
+	clean(&c, target);
+	/* the list shows it too, and the edit form's status select offers the list */
+	TK_CHECK(call(&c, "GET", "/tickets", NULL) == 200);
+	HAS(&c, "data-status=\"open/ready\"");
+	snprintf(target, sizeof(target), "/t/%s/edit", hex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "<option selected>open/ready</option>");
+	/* a new ticket under root is offered root's stages */
+	snprintf(target, sizeof(target), "/new?parent=%s", tix_oid_hex(&root, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "<option>in-progress/review</option>");
+	web_response_free(&c.res);
+	world_close(&w);
+}
+
 /* The csrf token from the last page. */
 static void grab_csrf(client *c)
 {
@@ -1067,6 +1114,7 @@ static void test_hosted(void)
 
 int main(void)
 {
+	test_stages();
 	test_hosted();
 	test_external();
 	test_baselines();

@@ -147,7 +147,7 @@ void page_resource(web_ctx *x)
 		HL(h, "<li>");
 		h_ticket(x, &l.v[i]->id, &l);
 		HL(h, " ");
-		h_status(h, l.v[i]->u.ticket.status);
+		h_state(h, l.v[i]->u.ticket.status, l.v[i]->u.ticket.stage);
 		HL(h, "</li>\n");
 	}
 	if (l.n)
