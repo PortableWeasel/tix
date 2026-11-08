@@ -14,9 +14,9 @@ th,td{text-align:left;padding:.3rem .5rem;border-bottom:1px solid var(--line);ve
 th{font-weight:600;color:var(--muted)}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 form{margin:.5rem 0}
-fieldset{border:1px solid var(--line);padding:.5rem 1rem;margin:1rem 0}
-label{display:inline-block;margin:.2rem 1rem .2rem 0}
-input,select,textarea,button{font:inherit}
+fieldset{border:1px solid var(--line);padding:.5rem 1rem;margin:1rem 0;min-width:0}
+label{display:inline-block;margin:.2rem 1rem .2rem 0;max-width:100%}
+input,select,textarea,button{font:inherit;max-width:100%}
 textarea{width:100%;min-height:8rem}
 button{cursor:pointer}
 .note{color:var(--muted)}
@@ -56,8 +56,8 @@ table.fields th{width:12rem}
 .s-blocked{color:var(--crit)}
 .s-in-progress{color:var(--accent)}
 @media print{header{display:none}}
-.pickwrap{position:relative;display:inline-block}
-.picks{position:absolute;z-index:10;left:0;top:100%;min-width:24rem;max-width:40rem;max-height:20rem;overflow:auto;margin:2px 0 0;padding:0;list-style:none;background:var(--bg);border:1px solid var(--line);box-shadow:0 4px 12px rgba(0,0,0,.15)}
+.pickwrap{position:relative;display:inline-block;max-width:100%}
+.picks{position:absolute;z-index:10;left:0;top:100%;min-width:min(24rem,calc(100vw - 2rem));max-width:min(40rem,calc(100vw - 2rem));max-height:20rem;overflow:auto;margin:2px 0 0;padding:0;list-style:none;background:var(--bg);border:1px solid var(--line);box-shadow:0 4px 12px rgba(0,0,0,.15)}
 .picks li{padding:.25rem .5rem;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .picks li.active,.picks li:hover{background:var(--soft)}
 .picks li.note{cursor:default;color:var(--muted)}
