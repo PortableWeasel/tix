@@ -571,6 +571,70 @@ static bool redirected_id(const client *c, const char *prefix, tix_oid *out)
 	return !strncmp(c->loc, prefix, n) && tix_oid_from_hex(out, c->loc + n, strlen(c->loc + n));
 }
 
+/* A dependency on a summary of unscheduled tasks warns once per leaf: the ticket page
+ * shows one line and links to the list; a single warning is shown as it is. */
+static void test_warnings(void)
+{
+	world w;
+	world_open(&w, false);
+	tix_oid epic, wait, leaf, hand;
+	char hex[TIX_OID_MAX_HEX + 1], buf[256], target[256];
+	TK_OK(tix_ticket_create(w.repo, "Epic <img src=x onerror=alert(1)>", "", NULL, &epic, &e), &e);
+	for (int i = 0; i < 3; i++) {
+		TK_OK(tix_ticket_create(w.repo, "Unestimated \xe2\x80\xae<img src=x>", "", NULL, &leaf, &e), &e);
+		field(&w, TIX_ENTITY_TICKET, &leaf, "parent", tix_oid_hex(&epic, hex));
+	}
+	TK_OK(tix_ticket_create(w.repo, "Wait <script>alert(1)</script>", "", NULL, &wait, &e), &e);
+	field(&w, TIX_ENTITY_TICKET, &wait, "duration", "1d");
+	snprintf(buf, sizeof(buf), "+%s", tix_oid_hex(&epic, hex));
+	field(&w, TIX_ENTITY_TICKET, &wait, "dep", buf);
+	TK_OK(tix_ticket_create(w.repo, "Handover", "", NULL, &hand, &e), &e);
+	field(&w, TIX_ENTITY_TICKET, &hand, "kind", "milestone");
+	field(&w, TIX_ENTITY_TICKET, &hand, "start", "2026-11-20");
+	field(&w, TIX_ENTITY_TICKET, &hand, "deadline", "2026-11-12");
+
+	client c = new_client(&w);
+	login(&c);
+	snprintf(target, sizeof(target), "/t/%s", tix_oid_hex(&wait, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, "/t/wait");
+	HAS(&c, "This ticket has 3 scheduling warnings");
+	snprintf(buf, sizeof(buf), "<a href=\"/t/%s/warnings\">list them</a>", hex);
+	HAS(&c, buf);
+	snprintf(buf, sizeof(buf), "<code>tix warnings %.7s</code>", hex);
+	HAS(&c, buf);
+	HASNT(&c, "which is unscheduled");
+
+	snprintf(target, sizeof(target), "/t/%s/warnings", hex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, "/t/wait/warnings");
+	HAS(&c, "Wait &lt;script&gt;");
+	HAS(&c, "3 in all.");
+	const char *b = body(&c);
+	int n = 0;
+	for (const char *q = b; (q = strstr(q, "which is unscheduled; ignored</li>")); q++)
+		n++;
+	TK_CHECK(n == 3);
+	snprintf(target, sizeof(target), "/t/%.7s/warnings", hex); /* a prefix works too */
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	TK_CHECK(call(&c, "POST", target, "") == 403); /* no csrf; GET-only either way */
+	TK_CHECK(call(&c, "GET", "/t/deadbeef/warnings", NULL) == 404);
+	TK_CHECK(call(&c, "GET", "/t/xyz/warnings", NULL) == 404);
+
+	/* one warning: shown in place, no pointer */
+	snprintf(target, sizeof(target), "/t/%s", tix_oid_hex(&hand, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "after its deadline 2026-11-12");
+	HASNT(&c, "scheduling warnings");
+	/* none: the list page says so */
+	snprintf(target, sizeof(target), "/t/%s/warnings", tix_oid_hex(&epic, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, "/t/epic/warnings");
+	HAS(&c, "None.");
+	web_response_free(&c.res);
+	world_close(&w);
+}
+
 static void test_forms(void)
 {
 	world w;
@@ -1327,6 +1391,7 @@ int main(void)
 	test_read_only();
 	test_escaping();
 	test_pages();
+	test_warnings();
 	test_forms();
 	test_read_only_pages();
 	return tk_finish();

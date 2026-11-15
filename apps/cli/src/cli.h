@@ -71,6 +71,7 @@ int cmd_res(cli *c, int argc, char **argv);
 int cmd_cal(cli *c, int argc, char **argv);
 int cmd_wbs(cli *c, int argc, char **argv);
 int cmd_plan(cli *c, int argc, char **argv);
+int cmd_warnings(cli *c, int argc, char **argv);
 int cmd_export(cli *c, int argc, char **argv);
 int cmd_index(cli *c, int argc, char **argv);
 int cmd_baseline(cli *c, int argc, char **argv);

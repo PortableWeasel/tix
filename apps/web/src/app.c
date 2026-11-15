@@ -394,6 +394,7 @@ typedef struct route_def {
 static const route_def get_routes[] = {
 	{"tickets", 1, NULL, 0, page_tickets},  {"new", 1, NULL, 0, page_new},
 	{"t", 3, "edit", 2, page_ticket_edit},  {"t", 4, "comment", 2, page_comment_edit},
+	{"t", 3, "warnings", 2, page_ticket_warnings},
 	{"t", 2, NULL, 0, page_ticket},         {"wbs", 1, NULL, 0, page_wbs},
 	{"plan", 1, NULL, 0, page_plan_view},   {"load", 1, NULL, 0, page_load},
 	{"export", 1, NULL, 0, page_export},    {"res", 1, NULL, 0, page_resources},

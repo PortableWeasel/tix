@@ -166,6 +166,7 @@ void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_on
 /* Page handlers (pages_*.c). Each handles GET (and POST where it has a form). */
 void page_tickets(web_ctx *x);
 void page_ticket(web_ctx *x);
+void page_ticket_warnings(web_ctx *x); /* GET /t/ID/warnings */
 void page_wbs(web_ctx *x);
 void page_plan_view(web_ctx *x);
 void page_load(web_ctx *x);

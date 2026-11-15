@@ -1,4 +1,4 @@
-/* tix assign | unassign | wbs | plan | export */
+/* tix assign | unassign | wbs | plan | warnings | export */
 #include "cli.h"
 
 #include <stdlib.h>
@@ -172,10 +172,18 @@ static void compare_summary(const tix_schedule *s, const compare *cmp)
 	       tix_date_str(b->taken, d), later, earlier, added, cmp->removed);
 }
 
-static void print_diags(const tix_schedule *s)
+/* One warning is printed as it is; more become a single line pointing at `tix warnings`,
+ * so a ticket that depends on a big unestimated summary doesn't bury the output. */
+static void print_diags(const tix_schedule *s, bool rooted)
 {
-	for (size_t i = 0; i < s->ndiags; i++)
-		fprintf(stderr, "tix: note: %s\n", s->diags[i].msg);
+	char id[16];
+	if (s->ndiags == 1)
+		fprintf(stderr, "tix: note: %s\n", s->diags[0].msg);
+	else if (s->ndiags > 1 && rooted && s->ntasks)
+		fprintf(stderr, "tix: note: %zu scheduling warnings; 'tix warnings --root %s' lists them\n", s->ndiags,
+			cli_short(&s->tasks[0].ticket->id, id));
+	else if (s->ndiags > 1)
+		fprintf(stderr, "tix: note: %zu scheduling warnings; 'tix warnings' lists them\n", s->ndiags);
 }
 
 static const char *date_or_dash(tix_date d, char *buf)
@@ -244,7 +252,7 @@ int cmd_wbs(cli *c, int argc, char **argv)
 	}
 	if (cmp.v)
 		compare_summary(s, &cmp);
-	print_diags(s);
+	print_diags(s, a.root != NULL);
 	compare_free(&cmp);
 	tix_plan_result_free(&pr);
 	return EXIT_OK;
@@ -380,8 +388,43 @@ int cmd_plan(cli *c, int argc, char **argv)
 		putchar('\n');
 		plan_table(s, true, &cmp);
 	}
-	print_diags(s);
+	print_diags(s, a.root != NULL);
 	compare_free(&cmp);
+	tix_plan_result_free(&pr);
+	return EXIT_OK;
+}
+
+/* ---- warnings ------------------------------------------------------------------------ */
+
+int cmd_warnings(cli *c, int argc, char **argv)
+{
+	const char *ticket = NULL;
+	plan_args a;
+	memset(&a, 0, sizeof(a));
+	a.today = cli_today();
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--today") && need_value(i, argc, argv[i])) {
+			if (!tix_input_date(argv[++i], cli_today(), &a.today))
+				return cli_usage("--today: not a date");
+		} else if (!strcmp(argv[i], "--root") && need_value(i, argc, argv[i])) {
+			a.root = argv[++i];
+		} else if (argv[i][0] != '-' && !ticket) {
+			ticket = argv[i];
+		} else {
+			return cli_usage("warnings: unexpected '%s'", argv[i]);
+		}
+	}
+	tix_oid tid;
+	int rc;
+	if (ticket && (rc = cli_resolve(c, TIX_ENTITY_TICKET, ticket, &tid)))
+		return rc;
+	tix_plan_result pr;
+	if ((rc = run_plan(c, &a, &pr)))
+		return rc;
+	const tix_schedule *s = pr.schedule;
+	for (size_t i = 0; i < s->ndiags; i++)
+		if (!ticket || tix_oid_eq(&s->diags[i].id, &tid))
+			printf("%s\n", s->diags[i].msg);
 	tix_plan_result_free(&pr);
 	return EXIT_OK;
 }
@@ -411,7 +454,7 @@ int cmd_export(cli *c, int argc, char **argv)
 		title = pr.schedule->tasks[0].ticket->u.ticket.title;
 	tix_export_compare(pr.schedule, f, title, cmp.v, &out);
 	fwrite(out.data ? out.data : "", 1, out.len, stdout);
-	print_diags(pr.schedule);
+	print_diags(pr.schedule, a.root != NULL);
 	compare_free(&cmp);
 	tix_buf_free(&out);
 	tix_plan_result_free(&pr);

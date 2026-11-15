@@ -492,7 +492,10 @@ M3 ✅ adds `pull`, `push` and `sync` (default remote: git config
 M4 ✅ adds the planning options below, `assign`/`unassign`, `res`, `cal`, `wbs`, `plan`
 and `export`. Dates accept `YYYY-MM-DD`, `today` and `tomorrow`; `none` clears a value.
 `$TIX_TODAY` (or `--today`) fixes "today" for scripts. Plan diagnostics go to stderr as
-`tix: note: …`. `tix plan --gantt` draws one column per day (per week beyond 120 days),
+`tix: note: …` when there is one; more become a single line pointing at `tix warnings`,
+which lists them (all, `--root R` for a subtree's plan, or only those about one TICKET).
+A dependency on a big summary of unestimated tasks warns once per leaf, and hundreds of
+lines buried the plan (found dogfooding, v0.7). `tix plan --gantt` draws one column per day (per week beyond 120 days),
 and `--load` draws per-resource daily load. `$EDITOR` resolution: `TIX_EDITOR`, then
 `core.editor`, then `VISUAL`, then `EDITOR`, then `vi`. Lines starting with `#` are dropped. Exit codes: 0 ok, 1 error, 2 usage.
 
@@ -514,6 +517,7 @@ tix cal   new NAME | ls | show | edit   (--weekdays mon-fri, --hours 8, --off D[
                                          --on D[..D], --clear D[..D], --name)
 tix wbs   [root]                       tree with WBS codes and rollups
 tix plan  [root] [--gantt] [--critical] [--load]   ASCII Gantt / resource load
+tix warnings [ticket] [--root R]       scheduling warnings: all, or about one ticket
 tix export [root] --format mermaid|csv|json|mspdi
 tix pull | push | sync [remote]
 tix --version                          tix and the linked git.git version
@@ -643,7 +647,8 @@ tix web [--listen 127.0.0.1:7480] [--read-only] [--no-open]
 |---|---|
 | `GET /` | Redirect to `/tickets` |
 | `GET /tickets?q&status&label&assignee&under` | List with a filter form. `q` matches an id prefix or a title substring |
-| `GET /t/ID` | Ticket: fields, planning, dependencies, assignments, comments. Forms: comment, status |
+| `GET /t/ID` | Ticket: fields, planning, dependencies, assignments, comments. Forms: comment, status. One schedule warning is shown in place; more become one line linking to the list |
+| `GET /t/ID/warnings` | The ticket's schedule warnings, with the matching `tix warnings` command |
 | `GET /new`, `POST /new` | Create (title, body, labels, all planning fields) |
 | `GET /t/ID/edit`, `POST /t/ID` | Edit; only the fields that changed are written (§13.5) |
 | `POST /t/ID/comment`, `POST /t/ID/comment/CID` | Add or edit a comment |

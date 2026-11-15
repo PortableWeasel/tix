@@ -290,12 +290,25 @@ static void planning_table(web_ctx *x, const tix_entity *e, const tix_plan_resul
 		h_id(h, &e->id);
 		HL(h, "\">plan from here</a></p>\n");
 	}
+	/* One warning is shown as it is; more become one line pointing at the list, so a
+	 * dependency on a big unestimated summary doesn't bury the page. */
+	size_t nd = 0, first = 0;
 	for (size_t i = 0; i < pr->schedule->ndiags; i++)
-		if (tix_oid_eq(&pr->schedule->diags[i].id, &e->id)) {
-			HL(h, "<p class=\"note\">");
-			h_text(h, pr->schedule->diags[i].msg);
-			HL(h, "</p>\n");
-		}
+		if (tix_oid_eq(&pr->schedule->diags[i].id, &e->id) && !nd++)
+			first = i;
+	if (nd == 1) {
+		HL(h, "<p class=\"note\">");
+		h_text(h, pr->schedule->diags[first].msg);
+		HL(h, "</p>\n");
+	} else if (nd > 1) {
+		HL(h, "<p class=\"note\">This ticket has ");
+		h_int(h, (long long)nd);
+		HL(h, " scheduling warnings: <a href=\"/t/");
+		h_id(h, &e->id);
+		HL(h, "/warnings\">list them</a>, or run <code>tix warnings ");
+		h_short(h, &e->id);
+		HL(h, "</code>.</p>\n");
+	}
 
 	/* children, in WBS order */
 	bool any = false;
@@ -405,6 +418,48 @@ static void planning_table(web_ctx *x, const tix_entity *e, const tix_plan_resul
 	} else if (writable(x)) {
 		HL(h, "<p class=\"note\"><a href=\"/res/new\">Add a resource</a> to assign work.</p>\n");
 	}
+}
+
+void page_ticket_warnings(web_ctx *x)
+{
+	tix_oid id;
+	if (!route_id(x, 1, TIX_ENTITY_TICKET, &id))
+		return;
+	tix_plan_result pr;
+	if (!page_plan(x, NULL, &pr)) /* the same plan as the ticket page */
+		return;
+	const tix_entity *e = list_find(&pr.tickets, &id);
+	if (!e) {
+		page_error(x, 404, "No such ticket", "It doesn't validate, so it isn't shown.");
+		tix_plan_result_free(&pr);
+		return;
+	}
+	page_begin(x, e->u.ticket.title);
+	html *h = &x->h;
+	HL(h, "<p><a href=\"/t/");
+	h_id(h, &e->id);
+	HL(h, "\">Back to the ticket</a></p>\n<h2>Scheduling warnings</h2>\n");
+	size_t nd = 0;
+	for (size_t i = 0; i < pr.schedule->ndiags; i++) {
+		if (!tix_oid_eq(&pr.schedule->diags[i].id, &e->id))
+			continue;
+		if (!nd++)
+			HL(h, "<ul class=\"notes\">\n");
+		HL(h, "<li>");
+		h_text(h, pr.schedule->diags[i].msg);
+		HL(h, "</li>\n");
+	}
+	if (nd) {
+		HL(h, "</ul>\n<p class=\"note\">");
+		h_int(h, (long long)nd);
+		HL(h, " in all. <code>tix warnings ");
+	} else {
+		HL(h, "<p class=\"note\">None. <code>tix warnings ");
+	}
+	h_short(h, &e->id);
+	HL(h, "</code> lists the same.</p>\n");
+	page_end(x);
+	tix_plan_result_free(&pr);
 }
 
 void page_ticket(web_ctx *x)

@@ -69,6 +69,7 @@ tix new -t "Pour slab" --parent <house> --rank last --duration 2d --dep +<dig>:F
 tix assign <dig> <crew>
 tix wbs <house>                           # tree with WBS codes and rollups
 tix plan <house> --gantt --load           # ASCII Gantt and resource load (also --critical)
+tix warnings <ticket>                     # scheduling warnings about a ticket (or all)
 tix export <house> --format mermaid       # or csv, json, mspdi (MS Project XML)
 ```
 

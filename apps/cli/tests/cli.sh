@@ -236,9 +236,16 @@ expect 0 "$TIX" plan "$house" --gantt; has "|2026-11-09"; has "Walls            
 	fail "gantt header and rows are misaligned: $out"
 expect 0 "$TIX" plan "$house" --load; has "Ada"; has "Crew"; hasnt "OVER-ALLOCATED"
 expect 0 "$TIX" edit "$walls" --duration 6d
-expect 0 "$TIX" plan "$house"; has "LATE"; has "after its deadline 2026-11-20"
+expect 0 "$TIX" plan "$house"; has "LATE"; has "scheduling warnings; 'tix warnings --root ${house:0:7}' lists them"
+hasnt "after its deadline"   # several warnings: one line, not the list
+expect 0 "$TIX" warnings --root "$house"; has "after its deadline 2026-11-20"
+expect 0 "$TIX" warnings "$house"; has "after its deadline 2026-11-20"; hasnt "over-allocated"
+expect 0 "$TIX" warnings "$paper"; [ -z "$out" ] || fail "no warnings about Paperwork: $out"
+expect 2 "$TIX" warnings --frobnicate; has "unexpected"
+expect 1 "$TIX" warnings deadbeef
 expect 0 "$TIX" assign "$paper" "$ada"
-expect 0 "$TIX" plan "$house" --load; has "OVER-ALLOCATED"; has "over-allocated"
+expect 0 "$TIX" plan "$house" --load; has "OVER-ALLOCATED"; has "scheduling warnings"
+expect 0 "$TIX" warnings --root "$house"; has "over-allocated"
 expect 0 "$TIX" ls --under "$house" --assignee "$ada"; has "Walls"; has "Pour slab"; hasnt "Dig foundations"
 expect 0 "$TIX" ls --under "$pour"; [ -z "$out" ] || fail "nothing is under Pour slab: $out"
 
@@ -260,10 +267,14 @@ git clone -q "$T/plan.git" "$T/plan2" 2>/dev/null
   "$TIX" edit "$walls" --parent "$pour" && "$TIX" sync >/dev/null) || fail "clone 2 edit"
 expect 0 "$TIX" edit "$pour" --parent "$walls"   # concurrently, the other way round
 expect 0 "$TIX" sync; has "1 updated"   # different tickets: no merge, yet a cycle
-expect 0 "$TIX" wbs; has "WBS cycle: dropped the parent link"
+expect 0 "$TIX" wbs; has "scheduling warnings; 'tix warnings' lists them"
 a_wbs=$out
-(cd "$T/plan2" && "$TIX" pull >/dev/null && "$TIX" wbs >"$T/wbs2" 2>&1) || fail "clone 2 wbs"
+expect 0 "$TIX" warnings; has "WBS cycle: dropped the parent link"
+a_warn=$out
+(cd "$T/plan2" && "$TIX" pull >/dev/null && "$TIX" wbs >"$T/wbs2" 2>&1 && "$TIX" warnings >"$T/warn2") ||
+	fail "clone 2 wbs"
 [ "$a_wbs" = "$(cat "$T/wbs2")" ] || fail "clones plan differently: $(diff <(echo "$a_wbs") "$T/wbs2")"
+[ "$a_warn" = "$(cat "$T/warn2")" ] || fail "clones warn differently: $(diff <(echo "$a_warn") "$T/warn2")"
 expect 0 "$TIX" res edit "$crew" --capacity 200% --name "Small crew"
 expect 0 "$TIX" cal edit "$cal" --clear 2026-11-11 --on 2026-11-15
 expect 0 "$TIX" cal show "$cal"; has "on:       2026-11-15"; hasnt "Holiday"

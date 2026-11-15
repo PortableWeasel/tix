@@ -66,6 +66,7 @@ static const char usage_text2[] =
 	"plans (ROOT: a ticket; default every ticket; --today D overrides today)\n"
 	"  wbs [ROOT]                            tree with WBS codes, dates and rollups\n"
 	"  plan [ROOT] [--gantt] [--critical] [--load]\n"
+	"  warnings [TICKET] [--root ROOT]       scheduling warnings (all, or about TICKET)\n"
 	"  export [ROOT] --format mermaid|csv|json|mspdi   (mspdi: MS Project XML)\n"
 	"  (wbs, plan and export take --baseline B: slips and deltas against a baseline)\n"
 	"\n"
@@ -261,7 +262,7 @@ int main(int argc, char **argv)
 		{"comment", cmd_comment}, {"edit", cmd_edit}, {"pull", cmd_pull},
 		{"push", cmd_push}, {"sync", cmd_sync}, {"assign", cmd_assign},
 		{"unassign", cmd_unassign}, {"res", cmd_res}, {"cal", cmd_cal},
-		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"export", cmd_export}, {"index", cmd_index},
+		{"wbs", cmd_wbs}, {"plan", cmd_plan}, {"warnings", cmd_warnings}, {"export", cmd_export}, {"index", cmd_index},
 		{"baseline", cmd_baseline}, {"verify", cmd_verify}, {"bridge", cmd_bridge}, {"stage", cmd_stage},
 		{"claim", cmd_claim}, {"note", cmd_note}, {"autonomy", cmd_autonomy},
 		{"log", cmd_log}, {"watch", cmd_watch},
