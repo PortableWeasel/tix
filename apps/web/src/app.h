@@ -158,6 +158,8 @@ void h_labels(html *h, const tix_strs *labels);
 /* Days, hours, percent; nothing for unknown (< 0). */
 void h_days(html *h, int64_t d);
 void h_hours(html *h, int64_t hrs);
+/* s cut to n code points (UTF-8 safe), with an ellipsis when something was cut. */
+void h_short_title(html *h, const char *s, size_t n);
 
 /* SVG Gantt of a schedule (gantt.c). */
 /* v: a baseline comparison (one per task) to draw as thin bars under the tasks; NULL = none. */
@@ -169,6 +171,7 @@ void page_ticket(web_ctx *x);
 void page_ticket_warnings(web_ctx *x); /* GET /t/ID/warnings */
 void page_wbs(web_ctx *x);
 void page_plan_view(web_ctx *x);
+void page_graph(web_ctx *x); /* GET /graph: block diagram of dependencies, in sheets (§13.10) */
 void page_load(web_ctx *x);
 void page_resources(web_ctx *x);
 void page_resource(web_ctx *x);

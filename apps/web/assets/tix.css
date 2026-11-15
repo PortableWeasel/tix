@@ -83,3 +83,36 @@ svg.gantt .base{fill:var(--muted);opacity:.8}
 .note-fields dt{font-weight:600}
 .note-items,.note-questions,.note-updates{margin:.3rem 0}
 .claim{font-size:.85em;opacity:.8}
+svg.dgraph{font-size:12px;display:block}
+svg.dgraph text{fill:var(--fg)}
+svg.dgraph .meta{fill:var(--muted);font-size:11px}
+svg.dgraph .title{font-weight:600}
+svg.dgraph .big{font-size:15px;font-weight:600}
+svg.dgraph .frame{fill:none;stroke:var(--line)}
+svg.dgraph .box{fill:var(--bg);stroke:var(--line)}
+svg.dgraph .details .box,svg.dgraph .stack{fill:var(--soft);stroke:var(--line)}
+svg.dgraph .node{color:var(--muted);opacity:1}
+svg.dgraph .node a{color:inherit}
+svg.dgraph .node.s-in-progress{color:var(--accent)}
+svg.dgraph .node.s-blocked{color:var(--crit)}
+svg.dgraph .node.s-done{color:var(--ok)}
+svg.dgraph .stripe{fill:currentColor}
+svg.dgraph .state{fill:currentColor;font-size:11px}
+svg.dgraph .track{fill:var(--line)}
+svg.dgraph .done{fill:var(--ok)}
+svg.dgraph .node.crit>a>.box{stroke:var(--crit)}
+svg.dgraph .node.show>a>.box{stroke:var(--warn);stroke-width:3}
+svg.dgraph a:focus{outline:none}
+svg.dgraph a:hover>.box,svg.dgraph a:focus>.box{stroke:var(--accent);stroke-width:2}
+svg.dgraph .edge{fill:none;stroke:var(--muted);stroke-width:1.5}
+svg.dgraph .edge.multi{stroke-width:2.5}
+svg.dgraph .edge.back{stroke-dasharray:5 3}
+svg.dgraph .head{fill:var(--muted)}
+svg.dgraph .tag{fill:var(--soft);stroke:var(--line)}
+svg.dgraph .chip:hover .tag,svg.dgraph .chip:focus .tag{stroke:var(--accent)}
+svg.dgraph .turn .tag{fill:var(--bg);stroke:var(--accent)}
+svg.dgraph .spine{stroke:var(--line);fill:none}
+svg.dgraph .edge.on{stroke:var(--accent);stroke-width:2.5}
+svg.dgraph.picked .edge:not(.on){opacity:.2}
+nav.crumbs{margin:.3rem 0 .6rem}
+nav.crumbs a{margin-right:0}

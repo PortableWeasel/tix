@@ -331,6 +331,17 @@ static void planning_table(web_ctx *x, const tix_entity *e, const tix_plan_resul
 		HL(h, "</ul>\n");
 
 	HL(h, "<h2>Dependencies</h2>\n");
+	if (t) { /* the graph sheet with this ticket as a block; its own sheet when it has sub-tickets */
+		HL(h, "<p><a href=\"/graph?show=");
+		h_id(h, &e->id);
+		HL(h, "\">Show in the graph</a>");
+		if (any) {
+			HL(h, " &middot; <a href=\"/graph?at=");
+			h_id(h, &e->id);
+			HL(h, "\">graph of its sub-tickets</a>");
+		}
+		HL(h, "</p>\n");
+	}
 	if (!p->ndeps)
 		HL(h, "<p class=\"note\">None.</p>\n");
 	else

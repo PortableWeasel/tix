@@ -619,7 +619,7 @@ mode is kept possible but not built (§13.8).
 tix web [--listen 127.0.0.1:7480] [--read-only] [--no-open]
   └─ execs tix-web (apps/web, same install dir, argv only)
        http_mongoose.c ─► router ─► handlers (pages, forms) ─► core, plan, export
-                                         └─► html.c (escaping writer), svg_gantt.c, assets (embedded)
+                                         └─► html.c (escaping writer), gantt.c, graph.c, assets (embedded)
 ```
 
 - `apps/web` builds a separate binary, `tix-web`, so the CLI never links HTTP code.
@@ -655,6 +655,7 @@ tix web [--listen 127.0.0.1:7480] [--read-only] [--no-open]
 | `POST /t/ID/dep`, `POST /t/ID/assign` | Add or remove a dependency or an assignment |
 | `GET /wbs?root` | WBS tree with codes, dates and rollups |
 | `GET /plan?root&critical&today` | Plan table plus an inline SVG Gantt (bars link to tickets, critical path marked, dependency arrows) and diagnostics |
+| `GET /graph?at&page&show` | Dependency graph: a block diagram in sheets, one per WBS level (§13.10) |
 | `GET /load?root` | Resource load table, over-allocation highlighted |
 | `GET /res`, `/res/ID`, `/cal`, `/cal/ID` (+ `new`/`edit` and `POST`) | Resources and calendars |
 | `GET /export?root&format=mermaid\|csv\|json` | Download (`Content-Disposition: attachment`) |
@@ -704,8 +705,10 @@ it does is needed to use tix.
     stale-tab rule (§13.5) applies unchanged; a refusal shows the server's message.
 - **Inline status**: the list's status cells become selects, and the ticket page's status
   form applies on change. Both post `status` / `o.status` / `head` to `POST /t/ID`.
-- **Keyboard shortcuts**: `/` search, `g t|w|p|l|r|c` go to a page, `n` new, `e` edit,
+- **Keyboard shortcuts**: `/` search, `g t|w|p|g|l|r|c` go to a page, `n` new, `e` edit,
   `j`/`k` and Enter in lists, `?` help. Ignored while typing in a field.
+- **Dependency graph**: pointing at (or focusing) a block picks out its arrows and dims
+  the others. Nothing is requested.
 - **Live refresh**: `GET /events` is a `text/event-stream`. Each page carries
   `data-stamp`, a fingerprint of every `refs/tix/*` ref (`tix_repo_stamp`). The stream's
   first event is the current stamp. While a stream is open the server refreshes and
@@ -836,6 +839,58 @@ name behind the proxy. Details in §14.6.
   - `tix web`, the tests in §13.7, and docs.
 - **M7 web JS**: `app.js`, `/api/tickets`, Gantt drag/resize/link, inline status,
   shortcuts and SSE live refresh.
+
+### 13.10 Dependency graph ✅ (2026-11-15)
+
+`GET /graph` shows how tickets depend on each other as a block diagram, drawn by the
+server as SVG (`apps/web/src/graph.c`). There is deliberately no general graph layout:
+a few fixed block templates are placed on a grid, the diagram is cut into sheets, and the
+reader moves between sheets by selecting blocks. It needs no JavaScript.
+
+- **One sheet per WBS level.** A sheet shows the tickets directly below one ticket
+  (`at=ID`; without it, the WBS roots). `show=ID` opens the sheet that has that ticket
+  as a block and marks it (this is what tags and the ticket page link to). `page=N`
+  picks a sheet when a level needs several (out of range: the nearest).
+- **Templates**:
+  - *ticket block*: a ticket without sub-tickets (WBS code, short id, state, title on two
+    lines, dates, progress). Links to the ticket.
+  - *group card*: a ticket with sub-tickets, drawn as a stack of cards, with how many
+    tickets are below it and how many are finished. Links to its own sheet.
+  - *details block*: the ticket the sheet is about, across the top of the frame. Links
+    to the ticket. A breadcrumb above the drawing leads back up.
+  - *connector tag*: under a block, a dependency that leaves the sheet ("from …" with a
+    notch, "to …" with a point), naming the block at its far end. Links to that
+    block's sheet (`show`). At most three lines per block; more become "+N more links
+    elsewhere", which leads to the group's own sheet (or the ticket).
+  - *sheet connector*: previous and next sheet, at the bottom of the frame.
+- **Lifting.** Dependencies are stored between tickets, anywhere in the tree. On a sheet
+  each one is shown at the level of the sheet: between two blocks it is an arrow (several
+  links between the same two blocks are one thicker arrow), inside one block it is only
+  counted in that card's tooltip, and with one end outside the sheet it is a tag. A tag
+  names the largest block around the far end that does not contain this sheet, so the
+  reader lands one level up from the detail and can descend. The raw `dep` entries are
+  used, not the planner's (the planner applies a summary's links to everything below
+  it; here the reader sees that by going up).
+- **Layout.** A block comes one column ("step") after the last block it waits for (Kahn's
+  algorithm in WBS order). A column holds at most 4 blocks; a fuller step takes several
+  columns. 4 columns are a band, and bands are stacked on a sheet while it has at most 4
+  rows of blocks, so a sheet shows at most 16 blocks and a long chain snakes down it.
+  Blocks without an arrow on the sheet follow in WBS order, 4 to a row. Arrows run only
+  in the channels between columns and the gutters between rows. An arrow whose ends are
+  on different sheets becomes a tag at each end.
+- **Loops.** Tickets cannot depend on each other in a cycle, but blocks can (A.1 → B.1
+  and B.2 → A.2). Then one block of the loop is placed first (found by walking back from
+  the first block still waiting until a block repeats) and the arrows that point back are
+  dashed. Nothing recurses, and every choice is by WBS order or ticket id, so every clone
+  draws the same sheets.
+- **Hostile data.** Text goes through the escaping writer like everywhere else, and each
+  block's text sits in a nested `<svg>` viewport that clips it, so a long or wide title
+  cannot cover its neighbours.
+- **Without SVG.** A table under the drawing lists the sheet's blocks with what comes
+  before and after each (w3m, screen readers).
+- **Tests**: `web.app` (`test_graph`: templates, lifting, the loop, tags, sheets, `show`,
+  junk parameters, hostile titles), the soak in `web.smoke`, and `web.browser` (shortcut,
+  opening a group card, arrows picked out on hover).
 
 ## 14. After v1 (approved 2026-11-07)
 

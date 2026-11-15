@@ -32,6 +32,9 @@ Design: [`docs/architecture.md`](docs/architecture.md). Contributor/agent rules:
   Gantt editing (drag to move, drag the end to resize, drag the handle to link, arrow
   keys), inline status changes, keyboard shortcuts (`?` lists them) and live refresh when
   the CLI or a sync changes something. Everything still works without it.
+- The web UI's **Graph** page draws dependencies as a block diagram in sheets: one sheet
+  per WBS level, group cards that open their own sheet, and connector tags for links that
+  leave a sheet (architecture §13.10).
 - After v1, done: MS Project XML export (`tix export --format mspdi`), plan baselines
   (`tix baseline take`, then `tix plan --baseline B` shows what slipped; also on the web),
   and commit signatures (`git config tix.sign true`, `tix id edit --add-signing-key`,

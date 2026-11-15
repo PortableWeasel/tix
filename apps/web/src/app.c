@@ -208,7 +208,7 @@ void page_begin(web_ctx *x, const char *title)
 	if (x->session) {
 		HL(h, "<header><nav><a href=\"/tickets\"><b>tix</b></a> <a href=\"/tickets\">Tickets</a> "
 		      "<a href=\"/inbox\">Inbox</a> <a href=\"/activity\">Activity</a> "
-		      "<a href=\"/wbs\">WBS</a> <a href=\"/plan\">Plan</a> <a href=\"/baselines\">Baselines</a> "
+		      "<a href=\"/wbs\">WBS</a> <a href=\"/plan\">Plan</a> <a href=\"/graph\">Graph</a> <a href=\"/baselines\">Baselines</a> "
 		      "<a href=\"/load\">Load</a> "
 		      "<a href=\"/res\">Resources</a> <a href=\"/cal\">Calendars</a> <a href=\"/sync\">Sync</a> "
 		      "<a href=\"/id\">Identity</a></nav>"
@@ -404,6 +404,7 @@ static const route_def get_routes[] = {
 	{"cal", 2, NULL, 0, page_calendar},     {"id", 1, NULL, 0, page_identities},
 	{"sync", 1, NULL, 0, page_sync},       {"api", 2, "tickets", 1, page_api_tickets},
 	{"events", 1, NULL, 0, page_events},     {"baselines", 1, NULL, 0, page_baselines},
+	{"graph", 1, NULL, 0, page_graph},
 	{"inbox", 1, NULL, 0, page_inbox},       {"activity", 1, NULL, 0, page_activity},
 };
 static const route_def post_routes[] = {

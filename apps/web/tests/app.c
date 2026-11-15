@@ -1378,8 +1378,175 @@ static void test_hosted(void)
 	world_close(&w);
 }
 
+static size_t count(const client *c, const char *needle)
+{
+	size_t n = 0;
+	for (const char *p = body(c); (p = strstr(p, needle)) != NULL; p += strlen(needle))
+		n++;
+	return n;
+}
+
+static tix_oid child(world *w, const char *title, const tix_oid *parent)
+{
+	tix_oid id;
+	char hex[TIX_OID_MAX_HEX + 1];
+	TK_OK(tix_ticket_create(w->repo, title, "", NULL, &id, &e), &e);
+	if (parent)
+		field(w, TIX_ENTITY_TICKET, &id, "parent", tix_oid_hex(parent, hex));
+	return id;
+}
+
+static void after(world *w, const tix_oid *succ, const tix_oid *pred)
+{
+	char hex[TIX_OID_MAX_HEX + 1], buf[TIX_OID_MAX_HEX + 2];
+	snprintf(buf, sizeof(buf), "+%s", tix_oid_hex(pred, hex));
+	field(w, TIX_ENTITY_TICKET, succ, "dep", buf);
+}
+
+/* §13.10: the dependency graph's sheets, blocks, arrows and connector tags. */
+static void test_graph(void)
+{
+	world w;
+	world_open(&w, false);
+	client c = new_client(&w);
+	login(&c);
+	TK_CHECK(call(&c, "GET", "/graph", NULL) == 200); /* nothing to draw yet */
+	HAS(&c, "No tickets yet.");
+	HASNT(&c, "<svg");
+
+	char target[256], buf[256], epic_hex[TIX_OID_MAX_HEX + 1], hex[TIX_OID_MAX_HEX + 1];
+	tix_oid outside = child(&w, "Outside <img src=x onerror=alert(1)>", NULL);
+	tix_oid epic = child(&w, "Epic <script>alert(1)</script>", NULL);
+	tix_oid alpha = child(&w, "Alpha \xe2\x80\xae<img src=x> \"q\"", &epic);
+	tix_oid beta = child(&w, "Beta", &epic);
+	tix_oid leaf = child(&w, "Leaf & 'more'", &epic);
+	tix_oid a1 = child(&w, "A one", &alpha), a2 = child(&w, "A two", &alpha);
+	tix_oid b1 = child(&w, "B one", &beta), b2 = child(&w, "B two", &beta);
+	after(&w, &b1, &a1);      /* Alpha -> Beta */
+	after(&w, &a2, &b2);      /* Beta -> Alpha: no cycle between tickets, a loop between the blocks */
+	after(&w, &leaf, &a1);    /* Alpha -> Leaf */
+	after(&w, &a1, &outside); /* leaves every sheet below Epic */
+	apply1(&w, TIX_ENTITY_TICKET, &b2, tix_op_set_status(TIX_TICKET_DONE));
+	tix_oid_hex(&epic, epic_hex);
+
+	/* top level: Epic is a group card (opens its sheet), Outside a ticket block */
+	TK_CHECK(call(&c, "GET", "/graph", NULL) == 200);
+	clean(&c, "/graph");
+	HAS(&c, "<svg class=\"dgraph\"");
+	HAS(&c, "<b>All tickets</b>");
+	snprintf(buf, sizeof(buf), "<a href=\"/graph?at=%s\"><title>", epic_hex);
+	HAS(&c, buf);
+	snprintf(buf, sizeof(buf), "<a href=\"/t/%s\"><title>", tix_oid_hex(&outside, hex));
+	HAS(&c, buf);
+	HAS(&c, "5 tickets below, 1 finished, 3 links inside");
+	HAS(&c, "Epic &lt;script&gt;alert(1)&lt;/script&gt;");
+	TK_CHECK(count(&c, "<path class=\"edge") == 1); /* Outside -> Epic, lifted from a1 */
+	HASNT(&c, "class=\"chip");                      /* nothing leaves the top sheet */
+
+	/* Epic's sheet: details block, three blocks, the loop marked, the way out as a tag */
+	snprintf(target, sizeof(target), "/graph?at=%.8s", epic_hex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, "/graph?at=epic");
+	HAS(&c, "<g class=\"node details s-open");
+	HAS(&c, "<a href=\"/graph\">All tickets</a>");
+	TK_CHECK(count(&c, "<g class=\"node group s-open") == 2 && count(&c, "<g class=\"node s-open") == 1);
+	TK_CHECK(count(&c, "<path class=\"edge") == 3);
+	TK_CHECK(count(&c, "<path class=\"edge back\"") == 1); /* Beta -> Alpha, not the innocent Alpha -> Leaf */
+	HAS(&c, "(closes a loop between these blocks)");
+	HAS(&c, ">step 1<");
+	HAS(&c, ">step 2<");
+	HASNT(&c, "no order"); /* every block has an arrow; the band's empty columns get no label */
+	snprintf(buf, sizeof(buf), "<a class=\"chip\" href=\"/graph?show=%s\"><title>1 link from ", tix_oid_hex(&outside, hex));
+	HAS(&c, buf);
+	HAS(&c, "Alpha \xef\xbf\xbd&lt;img src=x&gt; &quot;q&quot;"); /* escaped, bidi override replaced */
+	HAS(&c, "1 of 2 done");                                         /* Beta, in the text table */
+	HAS(&c, "(off sheet)");
+
+	/* inside Alpha: links to the other groups are tags naming those groups */
+	snprintf(target, sizeof(target), "/graph?at=%s", tix_oid_hex(&alpha, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	clean(&c, "/graph?at=alpha");
+	snprintf(buf, sizeof(buf), "<a class=\"chip out\" href=\"/graph?show=%s\"><title>1 link to ", tix_oid_hex(&beta, hex));
+	HAS(&c, buf);
+	snprintf(buf, sizeof(buf), "<a class=\"chip\" href=\"/graph?show=%s\"><title>1 link from ", tix_oid_hex(&beta, hex));
+	HAS(&c, buf);
+	snprintf(buf, sizeof(buf), "<a class=\"chip\" href=\"/graph?show=%s\"", tix_oid_hex(&outside, hex));
+	HAS(&c, buf);
+	HAS(&c, "no order on this level");
+	snprintf(buf, sizeof(buf), "<a href=\"/graph?at=%s\">", epic_hex); /* the way up */
+	HAS(&c, buf);
+
+	/* show=ID finds the sheet with that block and marks it; a leaf's own sheet is just details */
+	snprintf(target, sizeof(target), "/graph?show=%.8s", tix_oid_hex(&a2, hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	snprintf(buf, sizeof(buf), "<g class=\"node s-open show\" id=\"n-%s\"", hex);
+	HAS(&c, buf);
+	HAS(&c, "<g class=\"node details s-open"); /* Alpha's sheet */
+	snprintf(target, sizeof(target), "/graph?at=%s", hex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "No sub-tickets.");
+	TK_CHECK(call(&c, "GET", "/graph?at=deadbeef", NULL) == 404);
+	TK_CHECK(call(&c, "GET", "/graph?show=deadbeef", NULL) == 404);
+	TK_CHECK(call(&c, "GET", "/graph?at=%3Cscript%3E", NULL) == 404);
+	clean(&c, "/graph 404");
+
+	/* the ticket page leads here */
+	snprintf(target, sizeof(target), "/t/%s", epic_hex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	snprintf(buf, sizeof(buf), "<a href=\"/graph?show=%s\">Show in the graph</a>", epic_hex);
+	HAS(&c, buf);
+	snprintf(buf, sizeof(buf), "<a href=\"/graph?at=%s\">graph of its sub-tickets</a>", epic_hex);
+	HAS(&c, buf);
+
+	/* 37 blocks: a chain of 20 snakes over a sheet of 16 and continues, then the rest */
+	tix_oid big = child(&w, "Big", NULL), prev = big;
+	for (int i = 0; i < 37; i++) {
+		snprintf(buf, sizeof(buf), "Part %d", i);
+		tix_oid t = child(&w, buf, &big);
+		if (i && i < 20)
+			after(&w, &t, &prev);
+		prev = t;
+	}
+	char big_hex[TIX_OID_MAX_HEX + 1];
+	snprintf(target, sizeof(target), "/graph?at=%s", tix_oid_hex(&big, big_hex));
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "Sheet 1 of 3:");
+	TK_CHECK(count(&c, "<g class=\"node s-open") == 16);
+	TK_CHECK(count(&c, "<path class=\"edge") == 15);
+	HAS(&c, ">step 16<");
+	HAS(&c, "(on another sheet of this group)");
+	snprintf(buf, sizeof(buf), "<a rel=\"next\" href=\"/graph?at=%s&amp;page=2\">next</a>", big_hex);
+	HAS(&c, buf);
+	snprintf(buf, sizeof(buf), "<a class=\"chip turn\" href=\"/graph?at=%s&amp;page=2\">", big_hex);
+	HAS(&c, buf);
+	HASNT(&c, "rel=\"prev\"");
+	snprintf(target, sizeof(target), "/graph?at=%s&page=2", big_hex);
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "Sheet 2 of 3:");
+	HAS(&c, ">step 17<");
+	HAS(&c, "no order between these");
+	HAS(&c, "rel=\"prev\"");
+	snprintf(target, sizeof(target), "/graph?at=%s&page=99", big_hex); /* past the end: the last sheet */
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "Sheet 3 of 3:");
+	HASNT(&c, "rel=\"next\"");
+	snprintf(target, sizeof(target), "/graph?at=%s&page=%%3Cx%%3E", big_hex); /* junk: the first */
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	HAS(&c, "Sheet 1 of 3:");
+	snprintf(target, sizeof(target), "/graph?show=%s", tix_oid_hex(&prev, hex)); /* whichever sheet it is on */
+	TK_CHECK(call(&c, "GET", target, NULL) == 200);
+	snprintf(buf, sizeof(buf), "<g class=\"node s-open show\" id=\"n-%s\"", hex);
+	HAS(&c, buf);
+
+	c.cookie[0] = '\0';
+	TK_CHECK(call(&c, "GET", "/graph", NULL) == 401);
+	web_response_free(&c.res);
+	world_close(&w);
+}
+
 int main(void)
 {
+	test_graph();
 	test_flow();
 	test_hook();
 	test_stages();

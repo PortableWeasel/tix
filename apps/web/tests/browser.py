@@ -240,6 +240,28 @@ def main() -> int:
             else:
                 check(False, "dependency form present")
 
+            # dependency graph: shortcut, descent into a group card, arrows picked out on hover
+            try:
+                run(tix, "edit", b, "--dep", "+" + a)
+            except RuntimeError:
+                pass  # linked already by the drag above
+            page.goto(base + "/tickets")
+            page.keyboard.press("g")
+            page.keyboard.press("g")
+            page.wait_for_url(re.compile(r"/graph$"))
+            check(page.locator("svg.dgraph g.node").count() >= 2, "g g goes to the graph")
+            check(page.locator("svg.dgraph img").count() == 0, "a hostile title is text in the graph")
+            page.click(f'svg.dgraph g.node.group[id^="n-{root}"] > a')
+            page.wait_for_url(re.compile(r"/graph\?at=" + root))
+            check(page.locator("svg.dgraph g.node.details").count() == 1, "a group card opens its own sheet")
+            page.hover(f'svg.dgraph g.node[id^="n-{a}"] rect.box')
+            check(until(page, "document.querySelectorAll('svg.dgraph.picked path.edge.on').length >= 1", 2.0),
+                  "pointing at a block picks out its arrows")
+            page.screenshot(path=os.path.join(tmp, "graph.png"))
+            page.click(f'svg.dgraph g.node[id^="n-{a}"] > a')
+            page.wait_for_url(re.compile(r"/t/" + a))
+            check(True, "a ticket block opens the ticket")
+
             page.goto(base + "/plan")
             page.hover(f'a.task[data-id^="{c}"] rect.bar')
             page.screenshot(path=os.path.join(tmp, "plan.png"))

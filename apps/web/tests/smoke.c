@@ -240,7 +240,7 @@ int main(int argc, char **argv)
 	snprintf(origin, sizeof(origin), "%s", saved);
 
 	/* soak: every page, many times, plus hostile requests (leaks show at exit under ASan) */
-	static const char *const pages[] = {"/tickets", "/wbs", "/plan", "/load", "/res", "/cal", "/id",
+	static const char *const pages[] = {"/tickets", "/wbs", "/plan", "/graph", "/load", "/res", "/cal", "/id",
 					    "/export?format=json", "/tickets?q=web", "/no/such", "/t/zzz"};
 	int bad = 0;
 	for (int i = 0; i < 3000; i++) {

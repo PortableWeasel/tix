@@ -26,21 +26,6 @@ static long x_of(const geo *g, tix_date d)
 	return LABEL_W + (long)((d - g->s0) / g->step) * g->colw;
 }
 
-/* Title cut to n code points (UTF-8 safe), with an ellipsis. */
-static void short_title(html *h, const char *s, size_t n)
-{
-	size_t i = 0, cps = 0;
-	while (s[i] && cps < n) {
-		i++;
-		while (((unsigned char)s[i] & 0xc0) == 0x80)
-			i++;
-		cps++;
-	}
-	h_textn(h, s, i);
-	if (s[i])
-		HL(h, "\xe2\x80\xa6");
-}
-
 static void num(html *h, long v)
 {
 	h_int(h, v);
@@ -281,7 +266,7 @@ void h_gantt(web_ctx *x, const tix_schedule *s, tix_date today, bool critical_on
 		HL(h, "\">");
 		h_text(h, t->wbs);
 		HL(h, " ");
-		short_title(h, t->ticket->u.ticket.title, LABEL_CHARS - (t->depth > 10 ? 10 : t->depth) * 2);
+		h_short_title(h, t->ticket->u.ticket.title, LABEL_CHARS - (t->depth > 10 ? 10 : t->depth) * 2);
 		HL(h, "</text>");
 		if (v && v[i].baselined && v[i].start != TIX_DATE_NONE && v[i].start <= last) {
 			/* the baseline: a thin bar along the bottom of the row */

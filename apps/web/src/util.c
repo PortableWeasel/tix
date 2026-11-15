@@ -237,3 +237,18 @@ void h_hours(html *h, int64_t hrs)
 	h_int(h, hrs);
 	HL(h, "h");
 }
+
+/* Title cut to n code points (UTF-8 safe), with an ellipsis. */
+void h_short_title(html *h, const char *s, size_t n)
+{
+	size_t i = 0, cps = 0;
+	while (s[i] && cps < n) {
+		i++;
+		while (((unsigned char)s[i] & 0xc0) == 0x80)
+			i++;
+		cps++;
+	}
+	h_textn(h, s, i);
+	if (s[i])
+		HL(h, "\xe2\x80\xa6");
+}

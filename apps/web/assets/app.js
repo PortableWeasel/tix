@@ -500,15 +500,35 @@
 		});
 	}
 
+	/* ---- dependency graph: pointing at a block picks out its arrows ------------------- */
+
+	function graph(svg) {
+		const pick = (n) => {
+			let any = false;
+			$$('.edge', svg).forEach((p) => {
+				const on = n !== null && (p.dataset.a === n || p.dataset.b === n);
+				p.classList.toggle('on', on);
+				any = any || on;
+			});
+			svg.classList.toggle('picked', any);
+		};
+		$$('.node[data-n]', svg).forEach((g) => {
+			g.addEventListener('mouseenter', () => pick(g.dataset.n));
+			g.addEventListener('mouseleave', () => pick(null));
+			g.addEventListener('focusin', () => pick(g.dataset.n));
+			g.addEventListener('focusout', () => pick(null));
+		});
+	}
+
 	/* ---- keyboard shortcuts ----------------------------------------------------------- */
 
 	const KEYS = [
 		['/', 'find a ticket'], ['g t', 'tickets'], ['g w', 'WBS'], ['g p', 'plan'], ['g l', 'load'],
-		['g r', 'resources'], ['g c', 'calendars'], ['n', 'new ticket'], ['e', 'edit this ticket'],
+		['g g', 'dependency graph'], ['g r', 'resources'], ['g c', 'calendars'], ['n', 'new ticket'], ['e', 'edit this ticket'],
 		['j / k', 'next / previous ticket in a list'], ['Enter', 'open the selected ticket'],
 		['← →', 'move a focused Gantt bar (Shift: change its length)'], ['?', 'this help'],
 	];
-	const GO = {t: '/tickets', w: '/wbs', p: '/plan', l: '/load', r: '/res', c: '/cal'};
+	const GO = {t: '/tickets', w: '/wbs', p: '/plan', g: '/graph', l: '/load', r: '/res', c: '/cal'};
 
 	function help() {
 		let d = $('#tix-help');
@@ -591,6 +611,7 @@
 		inlineStatus(root);
 		notifyButton(root);
 		$$('svg.gantt', root).forEach(gantt);
+		$$('svg.dgraph', root).forEach(graph);
 	}
 
 	body.classList.add('js');
